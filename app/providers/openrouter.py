@@ -27,6 +27,7 @@ class OpenRouterAdapter(ProviderAdapter):
         )
         self._fallback_executor = FallbackExecutor(config, self.http)
         self._pricing: dict[str, dict] = {}
+        self._max_tokens: dict[str, int] = {}  # model_id → max_completion_tokens
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -63,15 +64,25 @@ class OpenRouterAdapter(ProviderAdapter):
             resp.raise_for_status()
             data = resp.json()
             models = data.get("data", [])
-            # Cache pricing
+            # Cache pricing and max_completion_tokens
             for m in models:
                 mid = m.get("id", "")
+                if not mid:
+                    continue
                 pricing = m.get("pricing", {})
-                if mid and pricing:
+                if pricing:
                     self._pricing[mid] = {
                         "prompt": float(pricing.get("prompt", 0) or 0),
                         "completion": float(pricing.get("completion", 0) or 0),
                     }
+                # Cache max_completion_tokens from top_provider
+                top = m.get("top_provider", {})
+                mct = top.get("max_completion_tokens")
+                if mct is not None:
+                    try:
+                        self._max_tokens[mid] = int(mct)
+                    except (TypeError, ValueError):
+                        pass
             return models
         except Exception:
             return []
@@ -79,6 +90,14 @@ class OpenRouterAdapter(ProviderAdapter):
     def get_pricing(self, model: str) -> dict | None:
         """Get cached pricing for a model."""
         return self._pricing.get(model)
+
+    def get_max_completion_tokens(self, model: str) -> int | None:
+        """Get cached max_completion_tokens for a model from OpenRouter."""
+        return self._max_tokens.get(model)
+
+    def get_all_max_tokens(self) -> dict[str, int]:
+        """Return the full max_completion_tokens cache."""
+        return dict(self._max_tokens)
 
     def estimate_cost(
         self, model: str, prompt_tokens: int, completion_tokens: int

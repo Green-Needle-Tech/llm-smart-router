@@ -161,9 +161,9 @@
         "google/gemini-2.5-flash"
       ],
       "params": {
-        "temperature": 0.2,
-        "max_tokens": 1024
+        "temperature": 0.2
       },
+      "max_tokens": "auto",
       "max_cost_per_request_usd": 0.005
     },
     "L2": {
@@ -173,9 +173,9 @@
         "deepseek/deepseek-v4-flash"
       ],
       "params": {
-        "temperature": 0.4,
-        "max_tokens": 2048
+        "temperature": 0.4
       },
+      "max_tokens": "auto",
       "max_cost_per_request_usd": 0.02
     },
     "L3": {
@@ -186,22 +186,22 @@
         "anthropic/claude-sonnet-4.5"
       ],
       "params": {
-        "temperature": 0.6,
-        "max_tokens": 8192
+        "temperature": 0.6
       },
+      "max_tokens": "auto",
       "max_cost_per_request_usd": 0.2
     },
     "L4": {
       "label": "hard",
-      "model": "anthropic/claude-opus-5",
+      "model": "anthropic/claude-sonnet-5",
       "fallbacks": [
         "z-ai/glm-5.2",
         "anthropic/claude-opus-4.8"
       ],
       "params": {
-        "temperature": 0.7,
-        "max_tokens": 16384
+        "temperature": 0.7
       },
+      "max_tokens": "auto",
       "max_cost_per_request_usd": 1.0
     },
     "L5": {
@@ -212,9 +212,9 @@
         "x-ai/grok-4.6"
       ],
       "params": {
-        "temperature": 0.8,
-        "max_tokens": 32768
+        "temperature": 0.8
       },
+      "max_tokens": "auto",
       "max_cost_per_request_usd": 5.0
     }
   },

@@ -19,7 +19,7 @@ async def list_models(request: Request):
         "object": "model",
         "owned_by": "router",
     })
-    for level in ["L1", "L2", "L3", "L4"]:
+    for level in ["L1", "L2", "L3", "L4", "L5"]:
         models.append({
             "id": f"smart-router/{level}",
             "object": "model",
@@ -30,7 +30,7 @@ async def list_models(request: Request):
 
     # Upstream tier models
     if config.routing.expose_upstream_models:
-        for level in ["L1", "L2", "L3", "L4"]:
+        for level in ["L1", "L2", "L3", "L4", "L5"]:
             tier = config.routing.get_tier(level)
             if tier.model:
                 models.append({

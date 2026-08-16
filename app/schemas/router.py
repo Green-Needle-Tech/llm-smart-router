@@ -12,6 +12,7 @@ class Level(str, Enum):
     L2 = "L2"
     L3 = "L3"
     L4 = "L4"
+    L5 = "L5"
 
     @classmethod
     def from_str(cls, s: str) -> "Level":
@@ -23,11 +24,11 @@ class Level(str, Enum):
 
     @property
     def numeric(self) -> int:
-        return {"L1": 1, "L2": 2, "L3": 3, "L4": 4}[self.value]
+        return {"L1": 1, "L2": 2, "L3": 3, "L4": 4, "L5": 5}[self.value]
 
     @classmethod
     def from_numeric(cls, n: int) -> "Level":
-        n = max(1, min(4, n))
+        n = max(1, min(5, n))
         return cls(f"L{n}")
 
     def __lt__(self, other: "Level") -> bool:

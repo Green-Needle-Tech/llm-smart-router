@@ -1,6 +1,7 @@
 """FastAPI application factory and lifespan management."""
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
@@ -76,12 +77,39 @@ async def lifespan(app: FastAPI):
             max_entries=settings.classification.cache.max_entries,
         )
 
-    # Fetch pricing
+    # Fetch pricing and max_completion_tokens
     try:
         await provider.list_models()
         logger.info("router.pricing.loaded")
+        # Log auto-detected max_completion_tokens for configured tier models
+        for level in ["L1", "L2", "L3", "L4", "L5"]:
+            tier = settings.routing.get_tier(level)
+            if tier.model:
+                mct = provider.get_max_completion_tokens(tier.model)
+                if mct is not None:
+                    logger.info(
+                        "router.max_tokens.auto",
+                        level=level, model=tier.model, max_completion_tokens=mct,
+                    )
+                else:
+                    logger.warning(
+                        "router.max_tokens.unknown",
+                        level=level, model=tier.model,
+                    )
     except Exception as e:
         logger.warning("router.pricing.failed", error=str(e))
+
+    # Periodic refresh of pricing + max_completion_tokens
+    async def _refresh_models_loop():
+        while True:
+            await asyncio.sleep(settings.provider.pricing_refresh_seconds)
+            try:
+                await provider.list_models()
+                logger.info("router.pricing.refreshed")
+            except Exception as e:
+                logger.warning("router.pricing.refresh_failed", error=str(e))
+
+    asyncio.create_task(_refresh_models_loop())
 
     cm.start_watcher(interval=5.0)
     router_info.info({"version": str(settings.version), "provider": settings.provider.name})

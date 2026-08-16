@@ -1,7 +1,7 @@
 """Pydantic models mirroring settings.json structure."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -137,6 +137,10 @@ class TierConfig(BaseModel):
     fallbacks: list[str] = Field(default_factory=list)
     params: dict[str, Any] = Field(default_factory=dict)
     max_cost_per_request_usd: float = 1.0
+    # "auto" = detect from OpenRouter /v1/models API (max_completion_tokens)
+    # int  = use this fixed cap
+    # unset/None = inherit from params or provider default
+    max_tokens: Union[int, str] = "auto"
 
 
 class RoutingConfig(BaseModel):
@@ -148,6 +152,7 @@ class RoutingConfig(BaseModel):
     L2: TierConfig = Field(default_factory=lambda: TierConfig(label="easy", model=""))
     L3: TierConfig = Field(default_factory=lambda: TierConfig(label="medium", model=""))
     L4: TierConfig = Field(default_factory=lambda: TierConfig(label="hard", model=""))
+    L5: TierConfig = Field(default_factory=lambda: TierConfig(label="extreme", model=""))
 
     def get_tier(self, level: str) -> TierConfig:
         return getattr(self, level)
@@ -160,6 +165,10 @@ class RoutingConfig(BaseModel):
 
     def get_params(self, level: str) -> dict[str, Any]:
         return self.get_tier(level).params
+
+    def get_max_tokens(self, level: str) -> Union[int, str]:
+        """Return the tier's max_tokens setting ('auto' or int)."""
+        return self.get_tier(level).max_tokens
 
 
 class BudgetConfig(BaseModel):
