@@ -53,10 +53,10 @@
       "min_prefix_chars": 200,
       "strip_sections_enabled": true,
       "strip_sections": [
-        "(?is)^#+\\s*(soul|identity|persona|who you are)\\b.*?(?=^#+\\s|\\z)",
-        "(?is)^#+\\s*(memory|memories|recall|past sessions?)\\b.*?(?=^#+\\s|\\z)",
-        "(?is)^#+\\s*(user profile|about the user|preferences)\\b.*?(?=^#+\\s|\\z)",
-        "(?is)<(memory|soul|persona|user_profile)>.*?</\\1>"
+        "(?ims)^#+\\s*(soul|identity|persona|who you are)\\b.*?(?=^#+\\s|\\Z)",
+        "(?ims)^#+\\s*(memory|memories|recall|past sessions?)\\b.*?(?=^#+\\s|\\Z)",
+        "(?ims)^#+\\s*(user profile|about the user|preferences)\\b.*?(?=^#+\\s|\\Z)",
+        "(?ims)<(memory|soul|persona|user_profile)>.*?</\\1>"
       ],
       "keep_sections": [],
       "delimit_untrusted": true,

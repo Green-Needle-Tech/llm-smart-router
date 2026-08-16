@@ -12,3 +12,4 @@ venv/
 .mypy_cache/
 .coverage
 htmlcov/
+settings.json.bak
