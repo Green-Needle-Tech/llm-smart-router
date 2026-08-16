@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 import httpx
-
-from app.schemas.router import Level
 
 
 class FallbackExecutor:
