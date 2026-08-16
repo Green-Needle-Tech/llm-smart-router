@@ -1,0 +1,48 @@
+services:
+  smart-router:
+    build: .
+    image: llm-smart-router:1.0
+    container_name: smart-router
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?required}
+      ROUTER_API_KEY: ${ROUTER_API_KEY:?required}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      SETTINGS_PATH: /app/config/settings.json
+      CACHE_BACKEND: ${CACHE_BACKEND:-memory}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SESSION_ENABLED: ${SESSION_ENABLED:-true}
+      SESSION_IDLE_TTL_SECONDS: ${SESSION_IDLE_TTL_SECONDS:-7200}
+      SESSION_FINGERPRINT_SALT: ${SESSION_FINGERPRINT_SALT:-}
+      WORKERS: ${WORKERS:-1}
+    volumes:
+      - ./config:/app/config:ro
+    networks: [hermes-net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://0.0.0.0:8080/healthz',timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+
+  redis:
+    image: redis:7-alpine
+    container_name: smart-router-redis
+    restart: unless-stopped
+    profiles: ["redis"]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [hermes-net]
+
+networks:
+  hermes-net:
+    driver: bridge

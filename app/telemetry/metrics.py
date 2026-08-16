@@ -1,0 +1,169 @@
+"""Prometheus metrics definitions."""
+from __future__ import annotations
+
+from prometheus_client import Counter, Histogram, Gauge, Info
+
+# Request metrics
+router_requests_total = Counter(
+    "router_requests_total",
+    "Total requests processed",
+    ["level", "model", "source", "status"],
+)
+
+router_active_requests = Gauge(
+    "router_active_requests",
+    "Currently in-flight requests",
+)
+
+# Session metrics
+router_sessions_active = Gauge(
+    "router_sessions_active",
+    "Active session pins",
+    ["level"],
+)
+
+router_sessions_created_total = Counter(
+    "router_sessions_created_total",
+    "Total sessions created",
+    ["level", "id_source"],
+)
+
+router_sessions_expired_total = Counter(
+    "router_sessions_expired_total",
+    "Total sessions expired",
+    ["reason"],
+)
+
+router_session_lookups_total = Counter(
+    "router_session_lookups_total",
+    "Session store lookups",
+    ["result"],
+)
+
+router_session_turns = Histogram(
+    "router_session_turns",
+    "Turns per session at expiry",
+    ["level"],
+)
+
+router_session_lock_waits_total = Counter(
+    "router_session_lock_waits_total",
+    "Session lock waits",
+    ["outcome"],
+)
+
+# Classification metrics
+router_classifier_calls_total = Counter(
+    "router_classifier_calls_total",
+    "Classifier calls",
+    ["result"],
+)
+
+router_classification_duration_seconds = Histogram(
+    "router_classification_duration_seconds",
+    "Classification duration",
+    ["source"],
+)
+
+router_classifier_failures_total = Counter(
+    "router_classifier_failures_total",
+    "Classifier failures",
+    ["reason"],
+)
+
+# Reclassification and escalation
+router_reclassifications_total = Counter(
+    "router_reclassifications_total",
+    "Reclassifications",
+    ["trigger"],
+)
+
+router_escalations_total = Counter(
+    "router_escalations_total",
+    "Session escalations",
+    ["from_level", "to_level", "trigger", "layer"],
+)
+
+router_escalation_signals_total = Counter(
+    "router_escalation_signals_total",
+    "Escalation signals fired",
+    ["signal"],
+)
+
+router_escalations_capped_total = Counter(
+    "router_escalations_capped_total",
+    "Escalations blocked by max_level",
+    ["level"],
+)
+
+router_escalation_turn = Histogram(
+    "router_escalation_turn",
+    "Turn number at escalation",
+)
+
+router_retry_on_failure_total = Counter(
+    "router_retry_on_failure_total",
+    "Retry-on-failure attempts",
+    ["from_level", "outcome"],
+)
+
+# Upstream metrics
+router_upstream_duration_seconds = Histogram(
+    "router_upstream_duration_seconds",
+    "Upstream call duration",
+    ["level", "model"],
+)
+
+router_fallbacks_total = Counter(
+    "router_fallbacks_total",
+    "Fallback model used",
+    ["level", "from_model", "to_model", "reason"],
+)
+
+# Token and cost metrics
+router_tokens_total = Counter(
+    "router_tokens_total",
+    "Tokens consumed",
+    ["level", "model", "kind"],
+)
+
+router_cost_usd_total = Counter(
+    "router_cost_usd_total",
+    "Cost in USD",
+    ["level", "model"],
+)
+
+# Digest/scaffolding metrics
+router_digest_scaffolding_ratio = Histogram(
+    "router_digest_scaffolding_ratio",
+    "Scaffolding stripped ratio",
+)
+
+router_digest_task_tokens = Histogram(
+    "router_digest_task_tokens",
+    "Task payload tokens after stripping",
+)
+
+router_scaffolding_strip_source_total = Counter(
+    "router_scaffolding_strip_source_total",
+    "Scaffolding strip mechanism used",
+    ["source"],
+)
+
+router_injection_suspected_total = Counter(
+    "router_injection_suspected_total",
+    "Injection suspected in digest",
+)
+
+# Cache metrics
+router_cache_events_total = Counter(
+    "router_cache_events_total",
+    "Classification cache events",
+    ["result"],
+)
+
+# Info
+router_info = Info(
+    "router",
+    "Router build information",
+)
