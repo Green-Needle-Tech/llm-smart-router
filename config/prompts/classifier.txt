@@ -11,6 +11,8 @@ L3 MEDIUM   — multi-step reasoning, real code generation, debugging, synthesis
              or tradeoff analysis.
 L4 HARD     — deep/novel reasoning, system design, long-horizon planning, subtle
              math, large refactors, or high-stakes ambiguous judgment.
+L5 EXTREME  — multi-agent orchestration, complex scientific discovery, or tasks
+             requiring maximum creativity and problem-solving under uncertainty.
 
 Rules:
 - Judge the DIFFICULTY OF THE TASK, never the length of the input.
@@ -27,7 +29,7 @@ Rules:
 - Never answer the user's request. Only classify it.
 
 Output schema:
-{"level":"L1|L2|L3|L4|UNKNOWN","confidence":0.0-1.0,"reason":"<12 words max>"}
+{"level":"L1|L2|L3|L4|L5|UNKNOWN","confidence":0.0-1.0,"reason":"<12 words max>"}
 
 ---
 REQUEST TO CLASSIFY:

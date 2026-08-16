@@ -3,7 +3,7 @@
 **Project codename:** `llm-smart-router`
 **Version:** 1.1 (spec draft — session-pinned routing)
 **Date:** 2026-08-16
-**Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L4), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
+**Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
@@ -23,7 +23,7 @@ Classification is **session-scoped, not request-scoped**. The **first** prompt o
 
 **First turn of a session:**
 
-1. Run a **cheap classifier model** over the prompt to assign a complexity level (**L1 trivial → L4 hard**).
+1. Run a **cheap classifier model** over the prompt to assign a complexity level (**L1 trivial → L5 extreme**).
 2. Look up the target model for that level in a user-editable `settings.json`.
 3. **Pin** `session_id → {level, model}` in the session store.
 4. Forward to **OpenRouter**, return the response in unmodified OpenAI format.
@@ -58,7 +58,7 @@ Classification is **session-scoped, not request-scoped**. The **first** prompt o
                          │                                                             │
                          ▼                                                             ▼
                 ┌───────────────────────────── route to pinned model ──────────────────────┐
-                │   L1 cheap model   │   L2 small model   │   L3 mid model   │  L4 frontier │
+                │   L1 cheap model   │   L2 small model   │   L3 mid model   │  L4 frontier  │  L5 extreme  │
                 └──────────────────────────── OpenRouter API ─────────────────────────────┘
 ```
 
@@ -95,7 +95,7 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
 | **Session Resolver** | Derives a stable `session_id` for every request (header, body field, or conversation fingerprint). |
 | **Session Store** | Authoritative `session_id → {level, model, turn_count, expires_at}` map. In-memory TTL+LRU, or Redis when shared across workers. **This is the component that makes classification happen once.** |
 | **Preflight / Heuristics** | Cheap deterministic checks that can skip the classifier entirely on the first turn (overrides, size rules, regex rules). |
-| **Classifier Service** | Builds the classification prompt, calls the cheap model, parses and validates the L1–L4 label. Invoked **only on session-store misses**. |
+| **Classifier Service** | Builds the classification prompt, calls the cheap model, parses and validates the L1–L5 label. Invoked **only on session-store misses**. |
 | **Classification Cache** | Secondary hash → level cache. Only helps *first* turns whose opening prompt repeats across sessions (common with templated agent scaffolding). |
 | **Router / Policy Engine** | Maps level → model, applies overrides, per-tier parameter overrides, and the fallback chain. |
 | **Provider Adapter** | OpenRouter HTTP client: request translation, streaming pass-through, retries, error normalization. |
@@ -120,7 +120,7 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
                    c. Classification cache hit?              → skip to 8
 6.  CLASSIFY       Acquire per-session lock (prevents duplicate classification when
                    turn 1 and turn 2 race). Call classifier with rubric + digest
-                   → "L1".."L4". On failure/timeout/invalid → default_level.
+                   → "L1".."L5". On failure/timeout/invalid → default_level.
 7.  CACHE WRITE    Store prompt fingerprint → level with TTL
 8.  PIN            Write session_id → {level, model, turn_count:1, expires_at} to
                    the session store. Release lock.
@@ -174,7 +174,7 @@ The primary endpoint. Accepts the standard OpenAI Chat Completions payload.
 | `Authorization: Bearer <key>` | If `auth.enabled` | Router's own API key. Never the OpenRouter key. |
 | `Content-Type: application/json` | Yes | — |
 | `X-Session-Id` | **Strongly recommended** | Stable identifier for the chat session. The single most important header — see §7.2. If absent, the router falls back to fingerprinting (§4.8). |
-| `X-Router-Level` | No | Force a tier: `L1`–`L4`. On turn 1 this is what gets pinned; on a later turn it overrides the pin for that request only (unless `X-Router-Repin: true`). |
+| `X-Router-Level` | No | Force a tier: `L1`–`L5`. On turn 1 this is what gets pinned; on a later turn it overrides the pin for that request only (unless `X-Router-Repin: true`). |
 | `X-Router-Model` | No | Force an exact OpenRouter model slug for this request. Does not alter the pin. |
 | `X-Router-Reclassify` | No | `true` discards the existing pin and re-runs classification on this turn, re-pinning the result. |
 | `X-Router-Repin` | No | `true` makes an `X-Router-Level` override persist as the new pin for the session. |
@@ -188,7 +188,7 @@ The `model` field is interpreted as a **routing directive**, not a literal model
 | Value of `model` | Behavior |
 |------------------|----------|
 | `smart-router` / `auto` | Use the session pin; classify and pin if the session is new (default behavior). |
-| `smart-router/L1` … `smart-router/L4` | Skip classification, use that tier. On a new session this becomes the pin. |
+| `smart-router/L1` … `smart-router/L5` | Skip classification, use that tier. On a new session this becomes the pin. |
 | `smart-router/classify-only` | Return the classification result only; no downstream call, no pin written. |
 | `smart-router/stateless` | Classify this request in isolation; ignore and do not write any session pin. |
 | Any string containing `/` that matches an OpenRouter slug (e.g. `anthropic/claude-sonnet-4.5`) | Passthrough mode — forward as-is if `routing.allow_passthrough` is `true`, else 400. |
@@ -245,7 +245,7 @@ If `router.include_metadata` is `true` (or `telemetry.include_metadata_in_body` 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/v1/models` | Lists virtual router models (`smart-router`, `smart-router/L1`…`L4`) and, if `routing.expose_upstream_models` is true, the configured tier models. |
+| `GET` | `/v1/models` | Lists virtual router models (`smart-router`, `smart-router/L1`…`L5`) and, if `routing.expose_upstream_models` is true, the configured tier models. |
 | `POST` | `/v1/completions` | Legacy text completion; internally converted to chat format. Optional, behind `api.enable_legacy_completions`. |
 | `POST` | `/v1/embeddings` | Straight passthrough to OpenRouter, no routing. Optional. |
 | `POST` | `/v1/router/classify` | Debug: `{"messages":[...]}` → `{"level":"L3","confidence":0.82,"reason":"...","source":"model","latency_ms":190}`. No downstream call, no pin written, no billing beyond the classifier. |
@@ -299,7 +299,7 @@ Errors use the OpenAI error envelope so clients need no special handling:
 
 ### 4.1 The rubric
 
-The classifier's entire job is to place the request into one of four buckets. The rubric text below is stored in `config/prompts/classifier.txt` and is user-editable.
+The classifier's entire job is to place the request into one of five buckets. The rubric text below is stored in `config/prompts/classifier.txt` and is user-editable.
 
 | Level | Name | Definition | Typical examples |
 |-------|------|------------|------------------|
@@ -307,6 +307,7 @@ The classifier's entire job is to place the request into one of four buckets. Th
 | **L2** | Easy | Short-form generation or a single-step task requiring general knowledge but no multi-step reasoning. | Summarize a paragraph; write a commit message; simple factual Q&A; rename variables; write a short email; single-file docstrings. |
 | **L3** | Medium | Multi-step reasoning, moderate code generation, synthesis across a few sources, or non-trivial tool orchestration. | Write a function with edge cases; debug a stack trace; compare two options with tradeoffs; draft a design doc section; SQL over a described schema. |
 | **L4** | Hard | Deep or novel reasoning, long-horizon planning, architecture decisions, subtle mathematics/proofs, large refactors, ambiguous requirements requiring judgment. | Design a distributed system; find a concurrency bug from prose; multi-file refactor; novel algorithm; nuanced legal/medical/financial analysis; adversarial reasoning. |
+| **L5** | Extreme | Multi-agent orchestration, complex scientific discovery, or tasks requiring maximum creativity and problem-solving under uncertainty. Extended/max thinking params enabled. | Orchestrate a multi-agent research pipeline; novel scientific hypothesis generation; open-ended creative problem-solving with no clear solution path; extreme-stakes ambiguous judgment. |
 
 ### 4.2 Classifier prompt (default)
 
@@ -326,6 +327,8 @@ L3 MEDIUM   — multi-step reasoning, real code generation, debugging, synthesis
              or tradeoff analysis.
 L4 HARD     — deep/novel reasoning, system design, long-horizon planning, subtle
              math, large refactors, or high-stakes ambiguous judgment.
+L5 EXTREME  — multi-agent orchestration, complex scientific discovery, or tasks
+             requiring maximum creativity and problem-solving under uncertainty.
 
 Rules:
 - Judge the DIFFICULTY OF THE TASK, never the length of the input.
@@ -337,14 +340,14 @@ Rules:
 - Never answer the user's request. Only classify it.
 
 Output schema:
-{"level":"L1|L2|L3|L4|UNKNOWN","confidence":0.0-1.0,"reason":"<12 words max>"}
+{"level":"L1|L2|L3|L4|L5|UNKNOWN","confidence":0.0-1.0,"reason":"<12 words max>"}
 
 ---
 REQUEST TO CLASSIFY:
 {{PROMPT_DIGEST}}
 ```
 
-**Parameters:** `temperature: 0`, `max_tokens: 60`, `response_format: {"type":"json_object"}` when the classifier model supports it. Parsing is tolerant: strip fences, regex-extract the first `L[1-4]` if JSON parsing fails, then fall back to `default_level`.
+**Parameters:** `temperature: 0`, `max_tokens: 60`, `response_format: {"type":"json_object"}` when the classifier model supports it. Parsing is tolerant: strip fences, regex-extract the first `L[1-5]` if JSON parsing fails, then fall back to `default_level`.
 
 **`UNKNOWN` handling.** An `UNKNOWN` label means "the opening message carries no signal." The router then serves the turn at `classification.default_level` but **does not pin the session**, marking it `provisional`. The next turn re-attempts classification. This prevents an entire hard session from being pinned to L1 because it opened with "hey, ready?" — a failure mode that per-turn routing never had. Provisional sessions give up after `session.max_provisional_turns` (default 3) and pin `default_level`.
 
@@ -744,7 +747,7 @@ Mitigations, all cheap:
 
 1. **Stripping** (§4.12.2) removes most of it before the classifier ever sees it.
 2. **Delimiting** — the digest is wrapped in a fenced, explicitly labeled block: `<<<UNTRUSTED_INPUT_BEGIN>>> … <<<UNTRUSTED_INPUT_END>>>`, with the rubric stating that content inside is data to be classified and never instructions to follow.
-3. **Strict output validation** — anything outside the `L1|L2|L3|L4|UNKNOWN` enum is discarded, so the worst achievable outcome is a mis-tier, never arbitrary routing (§9).
+3. **Strict output validation** — anything outside the `L1|L2|L3|L4|L5|UNKNOWN` enum is discarded, so the worst achievable outcome is a mis-tier, never arbitrary routing (§9).
 4. **Guard-phrase detection** — if the digest contains classifier-directed phrases (`ignore previous`, `you are a classifier`, `output L4`, `always classify`), the router logs `classification.injection_suspected` and falls back to `default_level` for that session rather than trusting the label.
 
 #### 4.12.6 Configuration and validation
@@ -946,7 +949,7 @@ Secrets (API keys) come **only** from environment variables or Docker secrets. `
   "routing": {
     "allow_passthrough": false,
     "expose_upstream_models": true,
-    "global_max_level": "L4",
+    "global_max_level": "L5",
     "global_min_level": "L1",
 
     "L1": {
@@ -976,6 +979,13 @@ Secrets (API keys) come **only** from environment variables or Docker secrets. `
       "fallbacks": ["openai/o3", "google/gemini-2.5-pro"],
       "params": { "temperature": 0.7, "max_tokens": 16384 },
       "max_cost_per_request_usd": 1.00
+    },
+    "L5": {
+      "label": "extreme",
+      "model": "anthropic/claude-opus-5",
+      "fallbacks": ["openai/gpt-5.6-sol-pro", "x-ai/grok-4.6"],
+      "params": { "temperature": 0.8, "max_tokens": 32768 },
+      "max_cost_per_request_usd": 5.00
     }
   },
 
@@ -1409,7 +1419,7 @@ Cost is additionally accumulated **per session** on the pin, so `/v1/router/sess
 | Session store exhaustion | `max_sessions` LRU cap plus idle TTL bound memory. A client minting a new id per request degrades to per-request classification — costly but not fatal; the `router_sessions_created_total` rate should be alerted on. |
 | Cross-tenant fingerprint collision | Fingerprints include the API key id and `fingerprint_salt`, so two tenants with identical prompts never share a pin. |
 | Container hardening | Non-root user, read-only config mount, no shell in runtime path, resource limits, `no-new-privileges` recommended. |
-| Injection via prompt | The classifier is instructed never to answer the request. Its output is parsed against a strict enum — any output outside `L1`–`L4` is discarded, so a prompt-injection attempt can at worst cause a mis-tier, never arbitrary routing. |
+| Injection via prompt | The classifier is instructed never to answer the request. Its output is parsed against a strict enum — any output outside `L1`–`L5` is discarded, so a prompt-injection attempt can at worst cause a mis-tier, never arbitrary routing. |
 | Model allow-list | Passthrough is disabled by default; when enabled, only slugs present in the tier config or an explicit `routing.passthrough_allowlist` are accepted. |
 | Runaway spend | Optional daily budget cap with downgrade-or-reject behavior; per-tier `max_cost_per_request_usd` rejects requests whose estimated cost exceeds the ceiling. |
 
@@ -1526,7 +1536,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | Phase | Scope | Exit criteria |
 |-------|-------|---------------|
 | **M1 — Skeleton** | FastAPI app, config loader + schema, OpenRouter adapter, `/v1/chat/completions` non-streaming with a hardcoded tier, Dockerfile, compose. | Hermes gets a valid response through the router. |
-| **M2 — Classification** | Digest builder, **scaffolding/task split (§4.12)**, classifier prompt, tolerant parser, L1–L4 routing from `settings.json`, default-level and `UNKNOWN` degradation. | Prompts demonstrably land on different models; classifier failure never 5xxs; **the Hermes-scaffolded L1/L4 fixture pair classifies correctly and `scaffolding_stripped_chars` is non-zero on real traffic**. |
+| **M2 — Classification** | Digest builder, **scaffolding/task split (§4.12)**, classifier prompt, tolerant parser, L1–L5 routing from `settings.json`, default-level and `UNKNOWN` degradation. | Prompts demonstrably land on different models; classifier failure never 5xxs; **the Hermes-scaffolded L1/L5 fixture pair classifies correctly and `scaffolding_stripped_chars` is non-zero on real traffic**. |
 | **M2.5 — Session pinning** | Session resolver (header → body → fingerprint), memory + Redis stores, pin lifecycle and expiry, first-turn lock protocol, `/v1/router/sessions/*`, reclassify/repin overrides. | **A 20-turn session with a constant `X-Session-Id` makes exactly one classifier call and uses one model throughout.** Fingerprint fallback achieves the same without the header. |
 | **M3 — Robustness** | Streaming, fallback chains, retries, classification cache, heuristics, overrides, config-change pin policy, full error envelope. | Contract + integration suites green; streaming byte-equal to upstream; session behavior suite green. |
 | **M3.5 — Escalation** | Escalation score engine, free signals, `/signal` endpoint, ratchet + cooldown + caps, escalation headers. Shadow classify and retry-on-failure behind flags. | A session that opens trivial and turns hard escalates on the triggering turn, at most twice, and never downgrades. Escalation suite green. |

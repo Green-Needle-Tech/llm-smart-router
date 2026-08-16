@@ -1,6 +1,6 @@
 # LLM Smart Router
 
-A self-hosted Docker application that exposes an OpenAI-compatible API, classifies the **first prompt of each chat session** by task complexity (L1–L4), pins that session to the matching OpenRouter model, and routes every subsequent turn straight to the pinned model without re-classifying.
+A self-hosted Docker application that exposes an OpenAI-compatible API, classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn straight to the pinned model without re-classifying.
 
 ## Quick Start
 
@@ -25,7 +25,7 @@ print(r.model)  # actual model used
 
 ## How It Works
 
-- **Turn 1**: Classifier assigns L1–L4 → session pinned to the matching model
+- **Turn 1**: Classifier assigns L1–L5 → session pinned to the matching model
 - **Turn 2+**: Straight to the pinned model, no classifier call (sub-ms lookup)
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 
