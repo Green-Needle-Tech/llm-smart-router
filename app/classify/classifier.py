@@ -112,7 +112,7 @@ class ClassifierService:
                 json_mode=response_format is not None and response_format.get("type") == "json_object",
                 prompt_tokens=digest_info["task_tokens"] if self.config.heuristics.measure == "task_payload" else digest_info["total_tokens"],
                 huge_context_tokens=self.config.heuristics.huge_context_tokens,
-                rules=self.config.heuristics.rules if hasattr(self.config.heuristics, "rules") else None,
+                rules=[r.model_dump() if hasattr(r, "model_dump") else r for r in self.config.heuristics.rules] if self.config.heuristics.rules else None,
                 measure=self.config.heuristics.measure,
             )
 

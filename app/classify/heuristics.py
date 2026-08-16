@@ -32,6 +32,17 @@ def evaluate_heuristics(
             {"name": "code_heavy", "when": "code_fences >= 3", "level": "L3", "stop": False},
         ]
 
+    # Normalize pydantic models to dicts
+    normalized_rules = []
+    for rule in rules:
+        if hasattr(rule, "model_dump"):
+            normalized_rules.append(rule.model_dump())
+        elif isinstance(rule, dict):
+            normalized_rules.append(rule)
+        else:
+            normalized_rules.append({"name": str(rule), "when": "", "level": "L1", "stop": False})
+    rules = normalized_rules
+
     # Deep keywords (always evaluated if rules exist)
     deep_kw_pattern = re.compile(
         r"\b(architect|design a system|prove|derive|refactor the|threat model|optimize the algorithm)\b",
