@@ -33,7 +33,7 @@
   },
   "classification": {
     "enabled": true,
-    "model": "mistralai/mistral-small-3.2-24b-instruct",
+    "model": "google/gemini-3.1-flash-lite",
     "temperature": 0,
     "max_tokens": 60,
     "timeout_seconds": 8,
@@ -155,9 +155,9 @@
     "global_min_level": "L1",
     "L1": {
       "label": "trivial",
-      "model": "meta-llama/llama-3.3-8b-instruct",
+      "model": "deepseek/deepseek-v4-flash",
       "fallbacks": [
-        "mistralai/mistral-small-3.2-24b-instruct"
+        "google/gemini-2.5-flash"
       ],
       "params": {
         "temperature": 0.2,
@@ -167,9 +167,9 @@
     },
     "L2": {
       "label": "easy",
-      "model": "openai/gpt-4.1-mini",
+      "model": "google/gemini-2.5-flash",
       "fallbacks": [
-        "google/gemini-2.5-flash"
+        "deepseek/deepseek-v4-flash"
       ],
       "params": {
         "temperature": 0.4,
@@ -179,10 +179,10 @@
     },
     "L3": {
       "label": "medium",
-      "model": "anthropic/claude-sonnet-4.5",
+      "model": "z-ai/glm-5.2",
       "fallbacks": [
-        "openai/gpt-4.1",
-        "google/gemini-2.5-pro"
+        "google/gemini-2.5-flash",
+        "anthropic/claude-sonnet-4.5"
       ],
       "params": {
         "temperature": 0.6,
@@ -192,10 +192,10 @@
     },
     "L4": {
       "label": "hard",
-      "model": "anthropic/claude-opus-4.5",
+      "model": "anthropic/claude-opus-5",
       "fallbacks": [
-        "openai/o3",
-        "google/gemini-2.5-pro"
+        "z-ai/glm-5.2",
+        "anthropic/claude-opus-4.8"
       ],
       "params": {
         "temperature": 0.7,
