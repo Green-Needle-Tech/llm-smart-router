@@ -197,6 +197,7 @@ class DigestBuilder:
             "scaffolding_stripped_chars": scaffolding_chars,
             "stripped_by": stripped_by,
             "task_tokens": task_tokens,
+            "task_chars": len(task_user.strip()),
             "total_tokens": total_tokens,
             "context_summary": context_summary,
             "tool_names": tool_names,

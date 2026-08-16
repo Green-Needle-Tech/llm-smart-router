@@ -111,6 +111,7 @@ class ClassifierService:
                 code_fences=digest_info["code_fences"],
                 json_mode=response_format is not None and response_format.get("type") == "json_object",
                 prompt_tokens=digest_info["task_tokens"] if self.config.heuristics.measure == "task_payload" else digest_info["total_tokens"],
+                task_chars=digest_info.get("task_chars"),
                 huge_context_tokens=self.config.heuristics.huge_context_tokens,
                 rules=[r.model_dump() if hasattr(r, "model_dump") else r for r in self.config.heuristics.rules] if self.config.heuristics.rules else None,
                 measure=self.config.heuristics.measure,
@@ -153,9 +154,23 @@ class ClassifierService:
 
             # Handle UNKNOWN or parse failure
             if result.level is None:
-                default_level = Level.from_str(self.config.classification.default_level)
-                result.level = default_level
-                result.source = ClassificationSource.DEFAULT if result.reason == "parse failure" else ClassificationSource.MODEL
+                if result.reason == "parse failure":
+                    # Genuine parse failure: be conservative, use default_level.
+                    # Return directly — default_level is already the deliberate
+                    # fallback choice, so the low-confidence escalation policy
+                    # must not bump it another tier (that silently ignored the
+                    # configured default and always produced L4).
+                    result.level = Level.from_str(self.config.classification.default_level)
+                    result.source = ClassificationSource.DEFAULT
+                    return result, digest_info
+                # Classifier deliberately returned UNKNOWN (greeting, bare
+                # acknowledgement, too vague). There is no task content, so
+                # the cheapest tier is correct — not the conservative default.
+                # UNKNOWN is a definite judgement, not low confidence, so skip
+                # the escalation policy below.
+                result.level = Level.from_str(self.config.classification.unknown_level)
+                result.source = ClassificationSource.MODEL
+                return result, digest_info
 
             # Apply confidence handling
             result = self._apply_confidence_policy(result)

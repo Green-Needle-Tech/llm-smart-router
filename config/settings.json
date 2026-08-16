@@ -38,6 +38,7 @@
     "max_tokens": 60,
     "timeout_seconds": 8,
     "default_level": "L3",
+    "unknown_level": "L1",
     "min_confidence": 0.5,
     "low_confidence_action": "escalate",
     "prompt_file": "/app/config/prompts/classifier.txt",
@@ -124,13 +125,13 @@
     "rules": [
       {
         "name": "tiny_prompt",
-        "when": "len(digest) < 40 and not has_code",
+        "when": "task_chars < 40 and not has_code",
         "level": "L1",
         "stop": true
       },
       {
         "name": "json_reshape",
-        "when": "json_mode and len(digest) < 600",
+        "when": "json_mode and task_chars < 600",
         "level": "L1",
         "stop": true
       },

@@ -59,6 +59,7 @@ class ClassificationConfig(BaseModel):
     max_tokens: int = 60
     timeout_seconds: int = 8
     default_level: str = "L3"
+    unknown_level: str = "L1"
     min_confidence: float = 0.5
     low_confidence_action: str = "escalate"
     prompt_file: str = "/app/config/prompts/classifier.txt"
