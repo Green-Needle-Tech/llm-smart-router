@@ -37,20 +37,29 @@ class FallbackExecutor:
                 request_payload = {**payload, "model": model}
 
                 if stream:
-                    resp = await self.http.stream(
+                    # httpx.stream() is an async context manager; we must not
+                    # close the response before the caller finishes iterating.
+                    # Use send() + aread() pattern to get the response without
+                    # the context manager closing it.
+                    req = self.http.build_request(
                         "POST",
                         f"{self.config.provider.base_url}/chat/completions",
                         json=request_payload,
                         headers=headers,
                         timeout=self.config.provider.timeout_seconds,
                     )
-                    # Check status
-                    if resp.status_code in self.config.provider.retry_on_status:
-                        await resp.aread()
-                        last_error = f"upstream {resp.status_code} for {model}"
-                        continue
-                    resp.raise_for_status()
-                    return None, resp, model, i > 0, None
+                    resp = await self.http.send(req, stream=True)
+                    try:
+                        if resp.status_code in self.config.provider.retry_on_status:
+                            await resp.aread()
+                            last_error = f"upstream {resp.status_code} for {model}"
+                            await resp.aclose()
+                            continue
+                        resp.raise_for_status()
+                        return None, resp, model, i > 0, None
+                    except Exception:
+                        await resp.aclose()
+                        raise
                 else:
                     resp = await self.http.post(
                         f"{self.config.provider.base_url}/chat/completions",
