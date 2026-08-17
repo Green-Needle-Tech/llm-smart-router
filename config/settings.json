@@ -168,7 +168,7 @@
     },
     "L2": {
       "label": "routine",
-      "model": "minimax/minimax-m3",
+      "model": "deepseek/deepseek-v4-flash",
       "fallbacks": [
         "google/gemini-2.5-flash"
       ],
@@ -180,10 +180,10 @@
     },
     "L3": {
       "label": "intermediate",
-      "model": "z-ai/glm-5.2",
+      "model": "minimax/minimax-m3",
       "fallbacks": [
         "google/gemini-2.5-flash",
-        "minimax/minimax-m3"
+        "deepseek/deepseek-v4-flash"
       ],
       "params": {
         "temperature": 0.6
@@ -193,9 +193,9 @@
     },
     "L4": {
       "label": "advanced",
-      "model": "openai/gpt-5.6-sol",
+      "model": "z-ai/glm-5.2",
       "fallbacks": [
-        "z-ai/glm-5.2",
+        "minimax/minimax-m3",
         "anthropic/claude-opus-5"
       ],
       "params": {
@@ -208,8 +208,8 @@
       "label": "expert",
       "model": "anthropic/claude-opus-5",
       "fallbacks": [
-        "openai/gpt-5.6-sol",
-        "x-ai/grok-4.6"
+        "z-ai/glm-5.2",
+        "openai/gpt-5.6-sol"
       ],
       "params": {
         "temperature": 0.8
