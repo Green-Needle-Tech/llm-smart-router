@@ -93,7 +93,7 @@
       "enabled": true,
       "threshold": 5,
       "decay_per_turn": 1,
-      "cooldown_turns": 3,
+      "cooldown_turns": 5,
       "max_escalations_per_session": 2,
       "never_downgrade": true,
       "respect_max_level": true,
@@ -102,7 +102,7 @@
       "signal_weights": {
         "repair_language": 3,
         "tool_error_loop": 3,
-        "deep_keywords": 2,
+        "deep_keywords": 0,
         "context_growth": 2,
         "truncation": 2,
         "degenerate_response": 2,

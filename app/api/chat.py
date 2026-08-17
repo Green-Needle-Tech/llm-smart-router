@@ -29,6 +29,7 @@ from app.telemetry.metrics import (
     router_cost_usd_total, router_fallbacks_total,
     router_reclassifications_total, router_escalations_total,
     router_escalation_signals_total,
+    router_escalation_turn,
     router_cache_events_total,
 )
 
@@ -356,6 +357,32 @@ async def _session_pinned_route(
     )
 
 
+def _extract_raw_user_text(body) -> str:
+    """Extract the user's actual typed text, stripping injected context blocks.
+
+    Hermes injects <memory-context>, <skill-context>, and similar blocks into
+    the user message content. These are agent scaffolding, not user intent.
+    Signal detection must only scan what the user actually typed.
+    """
+    last_user_text = ""
+    for msg in reversed(body.messages):
+        if msg.role == "user":
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            last_user_text = content
+            break
+
+    # Strip injected context blocks: <memory-context>...</memory-context>,
+    # <skill-context>...</skill-context>, <system-note>...</system-note>, etc.
+    import re
+    last_user_text = re.sub(
+        r"<(?:memory|skill|system|context|soul|persona|user_profile)[-_]?context>.*?</(?:memory|skill|system|context|soul|persona|user_profile)[-_]?context>",
+        "",
+        last_user_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return last_user_text.strip()
+
+
 def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
     """Check free-signal escalation. Returns (new_level, new_model) if escalated."""
     esc_cfg = config.session.escalation
@@ -365,19 +392,15 @@ def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
     import re
     signals_fired = []
 
-    # repair_language
-    last_user_text = ""
-    for msg in reversed(body.messages):
-        if msg.role == "user":
-            content = msg.content if isinstance(msg.content, str) else str(msg.content)
-            last_user_text = content
-            break
+    # Extract only the user's raw typed text (not injected context)
+    raw_user_text = _extract_raw_user_text(body)
 
-    if re.search(r"\b(no,|that's wrong|still (failing|broken)|doesn't work|try again|not what I|incorrect|you missed)\b", last_user_text, re.IGNORECASE):
+    # repair_language
+    if re.search(r"\b(no,|that's wrong|still (failing|broken)|doesn't work|try again|not what I|incorrect|you missed)\b", raw_user_text, re.IGNORECASE):
         signals_fired.append(("repair_language", esc_cfg.signal_weights.get("repair_language", 3)))
 
     # deep_keywords
-    if re.search(r"\b(architect|design a system|prove|derive|refactor the|threat model|optimize the algorithm)\b", last_user_text, re.IGNORECASE):
+    if re.search(r"\b(architect|design a system|prove|derive|refactor the|threat model|optimize the algorithm)\b", raw_user_text, re.IGNORECASE):
         signals_fired.append(("deep_keywords", esc_cfg.signal_weights.get("deep_keywords", 2)))
 
     # turn_depth
@@ -393,8 +416,10 @@ def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
         return None
 
     # Add to score
+    signal_names = []
     for signal, weight in signals_fired:
         pin.escalation.score += weight
+        signal_names.append(signal)
         router_escalation_signals_total.labels(signal=signal).inc()
 
     # Check threshold and cooldown
@@ -404,6 +429,16 @@ def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
 
         new_level = Level.from_numeric(pin.level.numeric + 1)
         if new_level <= Level.from_str(config.routing.global_max_level):
+            # L5 guard: deep_keywords alone must not escalate to L5.
+            # Require at least one "strong" signal (repair_language or
+            # tool_error_loop) for the final tier jump.
+            strong_signals = {"repair_language", "tool_error_loop"}
+            has_strong = any(s in strong_signals for s, _ in signals_fired)
+            if new_level == Level.L5 and not has_strong:
+                # Cap at L4 — keywords alone are insufficient evidence for
+                # the most expensive tier.
+                return None
+
             old_level = pin.level
             pin.level = new_level
             pin.model = config.routing.get_model(new_level.value)
@@ -415,8 +450,13 @@ def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
             # escalation. Without this the score stays above threshold and the
             # session chains straight into the next tier once cooldown expires.
             pin.escalation.score = 0
+            # Record which signals triggered this escalation for diagnostics
+            pin.escalation.last_trigger = signal_names
             if pin.escalation.original_level is None:
                 pin.escalation.original_level = old_level
+
+            # Observe the turn number in the histogram for diagnostics
+            router_escalation_turn.observe(float(pin.turn_count))
 
             router_escalations_total.labels(
                 from_level=old_level.value, to_level=new_level.value,
