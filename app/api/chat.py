@@ -384,6 +384,9 @@ def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
     if pin.turn_count >= esc_cfg.escalate_after_turns:
         signals_fired.append(("turn_depth", esc_cfg.signal_weights.get("turn_depth", 1)))
 
+    # Drop zero-weight signals so a disabled signal cannot suppress decay
+    signals_fired = [(s, w) for s, w in signals_fired if w > 0]
+
     if not signals_fired:
         # Decay
         pin.escalation.score = max(0, pin.escalation.score - esc_cfg.decay_per_turn)
@@ -408,6 +411,10 @@ def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
             pin.escalation.count += 1
             pin.escalation.last_escalated_turn = pin.turn_count
             pin.escalation.cooldown_until_turn = pin.turn_count + esc_cfg.cooldown_turns
+            # Reset accumulated score: evidence has been consumed by this
+            # escalation. Without this the score stays above threshold and the
+            # session chains straight into the next tier once cooldown expires.
+            pin.escalation.score = 0
             if pin.escalation.original_level is None:
                 pin.escalation.original_level = old_level
 

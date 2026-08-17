@@ -91,7 +91,7 @@
     "on_config_change": "keep_level",
     "escalation": {
       "enabled": true,
-      "threshold": 3,
+      "threshold": 5,
       "decay_per_turn": 1,
       "cooldown_turns": 3,
       "max_escalations_per_session": 2,
@@ -106,10 +106,10 @@
         "context_growth": 2,
         "truncation": 2,
         "degenerate_response": 2,
-        "turn_depth": 1,
+        "turn_depth": 0,
         "code_volume_growth": 1
       },
-      "escalate_after_turns": 12,
+      "escalate_after_turns": 25,
       "escalate_on_context_growth_tokens": 24000,
       "huge_context_hard_override": true,
       "shadow_classify_every_n_turns": null,
