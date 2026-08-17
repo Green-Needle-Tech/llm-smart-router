@@ -484,21 +484,19 @@ async def _forward_to_provider(
         if key not in payload or payload.get(key) is None:
             payload[key] = val
 
-    # Resolve max_tokens: "auto" → detect from OpenRouter; int → use as-is
+    # Resolve max_tokens: "auto" → always use OpenRouter-detected value
+    # (overrides client-sent max_tokens to avoid OpenRouter 402 credit-reservation
+    # errors when the client sends a large default like 65536); int → use as-is
     tier_max_tokens = config.routing.get_max_tokens(route.level.value)
-    client_sent_max = (
-        payload.get("max_tokens") is not None
-        or payload.get("max_completion_tokens") is not None
-    )
-    if not client_sent_max:
-        if isinstance(tier_max_tokens, str) and tier_max_tokens == "auto":
-            # Auto-detect from OpenRouter cache
-            detected = provider.get_max_completion_tokens(route.model)
-            if detected is not None and detected > 0:
-                payload["max_tokens"] = detected
-        elif isinstance(tier_max_tokens, int) and tier_max_tokens > 0:
-            payload["max_tokens"] = tier_max_tokens
-        # else: leave unset, let OpenRouter use model default
+    if isinstance(tier_max_tokens, str) and tier_max_tokens == "auto":
+        # Always auto-detect from OpenRouter cache, ignoring client-sent value
+        detected = provider.get_max_completion_tokens(route.model)
+        if detected is not None and detected > 0:
+            payload["max_tokens"] = detected
+        # else: leave whatever client sent (or unset)
+    elif isinstance(tier_max_tokens, int) and tier_max_tokens > 0:
+        payload["max_tokens"] = tier_max_tokens
+    # else: leave unset, let OpenRouter use model default
 
     # Get fallbacks
     fallbacks = config.routing.get_fallbacks(route.level.value)
