@@ -39,6 +39,27 @@ Edit `config/settings.json` (hot-reloadable) to change:
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    A[Backend/Frontend Engineer] --> B[Claude Code]
+    B --> C[LLM-Smart-Router]
+    C --> D[Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5]
+
+    D -->|L1| E[Gemini Flash Lite 3.1<br/>OpenRouter]
+    D -->|L2–L3| F[GLM 5.3<br/>OpenRouter]
+    D -->|L4| G[Sonnet 5<br/>Claude API]
+    D -->|L5| H[Opus 5<br/>Claude API]
+
+    E --> C
+    F --> C
+    G --> C
+    H --> C
+
+    C --> B
+    B --> A
+```
+
+
 | Component | Technology |
 |-----------|-----------|
 | API | FastAPI + Uvicorn |
