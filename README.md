@@ -41,7 +41,7 @@ Edit `config/settings.json` (hot-reloadable) to change:
 
 ```mermaid
 flowchart TD
-    A[Backend/Frontend Engineer] --> B[Claude Code]
+    A[Backend/Frontend Engineer] --> B[AI Agent]
     B --> C[LLM-Smart-Router]
     C --> D[Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5]
 
