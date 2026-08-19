@@ -180,7 +180,7 @@
     },
     "L3": {
       "label": "intermediate",
-      "model": "minimax/minimax-m3",
+      "model": "z-ai/glm-5.3",
       "fallbacks": [
         "google/gemini-2.5-flash",
         "deepseek/deepseek-v4-flash"
