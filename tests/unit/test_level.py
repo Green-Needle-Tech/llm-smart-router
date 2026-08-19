@@ -20,7 +20,7 @@ def test_from_str():
 def test_from_str_invalid():
     import pytest
     with pytest.raises(ValueError):
-        Level.from_str("L5")
+        Level.from_str("L6")
     with pytest.raises(ValueError):
         Level.from_str("invalid")
 
@@ -28,10 +28,12 @@ def test_from_str_invalid():
 def test_from_numeric():
     assert Level.from_numeric(1) == Level.L1
     assert Level.from_numeric(3) == Level.L3
-    assert Level.from_numeric(5) == Level.L4  # clamped
+    assert Level.from_numeric(5) == Level.L5
+    assert Level.from_numeric(6) == Level.L5  # clamped
     assert Level.from_numeric(0) == Level.L1  # clamped
 
 
 def test_numeric_property():
     assert Level.L1.numeric == 1
     assert Level.L4.numeric == 4
+    assert Level.L5.numeric == 5
