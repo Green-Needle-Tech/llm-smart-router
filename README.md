@@ -46,13 +46,13 @@ flowchart TD
     C --> D[Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5]
 
     D -->|L1| E[Gemini Flash Lite 3.1<br/>OpenRouter]
-    D -->|L2–L3| F[GLM 5.3<br/>OpenRouter]
-    D -->|L4| G[Sonnet 5<br/>Claude API]
+    D -->|L2| F[DeepSeek V4 Flash<br/>OpenRouter]
+    D -->|L3–L4| F2[GLM 5.3<br/>OpenRouter]
     D -->|L5| H[Opus 5<br/>Claude API]
 
     E --> C
     F --> C
-    G --> C
+    F2 --> C
     H --> C
 
     C --> B

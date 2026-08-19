@@ -193,9 +193,9 @@
     },
     "L4": {
       "label": "advanced",
-      "model": "z-ai/glm-5.2",
+      "model": "z-ai/glm-5.3",
       "fallbacks": [
-        "minimax/minimax-m3",
+        "z-ai/glm-5.2",
         "anthropic/claude-opus-5"
       ],
       "params": {
