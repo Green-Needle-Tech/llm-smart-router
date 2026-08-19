@@ -27,8 +27,8 @@
       504
     ],
     "headers": {
-      "HTTP-Referer": "http://localhost:8080",
-      "X-Title": "Hermes Smart Router"
+      "HTTP-Referer": "https://github.com/david6055my/llm-smart-router",
+      "X-Title": "LLM-Smart-Router"
     }
   },
   "classification": {
