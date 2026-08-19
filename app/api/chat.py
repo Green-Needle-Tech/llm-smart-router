@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from typing import Any, Optional
@@ -477,6 +478,7 @@ async def _forward_to_provider(
 
     # Build upstream payload
     payload = body.model_dump(exclude={"router"}, exclude_none=True)
+    _strip_model_postfix_from_messages(payload.get("messages", []))
     payload["model"] = route.model
 
     # Apply tier params (fill in what client omitted)
@@ -543,6 +545,7 @@ async def _handle_non_stream(
 
     # Update response model to actual used
     json_resp["model"] = model_used
+    _add_model_postfix(json_resp, model_used)
 
     # Update pin cost
     if pin:
@@ -627,6 +630,8 @@ async def _handle_stream(
             async for line in stream_resp.aiter_lines():
                 yield f"{line}\n"
                 if line.strip() == "data: [DONE]":
+                    postfix_event = {"choices": [{"delta": {"content": f"\n\n[LLM: {model_used}]"}}]}
+                    yield f"data: {json.dumps(postfix_event)}\n\n"
                     break
         except Exception as e:
             # Stream broke — emit error event
@@ -674,6 +679,37 @@ def _add_router_headers(response, route, session_id, session_source, pin, total_
             response.headers["X-Router-Escalated-From"] = route.escalated_from.value
 
 
+def _add_model_postfix(json_resp: dict[str, Any], model_used: str) -> None:
+    """Append a compact model marker to assistant content for user visibility."""
+    marker = f"[LLM: {model_used}]"
+    for choice in json_resp.get("choices", []):
+        message = choice.get("message")
+        if not isinstance(message, dict) or "content" not in message:
+            continue
+        content = message.get("content")
+        if content is None or content == "":
+            message["content"] = marker
+        elif isinstance(content, str) and marker not in content:
+            message["content"] = f"{content.rstrip()}\n\n{marker}"
+
+
+_MODEL_POSTFIX_RE = re.compile(r"(?:\r?\n){1,2}\[LLM: [^\]\r\n]+\]\s*\Z")
+
+
+def _strip_model_postfix_from_messages(messages: list[dict[str, Any]]) -> None:
+    """Remove router-added model markers before messages reach an external LLM."""
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = _MODEL_POSTFIX_RE.sub("", content).rstrip()
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    block["text"] = _MODEL_POSTFIX_RE.sub("", block["text"]).rstrip()
+
+
 async def _classify_only(request, body, task_text, router_opts):
     """Return classification result only, no downstream call."""
     classifier = request.app.state.classifier
@@ -694,6 +730,7 @@ async def _passthrough(request, body, model):
     """Forward as-is to OpenRouter."""
     provider = request.app.state.provider
     payload = body.model_dump(exclude={"router"}, exclude_none=True)
+    _strip_model_postfix_from_messages(payload.get("messages", []))
     payload["model"] = model
 
     if body.stream:
