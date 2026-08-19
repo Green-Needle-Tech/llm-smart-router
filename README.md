@@ -1,5 +1,9 @@
 # LLM Smart Router
 
+<p align="center">
+  <img src="assets/icon.png" width="200" alt="LLM Smart Router logo">
+</p>
+
 A self-hosted Docker application that exposes an OpenAI-compatible API, classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn straight to the pinned model without re-classifying.
 
 ## Quick Start
