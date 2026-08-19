@@ -628,11 +628,15 @@ async def _handle_stream(
 
         try:
             async for line in stream_resp.aiter_lines():
-                yield f"{line}\n"
                 if line.strip() == "data: [DONE]":
+                    # Postfix must precede [DONE]: OpenAI-compatible clients
+                    # stop reading the stream at [DONE] and silently discard
+                    # any event emitted after it.
                     postfix_event = {"choices": [{"delta": {"content": f"\n\n[LLM: {model_used}]"}}]}
                     yield f"data: {json.dumps(postfix_event)}\n\n"
+                    yield f"{line}\n"
                     break
+                yield f"{line}\n"
         except Exception as e:
             # Stream broke — emit error event
             error_data = {"error": {"message": f"stream interrupted: {str(e)}", "type": "upstream_error"}}
