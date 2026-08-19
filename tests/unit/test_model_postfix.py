@@ -9,33 +9,59 @@ from app.api.chat import _forward_to_provider
 from app.schemas.router import ClassificationResult, ClassificationSource, Level, RouteDecision
 
 
+def _route(level: Level = Level.L1) -> RouteDecision:
+    return RouteDecision(
+        level=level,
+        model="google/gemini-2.5-flash",
+        params={},
+        classification=ClassificationResult(
+            level=level,
+            confidence=1.0,
+            reason="test",
+            source=ClassificationSource.OVERRIDE,
+        ),
+    )
+
+
 def test_add_model_postfix_appends_upstream_model():
     body = {"choices": [{"message": {"role": "assistant", "content": "Hello"}}]}
 
-    _add_model_postfix(body, "google/gemini-2.5-flash")
+    _add_model_postfix(body, "google/gemini-2.5-flash", _route())
 
     assert body["choices"][0]["message"]["content"] == (
-        "Hello\n\n[LLM: google/gemini-2.5-flash]"
+        "Hello\n\n[smart-router/L1]"
     )
 
 
 def test_add_model_postfix_handles_null_content():
     body = {"choices": [{"message": {"role": "assistant", "content": None}}]}
 
-    _add_model_postfix(body, "z-ai/glm-5.2")
+    _add_model_postfix(body, "z-ai/glm-5.2", _route())
 
-    assert body["choices"][0]["message"]["content"] == "[LLM: z-ai/glm-5.2]"
+    assert body["choices"][0]["message"]["content"] == "[smart-router/L1]"
 
 
 def test_add_model_postfix_does_not_mutate_non_assistant_choices():
     body = {"choices": [{"delta": {"content": "Hello"}}]}
 
-    _add_model_postfix(body, "model/test")
+    _add_model_postfix(body, "model/test", _route())
 
     assert body == {"choices": [{"delta": {"content": "Hello"}}]}
 
 
-def test_strip_model_postfix_removes_it_before_forwarding():
+def test_strip_model_postfix_removes_new_format_before_forwarding():
+    messages = [
+        {"role": "user", "content": "First question"},
+        {"role": "assistant", "content": "First answer\n\n[smart-router/L1]"},
+        {"role": "user", "content": "Follow-up"},
+    ]
+
+    _strip_model_postfix_from_messages(messages)
+
+    assert messages[1]["content"] == "First answer"
+
+
+def test_strip_model_postfix_removes_legacy_format_before_forwarding():
     messages = [
         {"role": "user", "content": "First question"},
         {"role": "assistant", "content": "First answer\n\n[LLM: google/gemini-2.5-flash]"},
@@ -59,7 +85,7 @@ def test_strip_model_postfix_handles_structured_assistant_content():
     messages = [{
         "role": "assistant",
         "content": [
-            {"type": "text", "text": "Answer\n\n[LLM: z-ai/glm-5.2]"},
+            {"type": "text", "text": "Answer\n\n[smart-router/L1]"},
             {"type": "image_url", "image_url": {"url": "https://example.test/a.png"}},
         ],
     }]

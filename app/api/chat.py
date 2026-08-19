@@ -543,9 +543,9 @@ async def _handle_non_stream(
             }},
         )
 
-    # Update response model to actual used
-    json_resp["model"] = model_used
-    _add_model_postfix(json_resp, model_used)
+    # Update response model to router tier label (hide actual upstream model)
+    json_resp["model"] = f"smart-router/{route.level.value}"
+    _add_model_postfix(json_resp, model_used, route)
 
     # Update pin cost
     if pin:
@@ -575,7 +575,7 @@ async def _handle_non_stream(
     if include_metadata:
         json_resp["router"] = {
             "level": route.level.value,
-            "model": model_used,
+            "model": f"smart-router/{route.level.value}",
             "session_id": session_id,
             "turn": pin.turn_count if pin else 0,
             "classification_source": route.classification.source.value,
@@ -617,7 +617,7 @@ async def _handle_stream(
         # Send router metadata as first SSE comment
         metadata = {
             "level": route.level.value,
-            "model": model_used,
+            "model": f"smart-router/{route.level.value}",
             "session_id": session_id,
             "turn": pin.turn_count if pin else 0,
             "classification_source": route.classification.source.value,
@@ -632,7 +632,7 @@ async def _handle_stream(
                     # Postfix must precede [DONE]: OpenAI-compatible clients
                     # stop reading the stream at [DONE] and silently discard
                     # any event emitted after it.
-                    postfix_event = {"choices": [{"delta": {"content": f"\n\n[LLM: {model_used}]"}}]}
+                    postfix_event = {"choices": [{"delta": {"content": f"\n\n[smart-router/{route.level.value}]"}}]}
                     yield f"data: {json.dumps(postfix_event)}\n\n"
                     yield f"{line}\n"
                     break
@@ -667,7 +667,7 @@ async def _handle_stream(
 def _add_router_headers(response, route, session_id, session_source, pin, total_ms, fallback_used):
     """Add X-Router-* headers to the response."""
     response.headers["X-Router-Level"] = route.level.value
-    response.headers["X-Router-Model"] = route.model
+    response.headers["X-Router-Model"] = f"smart-router/{route.level.value}"
     response.headers["X-Router-Session-Id"] = session_id or ""
     response.headers["X-Router-Session-Source"] = session_source.value if session_source else "none"
     response.headers["X-Router-Session-Turn"] = str(pin.turn_count if pin else 0)
@@ -683,9 +683,9 @@ def _add_router_headers(response, route, session_id, session_source, pin, total_
             response.headers["X-Router-Escalated-From"] = route.escalated_from.value
 
 
-def _add_model_postfix(json_resp: dict[str, Any], model_used: str) -> None:
+def _add_model_postfix(json_resp: dict[str, Any], model_used: str, route: RouteDecision) -> None:
     """Append a compact model marker to assistant content for user visibility."""
-    marker = f"[LLM: {model_used}]"
+    marker = f"[smart-router/{route.level.value}]"
     for choice in json_resp.get("choices", []):
         message = choice.get("message")
         if not isinstance(message, dict) or "content" not in message:
@@ -697,7 +697,7 @@ def _add_model_postfix(json_resp: dict[str, Any], model_used: str) -> None:
             message["content"] = f"{content.rstrip()}\n\n{marker}"
 
 
-_MODEL_POSTFIX_RE = re.compile(r"(?:\r?\n){1,2}\[LLM: [^\]\r\n]+\]\s*\Z")
+_MODEL_POSTFIX_RE = re.compile(r"(?:\r?\n){1,2}\[(?:LLM: )?[^\]\r\n]+\]\s*\Z")
 
 
 def _strip_model_postfix_from_messages(messages: list[dict[str, Any]]) -> None:

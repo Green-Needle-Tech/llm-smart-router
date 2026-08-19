@@ -116,11 +116,14 @@ async def test_fallback_serves_turn_without_repinning(app_client):
 
     assert resp.status_code == 200
     # the turn was served by the fallback
-    assert resp.json()["model"] == L3_FALLBACK
+    # The response model field is masked to the tier label; the fallback that
+    # actually served the turn is visible via the X-Router-Fallback-Used header
+    # and internal metrics (model_used).
+    assert resp.json()["model"] == "smart-router/L3"
     assert resp.headers["x-router-fallback-used"] == "true"
-    # ...but the ROUTE still reports the pinned tier and model
+    # ...but the ROUTE still reports the pinned tier
     assert resp.headers["x-router-level"] == "L3"
-    assert resp.headers["x-router-model"] == L3_MODEL
+    assert resp.headers["x-router-model"] == "smart-router/L3"
 
     after = await app.state.session_store.get(session_id)
     assert after is not None
@@ -187,7 +190,7 @@ async def test_deep_fallback_does_not_repin(app_client):
     )
 
     assert resp.status_code == 200
-    assert resp.json()["model"] == L3_FALLBACK_2
+    assert resp.json()["model"] == "smart-router/L3"
 
     after = await app.state.session_store.get(session_id)
     assert after.level == Level.L3
