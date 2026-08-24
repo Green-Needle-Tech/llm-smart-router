@@ -32,6 +32,17 @@ class PromptCachingConfig(BaseModel):
     min_tokens: int = 1024
 
 
+class PrivacyConfig(BaseModel):
+    """IP redaction & re-hydration privacy middleware."""
+    enabled: bool = False
+    # SQLite database file for session-scoped IP↔placeholder mappings.
+    db_path: str = "/data/ip_redaction.db"
+    # Purge mapping records older than this many hours (background job).
+    retention_hours: float = 24.0
+    # How often the purge job runs, in seconds.
+    purge_interval_seconds: float = 3600.0
+
+
 class ProviderConfig(BaseModel):
     name: str = "openrouter"
     base_url: str = "https://openrouter.ai/api/v1"
@@ -206,6 +217,7 @@ class TelemetryConfig(BaseModel):
     log_prompt_hash: bool = True
     include_metadata_in_body: bool = False
     metrics_enabled: bool = True
+    privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
 
 
 class Settings(BaseModel):

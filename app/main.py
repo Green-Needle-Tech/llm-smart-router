@@ -20,6 +20,7 @@ from app.session.memory_store import MemorySessionStore
 from app.session.redis_store import RedisSessionStore
 from app.cache.memory import MemoryClassificationCache
 from app.cache.redis import RedisClassificationCache
+from app.privacy.ip_redaction import IPRedactionEngine, IPRedactionStore
 
 from app.api.chat import router as chat_router
 from app.api.models import router as models_router
@@ -113,12 +114,42 @@ async def lifespan(app: FastAPI):
 
     cm.start_watcher(interval=5.0)
     router_info.info({"version": str(settings.version), "provider": settings.provider.name})
+
+    # IP redaction & re-hydration privacy middleware (optional)
+    purge_task = None
+    if settings.telemetry.privacy.enabled:
+        db_path = os.environ.get(
+            "IP_REDACTION_DB", settings.telemetry.privacy.db_path
+        )
+        store = IPRedactionStore(db_path)
+        app.state.ip_redaction = IPRedactionEngine(store)
+        logger.info("router.privacy.enabled", db_path=db_path)
+
+        async def _purge_loop():
+            while True:
+                await asyncio.sleep(settings.telemetry.privacy.purge_interval_seconds)
+                try:
+                    removed = await asyncio.to_thread(
+                        store.purge_older_than,
+                        settings.telemetry.privacy.retention_hours,
+                    )
+                    if removed:
+                        logger.info("router.privacy.purged", rows=removed)
+                except Exception as e:
+                    logger.warning("router.privacy.purge_failed", error=str(e))
+
+        purge_task = asyncio.create_task(_purge_loop())
+
     logger.info("router.ready", port=settings.server.port)
 
     yield
 
     # --- Shutdown ---
     logger.info("router.shutdown")
+    if purge_task:
+        purge_task.cancel()
+    if getattr(app.state, "ip_redaction", None) is not None:
+        app.state.ip_redaction.store.close()
     await provider.close()
     await classifier.close()
 

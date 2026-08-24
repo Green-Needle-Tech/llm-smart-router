@@ -21,6 +21,7 @@ from app.session.locks import acquire_or_wait
 from app.session.lifecycle import check_expiry, check_turn_cap
 from app.middleware.auth import check_router_auth, unauthorized_response
 from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
+from app.privacy.ip_redaction import IPRedactionEngine
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
     router_requests_total, router_active_requests,
@@ -36,6 +37,7 @@ from app.telemetry.metrics import (
     router_prompt_cached_tokens_total,
     router_prompt_cache_writes_total,
     router_prompt_cache_hit_ratio,
+    router_privacy_redactions_total,
 )
 
 router = APIRouter()
@@ -53,6 +55,11 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         auth_header = request.headers.get("Authorization", "")
         if not check_router_auth(auth_header, config):
             return unauthorized_response()
+
+    # Privacy middleware: redact raw IPs before classification/forwarding.
+    # Re-hydration key uses the same session resolution as routing; when no
+    # session is identifiable, a per-request UUID scopes the mapping.
+    redaction_key = await _redact_incoming(request, body)
 
     # Parse routing directive from model field
     routing_engine = request.app.state.routing_engine
@@ -90,7 +97,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     if directive["mode"] == "passthrough":
         if not routing_engine.is_passthrough_allowed(directive["model"]):
             raise HTTPException(status_code=400, detail=f"Passthrough not allowed for model: {directive['model']}")
-        return await _passthrough(request, body, directive["model"])
+        return await _passthrough(request, body, directive["model"], redaction_key=redaction_key)
 
     # Handle stateless mode
     if directive["mode"] == "stateless" or stateless or not config.session.enabled:
@@ -107,13 +114,57 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         request, body, config, routing_engine,
         directive, forced_level, forced_model, max_level, min_level,
         reclassify, repin, task_text, bypass_cache, include_metadata, start,
+        redaction_key=redaction_key,
     )
+
+
+async def _redact_incoming(request, body) -> Optional[str]:
+    """Run IP redaction over the incoming messages if enabled.
+
+    Returns the re-hydration key (session id), or None when the privacy
+    module is disabled. The key mirrors the routing session resolution so
+    re-hydration on the response side looks up the same mapping bucket.
+    """
+    engine: Optional[IPRedactionEngine] = getattr(
+        request.app.state, "ip_redaction", None
+    )
+    if engine is None:
+        return None
+    headers_dict = {k.lower(): v for k, v in request.headers.items()}
+    config = request.app.state.config.get()
+    session_id, _ = resolve_session_id(body, headers_dict, config, config.session.fingerprint_salt)
+    key = session_id or f"req-{uuid.uuid4()}"
+    messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
+    await engine.redact_messages(messages, key)
+    # Write redacted content back onto the pydantic messages.
+    for orig, dumped in zip(body.messages, messages):
+        if orig.content != dumped.get("content"):
+            orig.content = dumped.get("content")
+    router_privacy_redactions_total.labels().inc()
+    return key
+
+
+def _rehydrate_response_content(engine, json_resp, key: Optional[str]) -> None:
+    """Re-hydrate placeholders in a non-streaming response in place (sync path)."""
+    if engine is None or key is None:
+        return
+    for choice in json_resp.get("choices", []):
+        message = choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                message["content"] = engine.rehydrate_text_sync(content, key)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        block["text"] = engine.rehydrate_text_sync(block["text"], key)
 
 
 async def _session_pinned_route(
     request, body, config, routing_engine,
     directive, forced_level, forced_model, max_level, min_level,
     reclassify, repin, task_text, bypass_cache, include_metadata, start,
+    redaction_key=None,
 ):
     """The main session-pinned routing path."""
     store = request.app.state.session_store
@@ -204,6 +255,7 @@ async def _session_pinned_route(
 
         return await _forward_to_provider(
             request, body, route, session_id, session_source, pin, include_metadata, start,
+            redaction_key=redaction_key,
         )
 
     # SESSION MISS — first turn (or reclassify)
@@ -239,6 +291,7 @@ async def _session_pinned_route(
         )
         return await _forward_to_provider(
             request, body, route, session_id, session_source, pin, include_metadata, start,
+            redaction_key=redaction_key,
         )
 
     if not won and existing_pin is None:
@@ -255,6 +308,7 @@ async def _session_pinned_route(
         # Don't pin — next turn will retry
         return await _forward_to_provider(
             request, body, route, session_id, session_source, None, include_metadata, start,
+            redaction_key=redaction_key,
         )
 
     # We won the lock — classify
@@ -361,6 +415,7 @@ async def _session_pinned_route(
 
     return await _forward_to_provider(
         request, body, route, session_id, session_source, new_pin, include_metadata, start,
+        redaction_key=redaction_key,
     )
 
 
@@ -495,6 +550,7 @@ def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
 
 async def _forward_to_provider(
     request, body, route, session_id, session_source, pin, include_metadata, start,
+    redaction_key=None,
 ):
     """Forward the request to OpenRouter and return the response."""
     config = request.app.state.config.get()
@@ -537,10 +593,12 @@ async def _forward_to_provider(
         if body.stream:
             return await _handle_stream(
                 request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+                redaction_key=redaction_key,
             )
         else:
             return await _handle_non_stream(
                 request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+                redaction_key=redaction_key,
             )
     finally:
         router_active_requests.dec()
@@ -548,6 +606,7 @@ async def _forward_to_provider(
 
 async def _handle_non_stream(
     request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+    redaction_key=None,
 ):
     """Handle non-streaming request."""
     provider = request.app.state.provider
@@ -574,6 +633,11 @@ async def _handle_non_stream(
     # Update response model to router tier label (hide actual upstream model)
     json_resp["model"] = f"smart-router/{route.level.value}"
     _add_model_postfix(json_resp, model_used, route)
+
+    # Privacy middleware: re-hydrate IP placeholders in the LLM output.
+    _rehydrate_response_content(
+        getattr(request.app.state, "ip_redaction", None), json_resp, redaction_key,
+    )
 
     # Record upstream prompt-cache usage (cached_tokens / cache_write_tokens)
     cached_tokens, cache_written = extract_cache_usage(json_resp)
@@ -629,6 +693,7 @@ async def _handle_non_stream(
 
 async def _handle_stream(
     request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+    redaction_key=None,
 ):
     """Handle streaming request — pass through SSE chunks."""
     provider = request.app.state.provider
@@ -664,9 +729,64 @@ async def _handle_stream(
         if include_metadata:
             yield f"data: {json.dumps({'router': metadata})}\n\n"
 
+        # Privacy middleware: re-hydrate IP placeholders in streamed content.
+        # A placeholder token may be split across SSE chunks, so each chunk
+        # passes through a carry buffer that holds back a trailing partial
+        # "[ipaddress-..." tail until it can no longer complete a match.
+        rehydrate_engine = getattr(request.app.state, "ip_redaction", None)
+
+        def _split_carry(text: str) -> tuple[str, str]:
+            """Split text into (flushable, carry) around a possible partial token tail."""
+            # Longest possible tail: "[ipaddress-99]" = 14 chars; be generous.
+            for keep in range(min(len(text), 20), 0, -1):
+                tail = text[-keep:]
+                # Hold back if the tail is a plausible token prefix: starts
+                # with '[' or '[`' and contains only token-ish characters.
+                if tail.lstrip("`").startswith("[") and re.fullmatch(
+                    r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?", tail, re.IGNORECASE
+                ):
+                    return text[:-keep], tail
+            return text, ""
+
+        import re as _re
+        _PARTIAL_TAIL_RE = _re.compile(r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?$", _re.IGNORECASE)
+
+        def _rehydrate_chunk(payload_text: str, carry: str) -> tuple[str, str]:
+            text = carry + payload_text
+            if rehydrate_engine is not None and redaction_key and "ipaddress" in text:
+                text = rehydrate_engine.rehydrate_text_sync(text, redaction_key)
+            flush, carry = _split_carry(text)
+            return flush, carry
+
+        async def _rehydrate_line(line: str, carry: str):
+            """Re-hydrate content inside a data: SSE line; returns (line, carry)."""
+            if not line.startswith("data: ") or "ipaddress" not in line and not carry:
+                return line, carry
+            try:
+                data = json.loads(line[6:])
+            except (ValueError, TypeError):
+                return line, carry
+            mutated = False
+            for choice in data.get("choices", []):
+                delta = choice.get("delta")
+                if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                    flushed, carry = _rehydrate_chunk(delta["content"], carry)
+                    if flushed != delta["content"]:
+                        delta["content"] = flushed
+                        mutated = True
+            if not mutated:
+                return line, carry
+            return f"data: {json.dumps(data)}", carry
+
         try:
+            carry = ""
             async for line in stream_resp.aiter_lines():
                 if line.strip() == "data: [DONE]":
+                    # Flush any carried partial-token text before finishing.
+                    if carry:
+                        flush_event = {"choices": [{"delta": {"content": carry}}]}
+                        yield f"data: {json.dumps(flush_event)}\n\n"
+                        carry = ""
                     # Postfix must precede [DONE]: OpenAI-compatible clients
                     # stop reading the stream at [DONE] and silently discard
                     # any event emitted after it.
@@ -674,6 +794,7 @@ async def _handle_stream(
                     yield f"data: {json.dumps(postfix_event)}\n\n"
                     yield f"{line}\n"
                     break
+                line, carry = await _rehydrate_line(line, carry)
                 yield f"{line}\n"
         except Exception as e:
             # Stream broke — emit error event
@@ -768,7 +889,7 @@ async def _classify_only(request, body, task_text, router_opts):
     })
 
 
-async def _passthrough(request, body, model):
+async def _passthrough(request, body, model, redaction_key=None):
     """Forward as-is to OpenRouter."""
     provider = request.app.state.provider
     config = request.app.state.config.get()
@@ -794,6 +915,9 @@ async def _passthrough(request, body, model):
         json_resp, _, model_used, _, error = await provider.chat_completion(payload)
         if error and json_resp is None:
             return JSONResponse(status_code=502, content={"error": {"message": error, "type": "upstream_error"}})
+        _rehydrate_response_content(
+            getattr(request.app.state, "ip_redaction", None), json_resp, redaction_key,
+        )
         return JSONResponse(content=json_resp)
 
 
@@ -813,4 +937,5 @@ async def _stateless_classify_and_forward(
 
     return await _forward_to_provider(
         request, body, route, None, None, None, False, time.monotonic(),
+        redaction_key=None,
     )

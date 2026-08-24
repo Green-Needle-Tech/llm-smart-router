@@ -99,7 +99,7 @@ def test_strip_model_postfix_handles_structured_assistant_content():
 async def test_forwarding_payload_excludes_model_postfix():
     captured = {}
 
-    async def fake_non_stream(request, payload, *args):
+    async def fake_non_stream(request, payload, *args, **kwargs):
         captured["payload"] = payload
         return payload
 

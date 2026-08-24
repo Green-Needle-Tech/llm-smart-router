@@ -181,6 +181,12 @@ router_prompt_cache_hit_ratio = Gauge(
     ["level", "model"],
 )
 
+# Privacy middleware metrics
+router_privacy_redactions_total = Counter(
+    "router_privacy_redactions_total",
+    "Requests that passed through IP redaction",
+)
+
 # Info
 router_info = Info(
     "router",

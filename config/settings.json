@@ -230,6 +230,13 @@
     "log_prompts": false,
     "log_prompt_hash": true,
     "include_metadata_in_body": false,
-    "metrics_enabled": true
+    "metrics_enabled": true,
+    "privacy": {
+      "enabled": false,
+      "db_path": "/data/ip_redaction.db",
+      "retention_hours": 24.0,
+      "purge_interval_seconds": 3600.0,
+      "_doc": "IP redaction & re-hydration middleware; enable to replace raw IPs with [ipaddress-NN] tokens before upstream, re-hydrate on response"
+    }
   }
 }
