@@ -128,6 +128,12 @@ class SessionConfig(BaseModel):
     max_provisional_turns: int = 3
     lock_wait_ms: int = 5000
     lock_reservation_seconds: int = 30
+    # Behavior when tier→model mapping changes in settings.json:
+    #   "keep_level" — keep the session's pinned LEVEL, but re-resolve the
+    #                  MODEL from the live config on every turn (default;
+    #                  tier model changes apply to existing sessions).
+    #   "keep_pin"   — keep both level and model exactly as pinned (frozen;
+    #                  tier model changes apply to new sessions only).
     on_config_change: str = "keep_level"
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
 

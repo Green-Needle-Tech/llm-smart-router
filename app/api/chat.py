@@ -154,7 +154,9 @@ async def _session_pinned_route(
 
         # Apply per-request overrides (don't mutate pin unless repin)
         effective_level = pin.level
-        effective_model = pin.model
+        effective_model = _resolve_effective_model(
+            pin, routing_engine, config,
+        )
 
         if forced_level and repin:
             # Re-pin to the new level
@@ -360,6 +362,24 @@ async def _session_pinned_route(
     return await _forward_to_provider(
         request, body, route, session_id, session_source, new_pin, include_metadata, start,
     )
+
+
+def _resolve_effective_model(pin, routing_engine, config) -> str:
+    """Resolve the model for a session hit, honoring session.on_config_change.
+
+    "keep_level" (default): keep the pinned LEVEL but re-resolve the MODEL
+    from the live config on every turn — tier model changes (hot-reload)
+    apply to existing sessions too. The pin is updated so /admin/sessions
+    and later turns stay consistent.
+    "keep_pin": keep the frozen model from classification time (old behavior).
+    """
+    if config.session.on_config_change == "keep_pin":
+        return pin.model
+    resolved = routing_engine.resolve_model_for_level(pin.level)
+    if not resolved:
+        return pin.model
+    pin.model = resolved
+    return resolved
 
 
 def _extract_raw_user_text(body) -> str:
