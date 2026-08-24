@@ -140,7 +140,7 @@ async def _redact_incoming(request, body) -> Optional[str]:
     for orig, dumped in zip(body.messages, messages):
         if orig.content != dumped.get("content"):
             orig.content = dumped.get("content")
-    router_privacy_redactions_total.labels().inc()
+    router_privacy_redactions_total.inc()
     return key
 
 
