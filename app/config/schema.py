@@ -18,6 +18,20 @@ class AuthConfig(BaseModel):
     allow_anonymous_health: bool = True
 
 
+class PromptCachingConfig(BaseModel):
+    """Provider-side prompt (KV) cache optimization via OpenRouter."""
+    enabled: bool = True
+    # Forward the router session_id upstream so OpenRouter provider
+    # sticky routing keeps the conversation on one warm provider cache.
+    forward_session_id: bool = True
+    # Auto-inject cache_control breakpoints for Anthropic/Qwen routes.
+    inject_cache_control: bool = True
+    # Anthropic cache breakpoint TTL: "5m" (default) or "1h" (2x write cost).
+    anthropic_ttl: str = "5m"
+    # Approximate minimum stable-prefix tokens worth anchoring.
+    min_tokens: int = 1024
+
+
 class ProviderConfig(BaseModel):
     name: str = "openrouter"
     base_url: str = "https://openrouter.ai/api/v1"
@@ -28,6 +42,7 @@ class ProviderConfig(BaseModel):
     retry_on_status: list[int] = Field(default_factory=lambda: [429, 500, 502, 503, 504])
     headers: dict[str, str] = Field(default_factory=dict)
     pricing_refresh_seconds: int = 21600
+    prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
 
 
 class DigestConfig(BaseModel):

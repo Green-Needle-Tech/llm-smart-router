@@ -162,6 +162,25 @@ router_cache_events_total = Counter(
     ["result"],
 )
 
+# Upstream prompt (KV) cache metrics
+router_prompt_cached_tokens_total = Counter(
+    "router_prompt_cached_tokens_total",
+    "Prompt tokens served from provider cache (cache reads)",
+    ["level", "model"],
+)
+
+router_prompt_cache_writes_total = Counter(
+    "router_prompt_cache_writes_total",
+    "Prompt tokens written to provider cache (cache writes)",
+    ["level", "model"],
+)
+
+router_prompt_cache_hit_ratio = Gauge(
+    "router_prompt_cache_hit_ratio",
+    "Rolling provider prompt-cache hit ratio (cached_tokens / prompt_tokens)",
+    ["level", "model"],
+)
+
 # Info
 router_info = Info(
     "router",

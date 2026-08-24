@@ -20,6 +20,7 @@ from app.session.resolver import resolve_session_id
 from app.session.locks import acquire_or_wait
 from app.session.lifecycle import check_expiry, check_turn_cap
 from app.middleware.auth import check_router_auth, unauthorized_response
+from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
     router_requests_total, router_active_requests,
@@ -32,6 +33,9 @@ from app.telemetry.metrics import (
     router_escalation_signals_total,
     router_escalation_turn,
     router_cache_events_total,
+    router_prompt_cached_tokens_total,
+    router_prompt_cache_writes_total,
+    router_prompt_cache_hit_ratio,
 )
 
 router = APIRouter()
@@ -481,6 +485,10 @@ async def _forward_to_provider(
     _strip_model_postfix_from_messages(payload.get("messages", []))
     payload["model"] = route.model
 
+    # Prompt-cache optimization: session_id → provider sticky routing,
+    # cache_control injection for Anthropic/Qwen routes.
+    apply_prompt_cache_features(payload, session_id, config)
+
     # Apply tier params (fill in what client omitted)
     for key, val in route.params.items():
         if key not in payload or payload.get(key) is None:
@@ -546,6 +554,16 @@ async def _handle_non_stream(
     # Update response model to router tier label (hide actual upstream model)
     json_resp["model"] = f"smart-router/{route.level.value}"
     _add_model_postfix(json_resp, model_used, route)
+
+    # Record upstream prompt-cache usage (cached_tokens / cache_write_tokens)
+    cached_tokens, cache_written = extract_cache_usage(json_resp)
+    if cached_tokens or cache_written:
+        router_prompt_cached_tokens_total.labels(level=route.level.value, model=model_used).inc(cached_tokens)
+        router_prompt_cache_writes_total.labels(level=route.level.value, model=model_used).inc(cache_written)
+        prompt_tokens = (json_resp.get("usage") or {}).get("prompt_tokens") or 0
+        if prompt_tokens:
+            ratio = cached_tokens / prompt_tokens
+            router_prompt_cache_hit_ratio.labels(level=route.level.value, model=model_used).set(ratio)
 
     # Update pin cost
     if pin:
@@ -733,9 +751,11 @@ async def _classify_only(request, body, task_text, router_opts):
 async def _passthrough(request, body, model):
     """Forward as-is to OpenRouter."""
     provider = request.app.state.provider
+    config = request.app.state.config.get()
     payload = body.model_dump(exclude={"router"}, exclude_none=True)
     _strip_model_postfix_from_messages(payload.get("messages", []))
     payload["model"] = model
+    apply_prompt_cache_features(payload, None, config)
 
     if body.stream:
         _, stream_resp, model_used, _, error = await provider.chat_completion(payload, stream=True)
