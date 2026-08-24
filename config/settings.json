@@ -232,7 +232,7 @@
     "include_metadata_in_body": false,
     "metrics_enabled": true,
     "privacy": {
-      "enabled": false,
+      "enabled": true,
       "db_path": "/data/ip_redaction.db",
       "retention_hours": 24.0,
       "purge_interval_seconds": 3600.0,

@@ -34,7 +34,7 @@ class PromptCachingConfig(BaseModel):
 
 class PrivacyConfig(BaseModel):
     """IP redaction & re-hydration privacy middleware."""
-    enabled: bool = False
+    enabled: bool = True
     # SQLite database file for session-scoped IP↔placeholder mappings.
     db_path: str = "/data/ip_redaction.db"
     # Purge mapping records older than this many hours (background job).
