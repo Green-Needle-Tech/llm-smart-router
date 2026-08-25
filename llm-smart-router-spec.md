@@ -1,11 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 1.1 (spec draft — session-pinned routing)
-**Date:** 2026-08-16
+**Version:** 2.1 (streaming secret-leak hardening + guardrails + privacy + prompt caching)
+**Date:** 2026-08-25
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
+
+**Changes from 1.1 (v2.0.0-beta + v2.1.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; 224 unit tests, 30 live full-suite, 22 live e2e.
 
 ---
 
@@ -1411,6 +1413,123 @@ Cost is additionally accumulated **per session** on the pin, so `/v1/router/sess
 | Model allow-list | Passthrough is disabled by default; when enabled, only slugs present in the tier config or an explicit `routing.passthrough_allowlist` are accepted. |
 | Runaway spend | Optional daily budget cap with downgrade-or-reject behavior; per-tier `max_cost_per_request_usd` rejects requests whose estimated cost exceeds the ceiling. |
 
+### 9.2 IP Redaction & Re-Hydration (`telemetry.privacy`)
+
+Raw IP addresses in prompts are replaced with session-stable placeholders (`[ipaddress-01]`, `[ipaddress-02]`, …) before the request reaches the classifier or any upstream model, and re-hydrated back to the original IPs in the response. The classifier and tier models never see a real IP.
+
+| Property | Behavior |
+|----------|----------|
+| Session-scoped SQLite mapping | `/app/data/ip_redaction.db` (Docker volume `router-data`). Same IP → same placeholder across turns (context- and prefix-cache-friendly). |
+| Port & CIDR preservation | Ports (`:8080`) and CIDR (`/24`) are preserved in the placeholder; re-hydration restores the full original. |
+| IPv4 + IPv6 | Both supported. |
+| Streaming-safe | Placeholders split across SSE chunks still re-hydrate via the carry buffer (`_rehydrate_chunk` / `_rehydrate_line` in `app/api/chat.py`). |
+| Retention | 24-hour TTL with background purge job. |
+| Config | `telemetry.privacy.enabled` (default `true`), `retention_hours` (default 24). |
+
+### 9.3 LLM Guardrails (`telemetry.guardrails`)
+
+Two router-layer guardrails, independent of the agent's or the upstream API's own safety filters.
+
+#### 9.3.1 Input — Prompt Injection Detection
+
+24-rule prompt-injection/jailbreak catalog across 8 categories:
+
+| Category | Rules | Severity |
+|----------|-------|----------|
+| Direct override | `injection-ignore-previous`, `injection-role-assign`, `injection-delimiter` | CRITICAL / HIGH |
+| Jailbreak personas | `jailbreak-dan`, `jailbreak-devmode`, `jailbreak-persona`, `jailbreak-unfiltered` | CRITICAL |
+| Exfiltration | `exfil-system-prompt` (HIGH), `exfil-secrets` (CRITICAL) | HIGH / CRITICAL |
+| Tool abuse | `tool-bash-abuse`, `tool-filesystem-abuse`, `tool-db-abuse`, `tool-network-exfil` | CRITICAL |
+| Sandbox evasion | `sandbox-detect`, `time-bomb`, `suppress-output` | HIGH |
+| Social engineering | `social-authority`, `social-guilt` | MEDIUM |
+| Encoded payloads | `encoded-base64`, `encoded-hex`, `encoded-unicode` | HIGH |
+| Multi-turn | `multiturn-ratchet`, `multiturn-boiling` | MEDIUM |
+
+**Actions:** `log` (default — record finding, allow request) | `block` (HTTP 400 `router_guardrail_blocked` at/above `block_on_severity` threshold, default HIGH).
+
+**False-positive reduction:** Messages dominated by fenced code blocks (≥2 fences, >400 chars) are skipped — educational/discussion contexts.
+
+#### 9.3.2 Output — Secret Masking
+
+11 provider-prefixed credential patterns masked with `***REDACTED***` before responses reach the caller:
+
+| Provider | Pattern |
+|----------|---------|
+| OpenRouter | `sk-or-v1-[A-Za-z0-9]{16,}` |
+| Anthropic | `sk-ant-(api[0-9]*-)?[A-Za-z0-9_-]{16,}` |
+| OpenAI | `sk-proj-[A-Za-z0-9_-]{20,} \| sk-[A-Za-z0-9]{32,}` |
+| GitHub | `gh[pousr]_[A-Za-z0-9]{20,} \| github_pat_[A-Za-z0-9_]{20,}` |
+| AWS | `AKIA[0-9A-Z]{16}` |
+| Google | `AIza[0-9A-Za-z_-]{30,}` |
+| Slack | `xox[abprs]-[A-Za-z0-9-]{10,}` |
+| GitLab | `glpat-[A-Za-z0-9_-]{20,}` |
+| Stripe | `[sr]k_live_[A-Za-z0-9]{20,}` |
+| Telegram | `\d{8,10}:AA[A-Za-z0-9_-]{30,}` |
+| PEM | `-----BEGIN [A-Z ]*PRIVATE KEY-----` |
+
+**Actions:** `mask` (default — replace with `***REDACTED***`) | `log` (record only) | `block` (reject response).
+
+#### 9.3.3 Streaming Secret Carry Buffer
+
+Secrets frequently arrive split across SSE chunks (tokenizers emit long alphanumeric strings in pieces). Per-chunk `mask_secrets` cannot see a complete key in any single chunk, so the stream handler holds back a trailing "plausible partial secret" in a carry buffer until it either completes (and gets masked) or proves benign.
+
+**`secret_carry_split()` in `app/guardrails/streaming.py`** implements four hold checks:
+
+| Check | Condition | Example |
+|-------|-----------|---------|
+| (a) Full marker, short body | Marker present, body < threshold + MARGIN, all body-class chars | `sk-or-v1-a1B2` (body too short) |
+| (a2) Tail-leak guard | Marker present, body ≥ threshold + MARGIN, still all body-class chars (no terminator) | `sk-or-v1-<59 chars>` (long key still growing) |
+| (b) Telegram digit-run | Trailing digit run, digits+colon+partial `:AA`, or partial `\d:AA<body>` | `123456789:` or `1` (char-by-char) |
+| (c) Partial marker prefix | Tail is a proper prefix of a known marker | `sk-or` of `sk-or-v1-` |
+| (d) Collapsed-tail hold | Whitespace-interleaved partial secret in collapsed space | `s
+k
+-
+o
+r` → collapsed `sk-or` |
+
+**Pipeline order (critical):** `_rehydrate_chunk` splits FIRST (holds growing tail in carry), then masks only the flushable (terminated) part. Masking before the split fires at minimum regex length mid-growth, destroying the marker and leaking the remaining body as plaintext.
+
+**[DONE] carry flush:** The final carry buffer at `data: [DONE]` runs through `mask_secrets()` before emitting — a secret that completes only at stream end is masked, not emitted raw.
+
+#### 9.3.4 Streaming Secret-Leak Vectors Fixed (v2.1.0)
+
+Three vectors found and fixed by the 2026-08-25 e2e guardrails audit:
+
+**1. Telegram bot token streaming leak**
+Tokenizers split Telegram bot tokens at the `:AA` separator or emit them character-by-character. The carry buffer's digit-run hold (`\d{4,10}`) was too narrow.
+
+- `_TG_DIGITS_COLON_RE`: holds `123456789:` + partial `:AA` continuation (split-after-colon)
+- `_TG_DIGIT_RUN_RE`: holds any trailing digit run ≥1 (was ≥4; char-by-char)
+- `_collapsed_tail_hold()`: whitespace-interleaved partial-secret hold
+
+**2. Tail leak on long secrets**
+`mask_secrets` fired at minimum regex length mid-growth (e.g. `sk-or-v1-` + 16 chars), destroying the marker — the remaining body (up to 43+ chars) flushed as plaintext.
+
+- **Pipeline reorder:** split first, mask only the flushable part
+- **(a2) tail-leak guard:** hold still-growing bodies even when ≥ threshold + MARGIN
+
+**3. Whitespace-interleaved evasion (engine-wide)**
+A jailbroken model could emit a secret one character per line (`s
+k
+-
+o
+r...`) — no contiguous regex matches, in either streaming or non-streaming mode.
+
+- `find_interleaved_secrets()` in `rules.py`: collapses all whitespace, runs strict SECRET_RULES over the collapsed text, maps matches back to original spans
+- Wired into `mask_secrets()` as a second pass with overlap-safe span merging
+- `_collapsed_tail_hold()`: extends the carry to hold interleaved partials in streaming mode
+
+### 9.4 Upstream Prompt Caching (`provider.prompt_caching`)
+
+Automatically makes the most of provider KV/prefix caches:
+
+| Feature | Behavior |
+|---------|----------|
+| `session_id` passthrough | Forwarded to OpenRouter on every upstream request (body field, ≤256 chars). Activates OpenRouter provider sticky routing (warm prefix cache). |
+| `cache_control` injection | For Anthropic (`ttl: 5m\|1h`) when the stable prefix exceeds `min_tokens` (default 1024). |
+| Cache telemetry | `router_prompt_cached_tokens_total`, `router_prompt_cache_hit_ratio` surfaced in `/metrics`. |
+| Prefix stability | Session-stable redaction tokens (same IP → same `[ipaddress-NN]`) keep prefixes stable. Postfix stripping and redaction are cache-aware. |
+
 ---
 
 ## 10. Failure Modes and Handling
@@ -1474,6 +1593,9 @@ Cost is additionally accumulated **per session** on the pin, so `/v1/router/sess
 - **Integration** (respx-mocked OpenRouter) — full request lifecycle per tier, streaming pass-through byte equality, fallback chain traversal (and that a fallback does not re-pin), tool-call pass-through, all documented error paths, cache hit/miss/bypass, session store failure degradation.
 - **Contract** — an OpenAI-SDK-driven suite asserting the router is indistinguishable from a real OpenAI endpoint for the supported surface, including streaming and `include_usage`.
 - **Load** — 100 concurrent streaming requests across 100 distinct sessions; assert no chunk reordering, no fd leaks, stable memory, and that session-store lookups stay under 5 ms p95 at 50 000 live pins.
+- **Guardrail streaming** — secret masking across chunked SSE: 11 provider types (OpenRouter, Anthropic, OpenAI, GitHub, AWS, Google, Slack, GitLab, Stripe, Telegram, PEM), split-secret carry (one-char-per-line), whitespace-interleaved evasion, tail-leak on long secrets, [DONE] carry flush masking. 7 regression tests in `tests/unit/test_guardrails_streaming.py`.
+- **Guardrail live e2e** — `scripts/test_guardrails_e2e_block_stream.py` (22 checks): block-mode enforcement (4 injection → HTTP 400, 2 benign → 200, 2 severity-gate → 200), streaming secret masking (11 types + split-carry), streaming IP redaction round-trip.
+- **Guardrail live full** — `scripts/test_guardrails_full.py` (30 checks): injection categories, benign pass-through, 11 secret types masked, IP round-trip, Prometheus metrics, session pinning.
 
 ### 11.2 Classifier evaluation
 
@@ -1499,6 +1621,16 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 ### 11.3 Cost benchmark
 
 `scripts/bench_router.py` replays a captured Hermes trace three ways — all-L4 baseline, per-turn classification, and session-pinned — and reports total spend, spend by tier, tier distribution, **classifier calls per session**, mean turns per session, and added latency. **Targets: ≥ 50% cost reduction vs. baseline, classifier calls ≤ 1.1 per session, and no measurable task-success regression on the trace's assertions.** The per-turn column exists to quantify what pinning saves and what, if any, quality it costs.
+
+### 11.4 Test results (2026-08-25, v2.1.0)
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| Unit (`pytest tests/ -q`) | 224 | ✅ All passed |
+| Live full guardrails (`test_guardrails_full.py`) | 30 | ✅ All passed |
+| Live e2e block + streaming (`test_guardrails_e2e_block_stream.py`) | 22 | ✅ All passed |
+
+**e2e coverage:** block-mode enforcement (4 injection payloads → HTTP 400 `router_guardrail_blocked`, 2 benign → 200, 2 severity-gate MEDIUM/LOW → 200), streaming secret masking (11 provider types + split-carry one-char-per-line), streaming IP redaction round-trip (IP returned, no placeholder leak).
 
 ---
 
@@ -1530,6 +1662,8 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M3.5 — Escalation** | Escalation score engine, free signals, `/signal` endpoint, ratchet + cooldown + caps, escalation headers. Shadow classify and retry-on-failure behind flags. | A session that opens trivial and turns hard escalates on the triggering turn, at most twice, and never downgrades. Escalation suite green. |
 | **M4 — Observability** | Structured logs, Prometheus metrics, per-session cost accounting, `/admin/stats`, `/admin/sessions`, `/admin/settings/reload`. | Dashboard shows tier distribution, spend, turns-per-session, and the classification amortization ratio for live Hermes traffic. |
 | **M5 — Evaluation & hardening** | Labeled session-opener eval set, `eval_classifier.py`, `bench_router.py`, session drift measurement, escalation guards, budget caps, security review, README. | Section 11.2 and 11.3 thresholds met, including session drift ≤ 5%. |
+| **M6 — Privacy & guardrails (v2.0.0-beta)** | IP redaction & re-hydration (§9.2), LLM guardrails — injection detection + secret masking (§9.3), upstream prompt caching (§9.4). | 197 unit tests + 3 live differential tests pass; privacy SQLite store active; guardrails input=log output=mask; prompt-cache metrics in `/metrics`. |
+| **M7 — Streaming secret-leak hardening (v2.1.0)** | Telegram split-token leak, tail-leak on long secrets, whitespace-interleaved evasion, [DONE] carry flush, pipeline reorder. | 224 unit tests + 30 live full + 22 live e2e pass; zero secret leaks across all chunk patterns. |
 
 ---
 
@@ -1540,7 +1674,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 - **Context repair on escalation** — a protocol for Hermes to inject a re-examination note (or start a clean session with a summary) when a tier moves up, addressing the weak-inherited-context problem in §4.11.7.
 - **Pin persistence across restarts** — snapshot the memory store to disk on shutdown so a container restart does not re-classify every live session.
 - **Semantic response cache** — embedding-based near-duplicate response reuse.
-- **Multi-provider** — direct Anthropic/OpenAI/local vLLM adapters alongside OpenRouter, with per-tier provider choice.
+- **Multi-provider** — direct Anthropic/OpenAI/local vLLM adapters alongside OpenRouter, with per-tier provider choice. *(Partially shipped: Anthropic `cache_control` injection in v2.0.)*
 - **Feedback loop** — Hermes reports task success back to `/v1/router/feedback`; mis-tiered prompts feed the eval set and rubric tuning.
 - **A/B routing** — send a sampled percentage of traffic one tier higher to continuously measure quality delta per tier.
 
