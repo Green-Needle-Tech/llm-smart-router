@@ -120,25 +120,31 @@ class GuardrailEngine:
             text = pattern.sub(_sub, text)
         return text, findings
 
-    def process_response_content(self, content):
-        """Mask secrets in a message content value (str or block list).
+    def process_response_content(self, message):
+        """Mask secrets in a message dict's content, in place.
 
-        Returns (content, findings).
+        Accepts the message dict ({role, content}) and mutates
+        message["content"] when masking applies. Returns findings.
         """
         if not self.config.output_enabled:
-            return content, []
+            return []
+        content = message.get("content") if isinstance(message, dict) else message
         findings: list[GuardrailFinding] = []
         if isinstance(content, str):
             if self.config.output_action == "mask":
-                content, findings = self.mask_secrets(content)
+                masked, findings = self.mask_secrets(content)
+                if masked != content and isinstance(message, dict):
+                    message["content"] = masked
             else:
                 findings = self.scan_output_secrets(content)
         elif isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and isinstance(block.get("text"), str):
                     if self.config.output_action == "mask":
-                        block["text"], fs = self.mask_secrets(block["text"])
+                        masked, fs = self.mask_secrets(block["text"])
+                        if masked != block["text"]:
+                            block["text"] = masked
                     else:
                         fs = self.scan_output_secrets(block["text"])
                     findings.extend(fs)
-        return content, findings
+        return findings

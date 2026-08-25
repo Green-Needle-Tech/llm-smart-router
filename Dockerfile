@@ -10,6 +10,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 RUN groupadd -r router && useradd -r -g router -d /app router
+RUN mkdir -p /app/data && chown -R router:router /app/data
 WORKDIR /app
 
 RUN pip install --no-cache-dir \

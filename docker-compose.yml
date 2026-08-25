@@ -20,6 +20,7 @@ services:
       WORKERS: ${WORKERS:-1}
     volumes:
       - ./config:/app/config:ro
+      - router-data:/app/data
     networks: [hermes-net]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://0.0.0.0:8080/healthz',timeout=2)"]
@@ -46,3 +47,6 @@ services:
 networks:
   hermes-net:
     driver: bridge
+
+volumes:
+  router-data:

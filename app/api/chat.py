@@ -186,7 +186,7 @@ def _guardrail_process_output(request, json_resp) -> None:
         message = choice.get("message")
         if not isinstance(message, dict):
             continue
-        _, findings = engine.process_response_content(message.get("content"))
+        findings = engine.process_response_content(message)
         for f in findings:
             if engine.config.output_action == "mask":
                 router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()

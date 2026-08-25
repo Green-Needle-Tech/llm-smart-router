@@ -147,27 +147,38 @@ class TestSecretMasking:
     def test_process_response_content_str(self):
         e = _engine()
         key = "sk-ant-api03-" + "AbCdEfGhIjKlMnOpQrStUv"
-        content, fs = e.process_response_content(f"key={key}")
-        assert key not in content and fs
+        msg = {"role": "assistant", "content": f"key={key}"}
+        fs = e.process_response_content(msg)
+        assert key not in msg["content"] and fs
 
     def test_process_response_content_blocks(self):
         e = _engine()
         key = "sk-or-v1-" + "a1B2c3D4e5F6g7H8i9J0"
-        content = [{"type": "text", "text": f"key={key}"}]
-        _, fs = e.process_response_content(content)
-        assert fs and key not in content[0]["text"]
+        msg = {"role": "assistant", "content": [{"type": "text", "text": f"key={key}"}]}
+        fs = e.process_response_content(msg)
+        assert fs and key not in msg["content"][0]["text"]
 
     def test_output_disabled(self):
         e = _engine(output_enabled=False)
         key = "sk-or-v1-" + "a1B2c3D4e5F6g7H8i9J0"
-        content, fs = e.process_response_content(f"key={key}")
-        assert key in content and fs == []
+        msg = {"role": "assistant", "content": f"key={key}"}
+        fs = e.process_response_content(msg)
+        assert key in msg["content"] and fs == []
 
     def test_output_log_action_does_not_mask(self):
         e = _engine(output_action="log")
         key = "sk-or-v1-" + "a1B2c3D4e5F6g7H8i9J0"
-        content, fs = e.process_response_content(f"key={key}")
-        assert key in content and fs
+        msg = {"role": "assistant", "content": f"key={key}"}
+        fs = e.process_response_content(msg)
+        assert key in msg["content"] and fs
+
+    def test_masked_content_written_back(self):
+        e = _engine()
+        key = "sk-or-v1-" + "a1B2c3D4e5F6g7H8i9J0"
+        msg = {"role": "assistant", "content": f"the key is {key} ok"}
+        e.process_response_content(msg)
+        assert key not in msg["content"]
+        assert "***REDACTED***" in msg["content"]
 
     def test_no_false_positive_on_short_sk(self):
         e = _engine()
