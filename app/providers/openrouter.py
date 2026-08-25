@@ -42,16 +42,30 @@ class OpenRouterAdapter(ProviderAdapter):
         fallback_models: list[str] | None = None,
         *,
         stream: bool = False,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ) -> tuple[dict | None, httpx.Response | None, str, bool, str | None]:
-        """Execute a chat completion with fallback chain."""
+        """Execute a chat completion with fallback chain.
+
+        When base_url is provided, it overrides the adapter's default provider
+        base_url for this call. This enables per-tier custom providers.
+        When api_key is provided, it overrides the adapter's default key.
+        """
         primary_model = payload.get("model", "")
         fallbacks = fallback_models or []
+        effective_key = api_key or self.api_key
+        effective_headers = {
+            "Authorization": f"Bearer {effective_key}",
+            "Content-Type": "application/json",
+            **self.config.provider.headers,
+        }
         return await self._fallback_executor.execute_with_fallback(
             primary_model=primary_model,
             fallback_models=fallbacks,
             payload=payload,
-            headers=self._headers(),
+            headers=effective_headers,
             stream=stream,
+            base_url=base_url,
         )
 
     async def list_models(self) -> list[dict]:

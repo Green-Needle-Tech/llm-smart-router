@@ -102,6 +102,10 @@ class ClassificationConfig(BaseModel):
     low_confidence_action: str = "escalate"
     prompt_file: str = "/app/config/prompts/classifier.txt"
     rubric_version: str = "v1"
+    # Custom provider for classifier (optional — overrides global provider)
+    base_url: Optional[str] = None
+    # Environment variable name holding the API key for the classifier.
+    api_key_env: Optional[str] = None
     digest: DigestConfig = Field(default_factory=DigestConfig)
     cache: ClassificationCacheConfig = Field(default_factory=ClassificationCacheConfig)
 
@@ -185,6 +189,12 @@ class TierConfig(BaseModel):
     # int  = use this fixed cap
     # unset/None = inherit from params or provider default
     max_tokens: Union[int, str] = "auto"
+    # Custom provider configuration (optional — overrides global provider)
+    # When set, the tier uses this base URL instead of settings.provider.base_url
+    base_url: Optional[str] = None
+    # Environment variable name holding the API key for this tier.
+    # When set, the actual key is read from os.environ at request time.
+    api_key_env: Optional[str] = None
 
 
 class RoutingConfig(BaseModel):

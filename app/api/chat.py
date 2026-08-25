@@ -630,11 +630,30 @@ def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
     return None
 
 
+def _resolve_tier_provider(config, level: str) -> tuple[str | None, str | None]:
+    """Resolve per-tier provider overrides for a given level.
+
+    Returns (base_url, api_key). Both are None when the tier uses the
+    global provider configuration.
+    """
+    import os
+    # Defensive: tests may mock config as SimpleNamespace without get_tier
+    routing = getattr(config, "routing", None)
+    if routing is None or not hasattr(routing, "get_tier"):
+        return None, None
+    tier = routing.get_tier(level)
+    if tier.base_url or tier.api_key_env:
+        base_url = tier.base_url
+        api_key = os.environ.get(tier.api_key_env, "") if tier.api_key_env else None
+        return base_url, api_key
+    return None, None
+
+
 async def _forward_to_provider(
     request, body, route, session_id, session_source, pin, include_metadata, start,
     redaction_key=None,
 ):
-    """Forward the request to OpenRouter and return the response."""
+    """Forward the request to the provider and return the response."""
     config = request.app.state.config.get()
     provider = request.app.state.provider
 
@@ -669,18 +688,21 @@ async def _forward_to_provider(
     # Get fallbacks
     fallbacks = config.routing.get_fallbacks(route.level.value)
 
+    # Resolve per-tier provider overrides (base_url, api_key)
+    tier_base_url, tier_api_key = _resolve_tier_provider(config, route.level.value)
+
     router_active_requests.inc()
 
     try:
         if body.stream:
             return await _handle_stream(
                 request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
-                redaction_key=redaction_key,
+                redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
             )
         else:
             return await _handle_non_stream(
                 request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
-                redaction_key=redaction_key,
+                redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
             )
     finally:
         router_active_requests.dec()
@@ -688,7 +710,7 @@ async def _forward_to_provider(
 
 async def _handle_non_stream(
     request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
-    redaction_key=None,
+    redaction_key=None, tier_base_url=None, tier_api_key=None,
 ):
     """Handle non-streaming request."""
     provider = request.app.state.provider
@@ -697,6 +719,7 @@ async def _handle_non_stream(
     upstream_start = time.monotonic()
     json_resp, _, model_used, fallback_used, error = await provider.chat_completion(
         payload, fallback_models=fallbacks, stream=False,
+        base_url=tier_base_url, api_key=tier_api_key,
     )
     upstream_ms = int((time.monotonic() - upstream_start) * 1000)
     total_ms = int((time.monotonic() - start) * 1000)
@@ -778,7 +801,7 @@ async def _handle_non_stream(
 
 async def _handle_stream(
     request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
-    redaction_key=None,
+    redaction_key=None, tier_base_url=None, tier_api_key=None,
 ):
     """Handle streaming request — pass through SSE chunks."""
     provider = request.app.state.provider
@@ -787,6 +810,7 @@ async def _handle_stream(
     upstream_start = time.monotonic()
     _, stream_resp, model_used, fallback_used, error = await provider.chat_completion(
         payload, fallback_models=fallbacks, stream=True,
+        base_url=tier_base_url, api_key=tier_api_key,
     )
 
     if error and stream_resp is None:

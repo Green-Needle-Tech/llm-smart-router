@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any, Optional
 
@@ -26,6 +27,12 @@ class ClassifierService:
     ):
         self.config = config
         self.api_key = openrouter_api_key
+
+        # Per-classifier provider override (optional)
+        self._classifier_api_key: str | None = None
+        cls_cfg = config.classification
+        if hasattr(cls_cfg, "api_key_env") and cls_cfg.api_key_env:
+            self._classifier_api_key = os.environ.get(cls_cfg.api_key_env, "")
         self._http = http_client
         self._owns_client = http_client is None
 
@@ -66,6 +73,20 @@ class ClassifierService:
                     'REQUEST:\n{{PROMPT_DIGEST}}'
                 )
         return self._prompt_template
+
+    @property
+    def _classifier_base_url(self) -> str:
+        """Resolve classifier base_url (per-classifier config > global provider)."""
+        cls_cfg = self.config.classification
+        if hasattr(cls_cfg, "base_url") and cls_cfg.base_url:
+            return cls_cfg.base_url.rstrip("/")
+        return self.config.provider.base_url.rstrip("/")
+
+    @property
+    def _classifier_auth_header(self) -> str:
+        """Resolve the auth header for the classifier provider."""
+        effective_key = self._classifier_api_key or self.api_key
+        return f"Bearer {effective_key}"
 
     async def classify(
         self,
@@ -215,13 +236,13 @@ class ClassifierService:
         return result
 
     async def _call_classifier_model(self, digest: str) -> str:
-        """Call the classifier model via OpenRouter."""
+        """Call the classifier model via its configured provider."""
         prompt = self.prompt_template.replace("{{PROMPT_DIGEST}}", digest)
 
         if self._http is None:
             self._http = httpx.AsyncClient(
                 timeout=self.config.classification.timeout_seconds,
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers={"Authorization": self._classifier_auth_header},
             )
 
         payload = {
@@ -237,12 +258,12 @@ class ClassifierService:
         except Exception:
             pass
 
-        base_url = self.config.provider.base_url
+        base_url = self._classifier_base_url
         resp = await self._http.post(
             f"{base_url}/chat/completions",
             json=payload,
             headers={
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": self._classifier_auth_header,
                 "Content-Type": "application/json",
                 **self.config.provider.headers,
             },

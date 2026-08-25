@@ -10,6 +10,13 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?required}
       ROUTER_API_KEY: ${ROUTER_API_KEY:?required}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      # Per-tier API keys (optional — set when tiers use different providers)
+      L1_API_KEY: ${L1_API_KEY:-}
+      L2_API_KEY: ${L2_API_KEY:-}
+      L3_API_KEY: ${L3_API_KEY:-}
+      L4_API_KEY: ${L4_API_KEY:-}
+      L5_API_KEY: ${L5_API_KEY:-}
+      CLASSIFIER_API_KEY: ${CLASSIFIER_API_KEY:-}
       SETTINGS_PATH: /app/config/settings.json
       CACHE_BACKEND: ${CACHE_BACKEND:-memory}
       REDIS_URL: redis://redis:6379/0

@@ -22,13 +22,17 @@ class FallbackExecutor:
         headers: dict[str, str],
         *,
         stream: bool = False,
+        base_url: str | None = None,
     ) -> tuple[dict | None, httpx.Response | None, str, bool, str | None]:
         """Try primary, then fallbacks. Returns (json_response, raw_response, model_used, fallback_used, error).
+
+(rest of docstring stays the same)
 
         For streaming, returns (None, response, model_used, fallback_used, error).
         """
         models_to_try = [primary_model] + list(fallback_models)
         last_error: str | None = None
+        effective_base_url = (base_url or self.config.provider.base_url).rstrip("/")
 
         for i, model in enumerate(models_to_try):
             try:
@@ -41,7 +45,7 @@ class FallbackExecutor:
                     # the context manager closing it.
                     req = self.http.build_request(
                         "POST",
-                        f"{self.config.provider.base_url}/chat/completions",
+                        f"{effective_base_url}/chat/completions",
                         json=request_payload,
                         headers=headers,
                         timeout=self.config.provider.timeout_seconds,
@@ -60,7 +64,7 @@ class FallbackExecutor:
                         raise
                 else:
                     resp = await self.http.post(
-                        f"{self.config.provider.base_url}/chat/completions",
+                        f"{effective_base_url}/chat/completions",
                         json=request_payload,
                         headers=headers,
                         timeout=self.config.provider.timeout_seconds,
