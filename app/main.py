@@ -22,6 +22,7 @@ from app.cache.memory import MemoryClassificationCache
 from app.cache.redis import RedisClassificationCache
 from app.privacy.ip_redaction import IPRedactionEngine, IPRedactionStore
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
+from app.temporal_awareness.engine import TemporalAwarenessEngine
 
 from app.api.chat import router as chat_router
 from app.api.models import router as models_router
@@ -59,7 +60,7 @@ async def lifespan(app: FastAPI):
     provider = OpenRouterAdapter(settings, openrouter_key)
     app.state.provider = provider
 
-    app.state.routing_engine = RoutingEngine(settings)
+    app.state.routing_engine = RoutingEngine(cm)
 
     classifier = ClassifierService(settings, openrouter_key)
     app.state.classifier = classifier
@@ -144,6 +145,7 @@ async def lifespan(app: FastAPI):
     # Guardrails engine (input injection detection + output secret masking).
     # Config is re-read per request so settings hot-reload applies live.
     app.state.guardrails = GuardrailEngine(GuardrailConfig())
+    app.state.temporal_awareness_engine = TemporalAwarenessEngine(app.state.config.get().telemetry.temporal_awareness)
     logger.info(
         "router.guardrails.ready",
         input_enabled=settings.telemetry.guardrails.input_enabled,

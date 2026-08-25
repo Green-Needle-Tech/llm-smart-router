@@ -1,13 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.3 (per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
+**Version:** 2.4 (temporal awareness + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
 **Date:** 2026-08-25
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
-**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); 224 unit tests, 30 live full-suite, 22 live e2e.
+**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); RoutingEngine hot-reload fix; 224 unit tests, 30 live full-suite, 22 live e2e, 7 temporal awareness e2e.
 
 ---
 
@@ -43,7 +43,8 @@ flowchart TD
     B -->|"OpenAI-format response<br/>+ X-Router-* headers"| A
     B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/ log"]
     G --> P["IP REDACTION<br/>raw IPs → placeholders"]
-    P --> S["Session Store<br/>session_id → level, model, turn, expires"]
+    P --> P2T["TEMPORAL AWARENESS\ntoday → concrete date"]
+    P2T --> S["Session Store<br/>session_id → level, model, turn, expires"]
 
     S -->|"MISS — first turn"| C["Classifier LLM<br/>gemini-2.5-flash-lite"]
     S -->|"HIT — turn 2..N"| R["Route to pinned model"]
@@ -115,7 +116,8 @@ flowchart TD
     R1[1. RECEIVE<br/>POST /v1/chat/completions] --> R2[2. AUTHENTICATE<br/>Bearer token check]
     R2 --> R2G[2b. GUARDRAIL INPUT SCAN<br/>injection/jailbreak detection<br/>block → HTTP 400]
     R2G --> R2P[2c. IP REDACTION<br/>redact raw IPs → placeholders<br/>session-scoped SQLite map]
-    R2P --> R3[3. RESOLVE<br/>Derive session_id]
+    R2P --> R2T[2d. TEMPORAL AWARENESS<br/>today → 2026-08-25<br/>yesterday → 2026-08-24]
+    R2T --> R3[3. RESOLVE<br/>Derive session_id]
     R3 --> R4{4. SESSION LOOKUP}
 
     R4 -->|HIT — turn 2..N| R9[9. ROUTE<br/>level → model + param overrides]
@@ -1603,6 +1605,58 @@ OPENROUTER_API_KEY=sk-or-...   # still used by L2–L5
 #### Backward compatibility
 
 When `base_url` and `api_key_env` are both `null` (the default), the tier uses the global `provider.base_url` and `OPENROUTER_API_KEY` — identical to pre-v2.3.0 behavior. Existing deployments require zero config changes.
+
+
+### 9.6 Temporal Awareness (`telemetry.temporal_awareness`) — v2.4.0
+
+Normalizes temporal expressions in **user messages** to concrete ISO dates before classification and forwarding. The classifier and tier models see `2026-08-25` instead of "today", eliminating ambiguity for models without real-time clock access.
+
+#### Configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable temporal expression normalization. |
+| `default_timezone` | `string` | `"UTC"` | IANA timezone (e.g. `America/New_York`) for date resolution. |
+| `strategy` | `string` | `"replace"` | `"replace"` swaps expressions in-place. `"context_block"` reserved for future use. |
+
+**Example:**
+
+```json
+{
+  "telemetry": {
+    "temporal_awareness": {
+      "enabled": true,
+      "default_timezone": "UTC",
+      "strategy": "replace"
+    }
+  }
+}
+```
+
+#### How it works
+
+1. After IP redaction and before session resolution/classification, `_process_temporal_awareness()` in `chat.py` runs the `TemporalAwarenessEngine` over all user messages.
+2. The engine uses [pendulum](https://pendulum.eustance.dev/) to resolve `today`, `yesterday`, `tomorrow` to concrete `YYYY-MM-DD` dates in the configured timezone.
+3. Replacements are written back onto the pydantic message objects in-place, so both the classifier digest and the upstream model see the concrete dates.
+4. Non-user messages (system, assistant) are passed through unchanged.
+
+#### Pipeline position
+
+```
+Guardrail input scan → IP redaction → **Temporal awareness** → Session resolution → Classification → Forward
+```
+
+#### Hot-reload
+
+Toggle `telemetry.temporal_awareness.enabled` in `settings.json` and `POST /admin/settings/reload` — no container restart needed.
+
+#### E2E test
+
+`python3 tests/test_temporal_awareness.py` — 7 cases: today/yesterday/tomorrow replacement, multiple expressions in one message, non-temporal pass-through, feature toggle off/on.
+
+#### RoutingEngine hot-reload fix (v2.4.0)
+
+`RoutingEngine.__init__` previously stored a static `Settings` snapshot. After `ConfigManager.reload()` replaced `self._settings`, `RoutingEngine` still referenced the old object — `set_tier_model.py` + `/admin/settings/reload` confirmed the change in `/admin/settings` but session pins recorded the stale model. Fixed: `RoutingEngine` now accepts the `ConfigManager` and resolves config via a `@property` that calls `.get()` on every access, with a `hasattr(self._config_manager, 'get')` guard so unit tests passing raw `Settings`/`SimpleNamespace` fakes still work.
 
 ---
 

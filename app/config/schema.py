@@ -232,6 +232,12 @@ class BudgetConfig(BaseModel):
     downgrade_to: str = "L2"
 
 
+class TemporalAwarenessConfig(BaseModel):
+    enabled: bool = False
+    default_timezone: str = "UTC"  # IANA Time Zone Database format, e.g., "America/New_York"
+    strategy: str = "replace"  # "replace" or "context_block"
+
+
 class TelemetryConfig(BaseModel):
     log_level: str = "INFO"
     log_format: str = "json"
@@ -241,6 +247,7 @@ class TelemetryConfig(BaseModel):
     metrics_enabled: bool = True
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
+    temporal_awareness: TemporalAwarenessConfig = Field(default_factory=TemporalAwarenessConfig)
 
 
 class Settings(BaseModel):

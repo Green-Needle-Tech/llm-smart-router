@@ -154,5 +154,10 @@ DEFAULTS = {
         "log_prompt_hash": True,
         "include_metadata_in_body": False,
         "metrics_enabled": True,
+        "temporal_awareness": {
+            "enabled": False,
+            "default_timezone": "UTC",
+            "strategy": "replace",
+        },
     },
 }

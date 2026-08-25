@@ -9,8 +9,16 @@ from app.schemas.router import Level, RouteDecision, ClassificationResult, Class
 class RoutingEngine:
     """Maps classification level to a model and parameters."""
 
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, config_manager):
+        self._config_manager = config_manager
+
+    @property
+    def config(self):
+        # Support both ConfigManager (has .get()) and raw Settings objects
+        # (used by unit tests that pass SimpleNamespace/Settings fakes)
+        if hasattr(self._config_manager, 'get'):
+            return self._config_manager.get()
+        return self._config_manager
 
     def resolve(
         self,

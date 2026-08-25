@@ -15,7 +15,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir \
     fastapi uvicorn[standard] httpx[http2] pydantic pydantic-settings \
-    cachetools prometheus-client structlog redis
+    cachetools prometheus-client structlog redis pendulum
 
 COPY --chown=router:router app/ ./app/
 COPY --chown=router:router config/ ./config/

@@ -13,6 +13,7 @@ dependencies = [
     "prometheus-client>=0.21.0",
     "structlog>=24.4.0",
     "redis>=5.2.0",
+    "pendulum>=3.0.0",
 ]
 
 [project.optional-dependencies]

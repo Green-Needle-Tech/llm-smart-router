@@ -34,6 +34,39 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.4.0
+
+### 🕐 Temporal Awareness (`telemetry.temporal_awareness`)
+
+Normalizes temporal expressions in user messages to concrete ISO dates **before** classification and forwarding — so the classifier and tier models see `2026-08-25` instead of "today", eliminating ambiguity for models without real-time clock access.
+
+- Replaces: `today` → `YYYY-MM-DD`, `yesterday` → previous day, `tomorrow` → next day
+- Runs after IP redaction, before classification — the classifier benefits from concrete dates
+- Timezone-aware via `default_timezone` (IANA format, default `UTC`)
+- `strategy: "replace"` (default) swaps expressions in-place
+- Hot-reloadable — toggle on/off via `settings.json` without restart
+- Powered by [pendulum](https://pendulum.eustance.dev/) for reliable timezone math
+
+**Config** (`config/settings.json` → `telemetry.temporal_awareness`):
+
+```json
+{
+  "telemetry": {
+    "temporal_awareness": {
+      "enabled": true,
+      "default_timezone": "UTC",
+      "strategy": "replace"
+    }
+  }
+}
+```
+
+**E2E test**: `python3 tests/test_temporal_awareness.py` — 7 cases covering today/yesterday/tomorrow replacement, multiple expressions, non-temporal pass-through, and feature toggle.
+
+### 🔧 RoutingEngine Hot-Reload Fix
+
+`RoutingEngine` previously held a static `Settings` snapshot from startup — `set_tier_model.py` + `/admin/settings/reload` confirmed the change but session pins still recorded the old model. Fixed: `RoutingEngine` now takes the `ConfigManager` and resolves config via a `@property` on every call, with a `hasattr` guard so unit test fakes still work.
+
 ## What's New in v2.3.0
 
 ### 🔀 Per-Tier Custom Provider Support
@@ -69,7 +102,7 @@ CLASSIFIER_API_KEY=sk-...
 
 **docker-compose.yml** passes `L1_API_KEY`–`L5_API_KEY` and `CLASSIFIER_API_KEY` through as env vars. Add as many or as few as you need.
 
-All 224 unit tests pass. Live e2e verified with per-tier override on L1.
+All 231 unit tests pass (224 existing + 7 temporal awareness). Live e2e verified with per-tier override on L1.
 
 ## What's New in v2.2.0
 
@@ -246,7 +279,8 @@ flowchart TD
     subgraph Router [Request Pipeline]
         C --> P1["🛡️ Guardrails<br/>Injection detection (log/block)<br/>+ Secret masking on output"]
         P1 --> P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
-        P2 --> D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
+        P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-25<br/>yesterday → 2026-08-24"]
+        P2T --> D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
     end
 
     D -->|L1| E[Gemini 2.5 Flash<br/>OpenRouter]

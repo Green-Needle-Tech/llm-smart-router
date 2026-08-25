@@ -23,6 +23,7 @@ from app.middleware.auth import check_router_auth, unauthorized_response
 from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
 from app.privacy.ip_redaction import IPRedactionEngine
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
+from app.temporal_awareness.engine import TemporalAwarenessEngine
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
     router_requests_total, router_active_requests,
@@ -70,6 +71,10 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     # Re-hydration key uses the same session resolution as routing; when no
     # session is identifiable, a per-request UUID scopes the mapping.
     redaction_key = await _redact_incoming(request, body)
+
+    # Temporal awareness: normalize temporal expressions (today, yesterday,
+    # tomorrow, etc.) to concrete dates before classification/forwarding.
+    _process_temporal_awareness(request, body)
 
     # Parse routing directive from model field
     routing_engine = request.app.state.routing_engine
@@ -224,6 +229,21 @@ async def _redact_incoming(request, body) -> Optional[str]:
             orig.content = dumped.get("content")
     router_privacy_redactions_total.inc()
     return key
+
+
+def _process_temporal_awareness(request, body) -> None:
+    """Normalize temporal expressions (today, yesterday, tomorrow) to concrete dates."""
+    engine: Optional[TemporalAwarenessEngine] = getattr(
+        request.app.state, "temporal_awareness_engine", None
+    )
+    if engine is None:
+        return
+    messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
+    processed = engine.process_messages(messages)
+    for orig, proc in zip(body.messages, processed):
+        content = proc.get("content")
+        if isinstance(content, str) and orig.content != content:
+            orig.content = content
 
 
 def _rehydrate_response_content(engine, json_resp, key: Optional[str]) -> None:

@@ -13,3 +13,7 @@ venv/
 .coverage
 htmlcov/
 settings.json.bak
+
+# Build artifacts
+archive.tar.gz
+=*
