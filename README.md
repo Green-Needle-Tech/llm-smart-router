@@ -120,12 +120,14 @@ flowchart TD
 
     D -->|L1| E[Gemini 2.5 Flash<br/>OpenRouter]
     D -->|L2| F[DeepSeek V4 Flash<br/>OpenRouter]
-    D -->|L3–L4| F2[GLM 5.2<br/>OpenRouter]
+    D -->|L3| F2[GLM 5.2<br/>OpenRouter]
+    D -->|L4| F3[GLM 5.3<br/>OpenRouter]
     D -->|L5| H[Opus 5<br/>Claude API]
 
     E --> C
     F --> C
     F2 --> C
+    F3 --> C
     H --> C
 
     C -->|"🔒 Secrets masked<br/>🔒 IPs re-hydrated"| B
