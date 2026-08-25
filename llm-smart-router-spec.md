@@ -125,8 +125,8 @@ flowchart TD
     R9 --> R10[10. FORWARD<br/>prompt-cache features → POST OpenRouter<br/>retryable error → fallback chain]
     R10 --> R10P[10b. IP RE-HYDRATE<br/>placeholders → original IPs<br/>carry buffer for split tokens]
     R10P --> R10G[10c. GUARDRAIL OUTPUT MASK<br/>secrets in LLM output → redacted<br/>streaming: split-first carry pipeline]
-    R10G --> R10F[10d. POSTFIX<br/>append [smart-router/Ln] marker]
-    R10F --> R11[11. RESPOND<br/>Stream or JSON + X-Router-* headers]
+    R10G --> R10F["10d. POSTFIX<br/>append &#91;smart-router/Ln&#93; marker"]
+    R10F --> R11["11. RESPOND<br/>Stream or JSON + X-Router-* headers"]
     R11 --> R12[12. RECORD<br/>Log route, session, latency, usage, cost<br/>prompt-cache metrics]
 ```
 
