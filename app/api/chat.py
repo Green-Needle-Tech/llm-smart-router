@@ -850,12 +850,15 @@ async def _handle_stream(
             text = carry + payload_text
             if rehydrate_engine is not None and redaction_key and "ipaddress" in text:
                 text = rehydrate_engine.rehydrate_text_sync(text, redaction_key)
-            # Guardrails: mask secrets in streamed content.
+            # Guardrails: split FIRST — hold any plausible partial-secret tail
+            # in the carry — then mask only the flushable part. Masking before
+            # the split fires at minimum regex length mid-growth, destroying
+            # the marker and leaking the remaining body as plaintext.
+            flush, carry = _split_carry(text)
             if guardrail_engine is not None and guardrail_engine.config.output_action == "mask":
-                text, fs = guardrail_engine.mask_secrets(text)
+                flush, fs = guardrail_engine.mask_secrets(flush)
                 for f in fs:
                     router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
-            flush, carry = _split_carry(text)
             return flush, carry
 
         _guardrail_mask_active = (
@@ -893,7 +896,13 @@ async def _handle_stream(
             async for line in stream_resp.aiter_lines():
                 if line.strip() == "data: [DONE]":
                     # Flush any carried partial-token text before finishing.
+                    # Mask first: the carry may hold a partial secret that
+                    # completed (or an interleaved one) only at stream end.
                     if carry:
+                        if _guardrail_mask_active and guardrail_engine is not None:
+                            carry, _fs = guardrail_engine.mask_secrets(carry)
+                            for f in _fs:
+                                router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
                         flush_event = {"choices": [{"delta": {"content": carry}}]}
                         yield f"data: {json.dumps(flush_event)}\n\n"
                         carry = ""

@@ -25,16 +25,18 @@ def _b64ish(n: int) -> str:
 
 
 def _stream_through_carry(engine: GuardrailEngine, chunks: list[str]) -> str:
-    """Simulate the stream handler: per-chunk mask + carry split."""
+    """Simulate the stream handler: carry split FIRST, then mask the flushable
+    part (mirrors _rehydrate_chunk's production order)."""
     out = ""
     carry = ""
     for c in chunks:
         text = carry + c
-        text, _fs = engine.mask_secrets(text)
         idx = secret_carry_split(text)
-        out += text[:idx]
-        carry = text[idx:]
-    # [DONE] flush
+        flush, carry = text[:idx], text[idx:]
+        flush, _fs = engine.mask_secrets(flush)
+        out += flush
+    # [DONE] flush: mask the final carry before emitting (production does
+    # the same at the data: [DONE] boundary).
     if carry:
         carry, _fs = engine.mask_secrets(carry)
         out += carry
@@ -58,12 +60,19 @@ class TestSecretCarrySplit:
         assert secret_carry_split(text) == len(text)
 
     def test_unmasked_marker_with_long_body_releases_marker(self):
-        # Direct split (no masking): body >= threshold+margin means a real
-        # key would already be masked, so only a marker-prefix tail may hold.
-        text = "prefix sk-or-v1-" + _b64ish(24)
+        # Direct split (no masking): a long body that is TERMINATED (a
+        # non-body char follows) is releasable — the flush-side mask_secrets
+        # will mask it. A still-growing body (all body-class chars to the
+        # end) is held so a long secret cannot be masked at minimum regex
+        # length mid-growth (tail-leak guard).
+        text = "prefix sk-or-v1-" + _b64ish(24) + "."
         idx = secret_carry_split(text)
         # The marker+body must NOT be held (only a <=16-char prefix tail may be)
         assert idx > len("prefix sk-or-v1-")
+        # Growing body (no terminator) IS held from the marker.
+        text2 = "prefix sk-or-v1-" + _b64ish(24)
+        idx2 = secret_carry_split(text2)
+        assert idx2 == len("prefix ")
 
     def test_partial_marker_prefix_held(self):
         # "sk-or" is a prefix of "sk-or-v1-" and may complete next chunk
@@ -161,3 +170,79 @@ class TestChunkedStreamingMaskPipeline:
         out = _stream_through_carry(_engine(), chunks)
         assert "-----BEGIN RSA PRIVATE KEY-----" not in out
         assert out.count("***REDACTED***") >= 1
+
+
+class TestInterleavedAndTailLeakRegressions:
+    """Regressions for the three bugs found by the 2026-08-25 e2e run."""
+
+    def test_long_secret_tail_leak(self):
+        # Long secret (body > regex minimum) streamed in chunks: previously
+        # masked at min length mid-growth, leaking the remaining tail.
+        key = "sk-or-v1-" + _b64ish(59)
+        chunks = ["prefix: ", key[:15], key[15:25], key[25:40], key[40:55], key[55:] + "."]
+        out = _stream_through_carry(_engine(), chunks)
+        assert key not in out
+        assert "***REDACTED***" in out
+        # No partial body fragment may survive after the mask.
+        assert _b64ish(59)[20:] not in out
+
+    def test_interleaved_secret_masked_nonstreaming(self):
+        # "s\nk\n-\no\nr..." defeats contiguous regexes; the interleaved pass
+        # must mask it (engine-wide evasion vector).
+        key = "sk-or-v1-" + _b64ish(28)
+        interleaved = "\n".join(key)
+        e = _engine()
+        masked, findings = e.mask_secrets(interleaved)
+        assert key not in masked
+        assert "***REDACTED***" in masked
+        assert findings
+
+    def test_interleaved_secret_masked_streaming(self):
+        # Same evasion over SSE: one char (plus newline) per chunk.
+        key = "sk-or-v1-" + _b64ish(28)
+        chunks = [ch + "\n" for ch in key]
+        out = _stream_through_carry(_engine(), chunks)
+        assert key not in out
+        assert "***REDACTED***" in out
+
+    def test_interleaved_telegram_token_masked(self):
+        # Telegram token with interleaved digits and body.
+        key = "123456789:AA" + _b64ish(32)
+        interleaved = "\n".join(key)
+        e = _engine()
+        masked, findings = e.mask_secrets(interleaved)
+        assert key not in masked
+        assert "***REDACTED***" in masked
+
+    def test_benign_interleaved_text_not_mangled(self):
+        # Ordinary prose with newlines must not trigger the interleaved pass.
+        text = "The capital of France\nis Paris.\nIt is lovely."
+        e = _engine()
+        masked, findings = e.mask_secrets(text)
+        assert masked == text
+        assert not findings
+
+    def test_benign_digit_lines_not_mangled(self):
+        # A numbered list must not be mistaken for an interleaved telegram
+        # token (digits + colon + letters across lines).
+        text = "1. First item\n2. Second item\n3. Third item"
+        e = _engine()
+        masked, findings = e.mask_secrets(text)
+        assert masked == text
+        assert not findings
+
+    def test_stream_end_carry_flush_masks(self):
+        # A secret that completes only at stream end must be masked in the
+        # final carry flush, not emitted raw.
+        key = "sk-or-v1-" + _b64ish(28)
+        chunks = ["key: ", key[:10], key[10:]]
+        out = _stream_through_carry(_engine(), chunks)
+        assert key not in out
+        assert "***REDACTED***" in out
+        # A stream that ends mid-secret (body below regex minimum) releases
+        # the incomplete fragment — same semantics as non-streaming mode,
+        # where a too-short fragment cannot match any rule either.
+        chunks2 = ["key: ", key[:10], key[10:20]]
+        out2 = _stream_through_carry(_engine(), chunks2)
+        assert key not in out2  # the full secret never appeared
+        assert key[:10] in out2  # incomplete fragment released as-is

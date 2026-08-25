@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from app.guardrails.rules import (
-    COMPILED_INJECTION, SECRET_RULES, SECRET_MASK,
+    COMPILED_INJECTION, SECRET_RULES, SECRET_MASK, find_interleaved_secrets,
 )
 
 _CODE_BLOCK_RE = re.compile(r"```")
@@ -109,8 +109,14 @@ class GuardrailEngine:
         return findings
 
     def mask_secrets(self, text: str) -> tuple[str, list[GuardrailFinding]]:
-        """Replace every secret match with ***REDACTED***. Returns (text, findings)."""
-        findings = []
+        """Replace every secret match with ***REDACTED***. Returns (text, findings).
+
+        Two passes:
+        1. Strict contiguous regexes (SECRET_RULES).
+        2. Whitespace-interleaved secrets (evasion via "s\\nk\\n-\\no\\nr...").
+           Detected by find_interleaved_secrets() and masked whole.
+        """
+        findings: list[GuardrailFinding] = []
         for pid, pattern in SECRET_RULES:
             def _sub(m: re.Match, _pid=pid) -> str:
                 findings.append(GuardrailFinding(
@@ -118,6 +124,23 @@ class GuardrailEngine:
                 ))
                 return SECRET_MASK
             text = pattern.sub(_sub, text)
+        # Interleaved-evasion pass: mask whole spans (marker + interleaved body).
+        # Runs after the strict pass so contiguous secrets are already gone.
+        interleaved = find_interleaved_secrets(text)
+        if interleaved:
+            # Merge overlapping spans (union) so replacement indices stay valid.
+            merged: list[tuple[str, int, int]] = []
+            for rid, start, end in sorted(interleaved, key=lambda s: (s[1], s[2])):
+                if merged and start <= merged[-1][2]:
+                    merged[-1] = (merged[-1][0], merged[-1][1], max(merged[-1][2], end))
+                else:
+                    merged.append((rid, start, end))
+            for rid, start, end in sorted(merged, key=lambda s: s[1], reverse=True):
+                findings.append(GuardrailFinding(
+                    rule_id=rid, severity="CRITICAL",
+                    snippet=text[start:start + 12].replace("\n", " ") + "…",
+                ))
+                text = text[:start] + SECRET_MASK + text[end:]
         return text, findings
 
     def process_response_content(self, message):

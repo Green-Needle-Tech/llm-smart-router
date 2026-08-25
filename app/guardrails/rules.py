@@ -87,3 +87,42 @@ SECRET_RULES = [
 ]
 
 SECRET_MASK = "***REDACTED***"
+
+# --- Whitespace-interleaved evasion -------------------------------------------
+# A jailbroken model can defeat per-line masking by emitting a secret one
+# character per line ("s\nk\n-\no\nr..."). The strict SECRET_RULES regexes
+# never match because the secret is never contiguous. Countermeasure: run
+# the same strict regexes over a whitespace-collapsed view of the text
+# (every whitespace char removed) and map matches back to original spans.
+# Hyphens/underscores/colons are NOT collapsed, so the marker must survive
+# with its punctuation intact — the false-positive profile stays close to
+# the strict pass. Known limitation: \b boundaries can differ after collapse
+# (a word char directly before an interleaved digit run loses its boundary).
+
+_WS_RE = re.compile(r"\s")
+
+
+def find_interleaved_secrets(text: str) -> list[tuple[str, int, int]]:
+    """Find secrets whose characters are separated by whitespace.
+
+    Returns a list of (rule_id, start, end) spans in ``text``. A span is only
+    reported when it actually contains whitespace (otherwise the strict pass
+    already covers it) and the collapsed text matches a strict SECRET_RULES
+    pattern.
+    """
+    if not text or len(text) < 8:
+        return []
+    # Fast path: nothing to collapse-match that the strict pass hasn't seen.
+    pairs = [(i, ch) for i, ch in enumerate(text) if not ch.isspace()]
+    if len(pairs) == len(text):
+        return []  # no whitespace at all -> strict pass is authoritative
+    collapsed = "".join(ch for _, ch in pairs)
+    spans: list[tuple[str, int, int]] = []
+    for pid, pattern in SECRET_RULES:
+        for m in pattern.finditer(collapsed):
+            start = pairs[m.start()][0]
+            end = pairs[m.end() - 1][0] + 1
+            # Only interleaved spans (whitespace inside) are reported here.
+            if _WS_RE.search(text[start:end]):
+                spans.append((pid, start, end))
+    return spans
