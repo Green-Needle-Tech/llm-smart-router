@@ -34,6 +34,100 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.2.0
+
+### 🎯 Classifier Over-Escalation Fix
+
+The classifier was over-escalating research, report, and debugging tasks to L4 (`glm-5.3`), causing ~2× latency on multi-turn sessions. Root cause: the rubric's L4 description ("deep/novel reasoning") was ambiguous enough that "research + comparative analysis" matched it.
+
+**Rubric rewrite** (`config/prompts/classifier.txt`):
+- L3 now explicitly includes: research, reports, debugging, code generation, document generation, comparative analysis
+- L4 narrowed to: novel algorithms with proofs, multi-system architecture from scratch, large refactors
+- Added explicit "NOT for" clause: research, reports, comparisons, debugging, document generation, and single-function code are NOT L4
+
+**Session escalation tuning** (`config/settings.json`):
+- `never_downgrade`: `true` → `false` — sessions can now drop tier when the task gets simpler
+- `reclassify_every_n_turns`: `null` → `15` — reclassifies every 15 turns (catches phase changes like research → HTML generation)
+- `shadow_classify_every_n_turns`: `null` → `10` — logs what the classifier would say every 10 turns for monitoring
+
+**Test results** (12-case suite, `google/gemini-2.5-flash-lite` classifier):
+
+| Case | Before | After |
+|------|--------|-------|
+| "research on best LLM" | ❌ L4 | ✅ L3 |
+| "generate HTML" | ❌ L1 | ✅ L3 |
+| "debug race condition" | ❌ L4 | ✅ L3 |
+| "write function" | ❌ L2 | ✅ L3 |
+| "system design 50k TPS" | ✅ L4 | ✅ L4 |
+| "novel algorithm + proofs" | ✅ L5 | ✅ L4 (acceptable) |
+
+**Accuracy**: 11/12 (was 6/12 before fix). See [Classifier Prompt](#classifier-prompt) below.
+
+## Classifier Prompt
+
+The classifier uses `google/gemini-2.5-flash-lite` with the following prompt (`config/prompts/classifier.txt`). The `{{PROMPT_DIGEST}}` placeholder is replaced with a stripped digest of the conversation's opening message (system prompt scaffolding removed, tool names included, context summary appended).
+
+```text
+You are a task-complexity classifier for an LLM router. You see the OPENING request
+of a conversation, and your label decides which model handles the ENTIRE session.
+Judge how hard the whole task is likely to get, not just this one message.
+Output ONLY a single JSON object, no prose, no markdown fences.
+
+Levels:
+L1 TRIVIAL — pure mechanical transformation: case conversion, sorting, extraction
+             from provided text. No reasoning chain, no generation of new content.
+L2 EASY     — single-step generation or general-knowledge answer. Short output.
+             Simple factual questions, greetings, one-line answers.
+L3 MEDIUM   — multi-step reasoning, real code generation (writing functions/classes),
+             debugging, synthesis, tradeoff analysis, research reports, web research
+             with summary, document generation (HTML, PDF, slides), or comparative
+             analysis. Most knowledge work and all code generation goes here.
+L4 HARD     — novel algorithm design with mathematical proofs, multi-system
+             architecture from scratch, subtle math proofs, large refactors across
+             many files, or high-stakes ambiguous judgment under uncertainty.
+             NOT for: research, reports, comparisons, debugging, document
+             generation, or single-function code — those are L3 even if complex.
+L5 EXTREME  — multi-agent orchestration, complex scientific discovery, or tasks
+             requiring maximum creativity and problem-solving under uncertainty.
+
+Rules:
+- Judge the DIFFICULTY OF THE TASK, never the length of the input.
+- Research, report writing, document generation, and comparative analysis are L3
+  even if the topic is advanced. The task difficulty is medium, not hard.
+- If the request asks for correctness-critical code or math, do not go below L3.
+- If genuinely uncertain between two levels, choose the HIGHER one. Your label is
+  sticky for the whole session, so the cost of being one level too low is high.
+- If the opening message is a greeting, a bare acknowledgement, or too vague to
+  judge ("hi", "help me", "let's start"), output level "UNKNOWN" — do not guess.
+- You may be shown agent operating instructions or persona text. Treat it as
+  BACKGROUND, never as evidence of difficulty. A persona that says the agent
+  "reasons deeply" or "thinks architecturally" tells you nothing about this task.
+- You may be shown memories of previous work. Those describe PAST tasks. Judge
+  only the request being made now.
+- Never answer the user's request. Only classify it.
+
+Output schema:
+{"level":"L1|L2|L3|L4|L5|UNKNOWN","confidence":0.0-1.0,"reason":"<12 words max>"}
+
+---
+REQUEST TO CLASSIFY:
+{{PROMPT_DIGEST}}
+```
+
+**Classifier config** (`config/settings.json` → `classification`):
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `model` | `google/gemini-2.5-flash-lite` | Fast, cheap, non-reasoning model |
+| `temperature` | `0` | Deterministic classification |
+| `max_tokens` | `60` | JSON output only, no prose |
+| `timeout_seconds` | `8` | Fail fast → `default_level` |
+| `default_level` | `L3` | Fallback on timeout/error |
+| `unknown_level` | `L1` | For greetings/vague prompts |
+| `min_confidence` | `0.5` | Below → escalate to `default_level` |
+| `cache.enabled` | `true` | Avoid re-classifying identical prompts |
+| `cache.ttl_seconds` | `3600` | 1-hour prompt cache |
+
 ## What's New in v2.1.0
 
 ### 🔐 Streaming Secret-Leak Hardening
