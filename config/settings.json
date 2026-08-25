@@ -95,7 +95,7 @@
       "decay_per_turn": 1,
       "cooldown_turns": 5,
       "max_escalations_per_session": 2,
-      "never_downgrade": true,
+      "never_downgrade": false,
       "respect_max_level": true,
       "explicit_signals_enabled": true,
       "free_signals_enabled": true,
@@ -116,7 +116,9 @@
       "reclassify_every_n_turns": null,
       "retry_on_failure": false,
       "retry_on_failure_max_per_session": 2
-    }
+    },
+    "reclassify_every_n_turns": 15,
+    "shadow_classify_every_n_turns": 10
   },
   "heuristics": {
     "enabled": true,

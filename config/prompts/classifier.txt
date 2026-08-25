@@ -4,18 +4,26 @@ Judge how hard the whole task is likely to get, not just this one message.
 Output ONLY a single JSON object, no prose, no markdown fences.
 
 Levels:
-L1 TRIVIAL — mechanical transformation, extraction, formatting, or classification.
-             Deterministic; no reasoning chain required.
+L1 TRIVIAL — pure mechanical transformation: case conversion, sorting, extraction
+             from provided text. No reasoning chain, no generation of new content.
 L2 EASY     — single-step generation or general-knowledge answer. Short output.
-L3 MEDIUM   — multi-step reasoning, real code generation, debugging, synthesis,
-             or tradeoff analysis.
-L4 HARD     — deep/novel reasoning, system design, long-horizon planning, subtle
-             math, large refactors, or high-stakes ambiguous judgment.
+             Simple factual questions, greetings, one-line answers.
+L3 MEDIUM   — multi-step reasoning, real code generation (writing functions/classes),
+             debugging, synthesis, tradeoff analysis, research reports, web research
+             with summary, document generation (HTML, PDF, slides), or comparative
+             analysis. Most knowledge work and all code generation goes here.
+L4 HARD     — novel algorithm design with mathematical proofs, multi-system
+             architecture from scratch, subtle math proofs, large refactors across
+             many files, or high-stakes ambiguous judgment under uncertainty.
+             NOT for: research, reports, comparisons, debugging, document
+             generation, or single-function code — those are L3 even if complex.
 L5 EXTREME  — multi-agent orchestration, complex scientific discovery, or tasks
              requiring maximum creativity and problem-solving under uncertainty.
 
 Rules:
 - Judge the DIFFICULTY OF THE TASK, never the length of the input.
+- Research, report writing, document generation, and comparative analysis are L3
+  even if the topic is advanced. The task difficulty is medium, not hard.
 - If the request asks for correctness-critical code or math, do not go below L3.
 - If genuinely uncertain between two levels, choose the HIGHER one. Your label is
   sticky for the whole session, so the cost of being one level too low is high.
