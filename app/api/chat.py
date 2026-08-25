@@ -22,6 +22,7 @@ from app.session.lifecycle import check_expiry, check_turn_cap
 from app.middleware.auth import check_router_auth, unauthorized_response
 from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
 from app.privacy.ip_redaction import IPRedactionEngine
+from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
     router_requests_total, router_active_requests,
@@ -38,6 +39,9 @@ from app.telemetry.metrics import (
     router_prompt_cache_writes_total,
     router_prompt_cache_hit_ratio,
     router_privacy_redactions_total,
+    router_guardrail_findings_total,
+    router_guardrail_blocks_total,
+    router_guardrail_secret_masks_total,
 )
 
 router = APIRouter()
@@ -55,6 +59,12 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         auth_header = request.headers.get("Authorization", "")
         if not check_router_auth(auth_header, config):
             return unauthorized_response()
+
+    # Guardrails: input injection/jailbreak scan (runs BEFORE privacy
+    # redaction so detection sees the original text).
+    guardrail_block = _guardrail_scan_input(request, body)
+    if guardrail_block is not None:
+        return guardrail_block
 
     # Privacy middleware: redact raw IPs before classification/forwarding.
     # Re-hydration key uses the same session resolution as routing; when no
@@ -116,6 +126,78 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         reclassify, repin, task_text, bypass_cache, include_metadata, start,
         redaction_key=redaction_key,
     )
+
+
+def _guardrail_scan_input(request, body):
+    """Scan incoming messages with the input guardrail.
+
+    Returns a JSONResponse (400) when configured to block and the request
+    trips the severity threshold; otherwise None. Findings are always
+    counted in metrics and logged.
+    """
+    engine: Optional[GuardrailEngine] = getattr(request.app.state, "guardrails", None)
+    if engine is None:
+        return None
+    config = request.app.state.config.get()
+    cfg = config.telemetry.guardrails
+    engine.config = GuardrailConfig(
+        input_enabled=cfg.input_enabled,
+        input_action=cfg.input_action,
+        block_on_severity=cfg.block_on_severity,
+        output_enabled=cfg.output_enabled,
+        output_action=cfg.output_action,
+    )
+    messages = [
+        (m.model_dump() if hasattr(m, "model_dump") else m) for m in body.messages
+    ]
+    result = engine.scan_messages(messages)
+    for f in result.findings:
+        router_guardrail_findings_total.labels(
+            rule_id=f.rule_id, severity=f.severity, direction="input",
+        ).inc()
+        logger.warning(
+            "router.guardrail.input_finding",
+            rule=f.rule_id, severity=f.severity, action=cfg.input_action,
+        )
+    if result.blocked:
+        top = max(result.findings, key=lambda f: {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}.get(f.severity, 0))
+        router_guardrail_blocks_total.labels(rule_id=top.rule_id, severity=top.severity).inc()
+        return JSONResponse(
+            status_code=400,
+            content={"error": {
+                "message": (
+                    "Request blocked by router guardrail: potential prompt "
+                    f"injection detected (rule: {top.rule_id}, severity: {top.severity})."
+                ),
+                "type": "guardrail_violation",
+                "param": None,
+                "code": "router_guardrail_blocked",
+            }},
+        )
+    return None
+
+
+def _guardrail_process_output(request, json_resp) -> None:
+    """Mask (or log) secrets in a non-streaming response, in place."""
+    engine: Optional[GuardrailEngine] = getattr(request.app.state, "guardrails", None)
+    if engine is None:
+        return
+    for choice in json_resp.get("choices", []):
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        _, findings = engine.process_response_content(message.get("content"))
+        for f in findings:
+            if engine.config.output_action == "mask":
+                router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+            else:
+                router_guardrail_findings_total.labels(
+                    rule_id=f.rule_id, severity=f.severity, direction="output",
+                ).inc()
+            logger.warning(
+                "router.guardrail.output_finding", rule=f.rule_id,
+                action=engine.config.output_action,
+            )
 
 
 async def _redact_incoming(request, body) -> Optional[str]:
@@ -639,6 +721,9 @@ async def _handle_non_stream(
         getattr(request.app.state, "ip_redaction", None), json_resp, redaction_key,
     )
 
+    # Guardrails: mask secrets in the LLM output before serving.
+    _guardrail_process_output(request, json_resp)
+
     # Record upstream prompt-cache usage (cached_tokens / cache_write_tokens)
     cached_tokens, cache_written = extract_cache_usage(json_resp)
     if cached_tokens or cache_written:
@@ -734,6 +819,9 @@ async def _handle_stream(
         # passes through a carry buffer that holds back a trailing partial
         # "[ipaddress-..." tail until it can no longer complete a match.
         rehydrate_engine = getattr(request.app.state, "ip_redaction", None)
+        guardrail_engine: Optional[GuardrailEngine] = getattr(
+            request.app.state, "guardrails", None
+        )
 
         def _split_carry(text: str) -> tuple[str, str]:
             """Split text into (flushable, carry) around a possible partial token tail."""
@@ -755,6 +843,11 @@ async def _handle_stream(
             text = carry + payload_text
             if rehydrate_engine is not None and redaction_key and "ipaddress" in text:
                 text = rehydrate_engine.rehydrate_text_sync(text, redaction_key)
+            # Guardrails: mask secrets in streamed content.
+            if guardrail_engine is not None and guardrail_engine.config.output_action == "mask":
+                text, fs = guardrail_engine.mask_secrets(text)
+                for f in fs:
+                    router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
             flush, carry = _split_carry(text)
             return flush, carry
 
@@ -918,6 +1011,7 @@ async def _passthrough(request, body, model, redaction_key=None):
         _rehydrate_response_content(
             getattr(request.app.state, "ip_redaction", None), json_resp, redaction_key,
         )
+        _guardrail_process_output(request, json_resp)
         return JSONResponse(content=json_resp)
 
 

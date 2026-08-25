@@ -21,6 +21,7 @@ from app.session.redis_store import RedisSessionStore
 from app.cache.memory import MemoryClassificationCache
 from app.cache.redis import RedisClassificationCache
 from app.privacy.ip_redaction import IPRedactionEngine, IPRedactionStore
+from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 
 from app.api.chat import router as chat_router
 from app.api.models import router as models_router
@@ -139,6 +140,16 @@ async def lifespan(app: FastAPI):
                     logger.warning("router.privacy.purge_failed", error=str(e))
 
         purge_task = asyncio.create_task(_purge_loop())
+
+    # Guardrails engine (input injection detection + output secret masking).
+    # Config is re-read per request so settings hot-reload applies live.
+    app.state.guardrails = GuardrailEngine(GuardrailConfig())
+    logger.info(
+        "router.guardrails.ready",
+        input_enabled=settings.telemetry.guardrails.input_enabled,
+        input_action=settings.telemetry.guardrails.input_action,
+        output_action=settings.telemetry.guardrails.output_action,
+    )
 
     logger.info("router.ready", port=settings.server.port)
 

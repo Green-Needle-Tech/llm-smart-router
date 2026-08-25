@@ -187,6 +187,25 @@ router_privacy_redactions_total = Counter(
     "Requests that passed through IP redaction",
 )
 
+# Guardrail metrics
+router_guardrail_findings_total = Counter(
+    "router_guardrail_findings_total",
+    "Guardrail findings by rule and direction",
+    ["rule_id", "severity", "direction"],
+)
+
+router_guardrail_blocks_total = Counter(
+    "router_guardrail_blocks_total",
+    "Requests blocked by the input guardrail",
+    ["rule_id", "severity"],
+)
+
+router_guardrail_secret_masks_total = Counter(
+    "router_guardrail_secret_masks_total",
+    "Secrets masked in LLM output by provider pattern",
+    ["rule_id"],
+)
+
 # Info
 router_info = Info(
     "router",

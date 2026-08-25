@@ -32,6 +32,18 @@ class PromptCachingConfig(BaseModel):
     min_tokens: int = 1024
 
 
+class GuardrailsConfig(BaseModel):
+    """LLM guardrails: input injection detection + output secret masking."""
+    input_enabled: bool = True
+    # "log" — monitor only | "block" — reject request | "tag" — log + annotate
+    input_action: str = "log"
+    # Block requests with findings at/above this severity ("HIGH" or "CRITICAL")
+    block_on_severity: str = "HIGH"
+    output_enabled: bool = True
+    # "mask" — replace secrets with ***REDACTED*** | "log" | "block"
+    output_action: str = "mask"
+
+
 class PrivacyConfig(BaseModel):
     """IP redaction & re-hydration privacy middleware."""
     enabled: bool = True
@@ -218,6 +230,7 @@ class TelemetryConfig(BaseModel):
     include_metadata_in_body: bool = False
     metrics_enabled: bool = True
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
+    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
 
 
 class Settings(BaseModel):
