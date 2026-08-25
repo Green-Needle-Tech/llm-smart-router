@@ -39,29 +39,35 @@ Classification is **session-scoped, not request-scoped**. The **first** prompt o
 
 ```mermaid
 flowchart TD
-    A[AI Agent] -->|OpenAI-format request + X-Session-Id| B[LLM-Smart-Router<br/>Docker :8080]
-    B -->|OpenAI-format response| A
-    B --> S[Session Store<br/>session_id → level, model, turn, expires]
+    A[AI Agent] -->|"OpenAI-format request + X-Session-Id"| B["LLM-Smart-Router<br/>Docker :8080"]
+    B -->|"OpenAI-format response<br/>+ X-Router-* headers"| A
+    B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/ log"]
+    G --> P["IP REDACTION<br/>raw IPs → placeholders"]
+    P --> S["Session Store<br/>session_id → level, model, turn, expires"]
 
-    S -->|MISS — first turn| C[Classifier LLM<br/>gemini-2.5-flash-lite]
-    S -->|HIT — turn 2..N| R[Route to pinned model]
+    S -->|"MISS — first turn"| C["Classifier LLM<br/>gemini-2.5-flash-lite"]
+    S -->|"HIT — turn 2..N"| R["Route to pinned model"]
 
-    C -->|classify once → pin session| R
+    C -->|"classify once → pin session"| R
 
-    R -->|L1| M1[Gemini 2.5 Flash<br/>OpenRouter]
-    R -->|L2| M2[DeepSeek V4 Flash<br/>OpenRouter]
-    R -->|L3| M3[GLM 5.2<br/>OpenRouter]
-    R -->|L4| M4[GLM 5.3<br/>OpenRouter]
-    R -->|L5| M5[Opus 5<br/>Claude API]
+    R -->|"L1"| M1["Gemini 2.5 Flash<br/>OpenRouter"]
+    R -->|"L2"| M2["DeepSeek V4 Flash<br/>OpenRouter"]
+    R -->|"L3"| M3["GLM 5.2<br/>OpenRouter"]
+    R -->|"L4"| M4["GLM 5.3<br/>OpenRouter"]
+    R -->|"L5"| M5["Opus 5<br/>Claude API"]
 
-    M1 --> B
-    M2 --> B
-    M3 --> B
-    M4 --> B
-    M5 --> B
+    M1 --> PC["PROMPT-CACHE FEATURES<br/>session_id passthrough + cache_control"]
+    M2 --> PC
+    M3 --> PC
+    M4 --> PC
+    M5 --> PC
+    PC --> RH["IP RE-HYDRATE<br/>placeholders → original IPs"]
+    RH --> OM["GUARDRAIL OUTPUT MASK<br/>secrets in LLM output → redacted"]
+    OM --> PF["POSTFIX<br/>append &#91;smart-router/Ln&#93;"]
+    PF --> B
 ```
 
-The practical effect: a 40-turn agent session costs **one** classifier call, not 40. Classification overhead amortizes to ~2.5% of turns, and routing for turns 2..N is a sub-millisecond dictionary lookup.
+The practical effect: a 40-turn agent session costs **one** classifier call, not 40. Classification overhead amortizes to ~2.5% of turns, and routing for turns 2..N is a sub-millisecond dictionary lookup. Guardrails (input scan + output masking) and privacy (IP redaction + re-hydration) run on every turn with < 1 ms combined overhead. Prompt-cache features (session_id passthrough for provider sticky routing, `cache_control` injection for Anthropic/Qwen) are applied to every upstream call to maximize KV-cache hits.
 
 ### 1.4 Goals
 
