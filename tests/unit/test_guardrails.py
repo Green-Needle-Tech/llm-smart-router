@@ -185,3 +185,19 @@ class TestSecretMasking:
         # "sk-" + few chars (not a 32+ key) should not match openai-key
         text, fs = e.mask_secrets("task sk-123 done")
         assert text == "task sk-123 done" and fs == []
+
+    def test_mask_secrets_in_single_streaming_chunk(self):
+        """Regression: streaming responses must mask secrets too.
+
+        The stream handler's _rehydrate_line used to short-circuit when
+        the SSE line contained neither 'ipaddress' nor a carry buffer,
+        skipping mask_secrets() entirely. Secrets never contain
+        'ipaddress', so they leaked in streaming mode. This test
+        verifies mask_secrets catches a full key in a single chunk
+        (the common case the streaming fix addresses).
+        """
+        e = _engine()
+        key = "sk-or-v1-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
+        text, fs = e.mask_secrets(f"here is the key: {key}")
+        assert key not in text
+        assert "***REDACTED***" in text

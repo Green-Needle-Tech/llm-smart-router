@@ -834,9 +834,16 @@ async def _handle_stream(
                     r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?", tail, re.IGNORECASE
                 ):
                     return text[:-keep], tail
+            # Guardrails: hold back a trailing partial secret (e.g. a key
+            # streamed token-by-token) until it completes or proves benign.
+            if _guardrail_mask_active:
+                idx = secret_carry_split(text)
+                if idx < len(text):
+                    return text[:idx], text[idx:]
             return text, ""
 
         import re as _re
+        from app.guardrails.streaming import secret_carry_split
         _PARTIAL_TAIL_RE = _re.compile(r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?$", _re.IGNORECASE)
 
         def _rehydrate_chunk(payload_text: str, carry: str) -> tuple[str, str]:
@@ -851,9 +858,19 @@ async def _handle_stream(
             flush, carry = _split_carry(text)
             return flush, carry
 
+        _guardrail_mask_active = (
+            guardrail_engine is not None
+            and guardrail_engine.config.output_enabled
+            and guardrail_engine.config.output_action == "mask"
+        )
+
         async def _rehydrate_line(line: str, carry: str):
             """Re-hydrate content inside a data: SSE line; returns (line, carry)."""
-            if not line.startswith("data: ") or "ipaddress" not in line and not carry:
+            if not line.startswith("data: "):
+                return line, carry
+            # Fast-path: skip JSON parse when neither IP rehydration nor
+            # guardrail masking applies and no carry buffer is pending.
+            if not _guardrail_mask_active and "ipaddress" not in line and not carry:
                 return line, carry
             try:
                 data = json.loads(line[6:])
