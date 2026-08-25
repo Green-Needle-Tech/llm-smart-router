@@ -72,9 +72,14 @@ Edit `config/settings.json` (hot-reloadable) to change:
 flowchart TD
     A[Backend/Frontend Engineer] --> B[AI Agent]
     B --> C[LLM-Smart-Router]
-    C --> D[Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5]
 
-    D -->|L1| E[Gemini Flash Lite 3.1<br/>OpenRouter]
+    subgraph Router [Request Pipeline]
+        C --> P1["🛡️ Guardrails<br/>Injection detection (log/block)<br/>+ Secret masking on output"]
+        P1 --> P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
+        P2 --> D["Classifier LLM<br/>gemini-3.1-flash-lite<br/>Rates task: L1–L5"]
+    end
+
+    D -->|L1| E[Gemini 2.5 Flash<br/>OpenRouter]
     D -->|L2| F[DeepSeek V4 Flash<br/>OpenRouter]
     D -->|L3–L4| F2[GLM 5.3<br/>OpenRouter]
     D -->|L5| H[Opus 5<br/>Claude API]
@@ -84,9 +89,11 @@ flowchart TD
     F2 --> C
     H --> C
 
-    C --> B
+    C -->|"🔒 Secrets masked<br/>🔒 IPs re-hydrated"| B
     B --> A
 ```
+
+Turn 2+ skips the classifier: the session pin routes straight to the tier model, with `on_config_change: keep_level` re-resolving the model after settings changes.
 
 
 | Component | Technology |
