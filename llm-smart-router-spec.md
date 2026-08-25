@@ -106,7 +106,9 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
 ```mermaid
 flowchart TD
     R1[1. RECEIVE<br/>POST /v1/chat/completions] --> R2[2. AUTHENTICATE<br/>Bearer token check]
-    R2 --> R3[3. RESOLVE<br/>Derive session_id]
+    R2 --> R2G[2b. GUARDRAIL INPUT SCAN<br/>injection/jailbreak detection<br/>block → HTTP 400]
+    R2G --> R2P[2c. IP REDACTION<br/>redact raw IPs → placeholders<br/>session-scoped SQLite map]
+    R2P --> R3[3. RESOLVE<br/>Derive session_id]
     R3 --> R4{4. SESSION LOOKUP}
 
     R4 -->|HIT — turn 2..N| R9[9. ROUTE<br/>level → model + param overrides]
@@ -120,12 +122,15 @@ flowchart TD
     R7 --> R8
 
     R8 --> R9
-    R9 --> R10[10. FORWARD<br/>POST OpenRouter<br/>retryable error → fallback chain]
-    R10 --> R11[11. RESPOND<br/>Stream or JSON + X-Router-* headers]
-    R11 --> R12[12. RECORD<br/>Log route, session, latency, usage, cost]
+    R9 --> R10[10. FORWARD<br/>prompt-cache features → POST OpenRouter<br/>retryable error → fallback chain]
+    R10 --> R10P[10b. IP RE-HYDRATE<br/>placeholders → original IPs<br/>carry buffer for split tokens]
+    R10P --> R10G[10c. GUARDRAIL OUTPUT MASK<br/>secrets in LLM output → redacted<br/>streaming: split-first carry pipeline]
+    R10G --> R10F[10d. POSTFIX<br/>append [smart-router/Ln] marker]
+    R10F --> R11[11. RESPOND<br/>Stream or JSON + X-Router-* headers]
+    R11 --> R12[12. RECORD<br/>Log route, session, latency, usage, cost<br/>prompt-cache metrics]
 ```
 
-Steps 5–8 execute **once per session**. Steps 1–4 and 9–12 execute on every turn; on a session hit the entire router overhead is a store lookup plus a config dictionary read.
+Steps 2b–2c (guardrail input scan, IP redaction) run on **every** request, before session resolution, so detection sees the original text. Steps 5–8 execute **once per session**. Steps 10b–10d (IP re-hydration, guardrail output masking, postfix) run on the response before it is returned to the client; in streaming mode they operate per-SSE-chunk through a carry buffer that holds back partial-token tails. On a session hit the entire router overhead is a store lookup plus a config dictionary read — the guardrail and privacy middleware add < 1 ms combined.
 
 ### 2.3 Technology stack
 
