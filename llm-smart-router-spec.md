@@ -35,31 +35,28 @@ Classification is **session-scoped, not request-scoped**. The **first** prompt o
 
 ### 1.3 Primary user flow
 
-```
-┌──────────────┐   OpenAI-format request    ┌───────────────────────────┐
-│              │   + X-Session-Id           │   Smart Router (Docker)   │
-│ Hermes Agent │ ─────────────────────────► │   http://localhost:8080   │
-│              │ ◄───────────────────────── │                           │
-└──────────────┘   OpenAI-format response   └─────────────┬─────────────┘
-                                                          │
-                                            ┌─────────────▼─────────────┐
-                                            │      SESSION STORE        │
-                                            │  session_id → {level,     │
-                                            │   model, turn, expires}   │
-                                            └─────────────┬─────────────┘
-                                                          │
-                          ┌───────────── MISS (first turn) ┴ HIT (turn 2..N) ──────────┐
-                          │                                                            │
-                          ▼                                                            │
-                ┌──────────────────┐                                                   │
-                │  Classifier LLM  │  ── classify once ──► pin session                 │
-                │  (cheap, fast)   │                                                   │
-                └────────┬─────────┘                                                   │
-                         │                                                             │
-                         ▼                                                             ▼
-                ┌───────────────────────────── route to pinned model ──────────────────────┐
-                │   L1 cheap model   │   L2 small model   │   L3 mid model   │  L4 frontier  │  L5 extreme  │
-                └──────────────────────────── OpenRouter API ─────────────────────────────┘
+```mermaid
+flowchart TD
+    A[AI Agent] -->|OpenAI-format request + X-Session-Id| B[LLM-Smart-Router<br/>Docker :8080]
+    B -->|OpenAI-format response| A
+    B --> S[Session Store<br/>session_id → level, model, turn, expires]
+
+    S -->|MISS — first turn| C[Classifier LLM<br/>gemini-2.5-flash-lite]
+    S -->|HIT — turn 2..N| R[Route to pinned model]
+
+    C -->|classify once → pin session| R
+
+    R -->|L1| M1[Gemini 2.5 Flash<br/>OpenRouter]
+    R -->|L2| M2[DeepSeek V4 Flash<br/>OpenRouter]
+    R -->|L3| M3[GLM 5.2<br/>OpenRouter]
+    R -->|L4| M4[GLM 5.3<br/>OpenRouter]
+    R -->|L5| M5[Opus 5<br/>Claude API]
+
+    M1 --> B
+    M2 --> B
+    M3 --> B
+    M4 --> B
+    M5 --> B
 ```
 
 The practical effect: a 40-turn agent session costs **one** classifier call, not 40. Classification overhead amortizes to ~2.5% of turns, and routing for turns 2..N is a sub-millisecond dictionary lookup.
@@ -104,35 +101,26 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
 
 ### 2.2 Request lifecycle
 
-```
-1.  RECEIVE        POST /v1/chat/completions  (OpenAI schema)
-2.  AUTHENTICATE   Check Authorization: Bearer <ROUTER_API_KEY> (if auth enabled)
-3.  RESOLVE        Derive session_id (header → body field → user field → fingerprint)
+```mermaid
+flowchart TD
+    R1[1. RECEIVE<br/>POST /v1/chat/completions] --> R2[2. AUTHENTICATE<br/>Bearer token check]
+    R2 --> R3[3. RESOLVE<br/>Derive session_id]
+    R3 --> R4{4. SESSION LOOKUP}
 
-4.  SESSION LOOKUP ┌── HIT  → pinned {level, model}; touch last_seen, turn_count++
-                   │          source = "session"                        → skip to 9
-                   └── MISS → continue to 5   (this is turn 1)
+    R4 -->|HIT — turn 2..N| R9[9. ROUTE<br/>level → model + param overrides]
+    R4 -->|MISS — first turn| R5{5. PREFLIGHT}
 
-    ── first-turn path only ─────────────────────────────────────────────────
-5.  PREFLIGHT      a. Explicit override? (model="smart-router/L3",
-                      X-Router-Level, or router.level)       → skip to 8
-                   b. Heuristic rule match (stop:true)?      → skip to 8
-                   c. Classification cache hit?              → skip to 8
-6.  CLASSIFY       Acquire per-session lock (prevents duplicate classification when
-                   turn 1 and turn 2 race). Call classifier with rubric + digest
-                   → "L1".."L5". On failure/timeout/invalid → default_level.
-7.  CACHE WRITE    Store prompt fingerprint → level with TTL
-8.  PIN            Write session_id → {level, model, turn_count:1, expires_at} to
-                   the session store. Release lock.
-    ─────────────────────────────────────────────────────────────────────────
+    R5 -->|a. Explicit override| R8[8. PIN<br/>Write session store + release lock]
+    R5 -->|b. Heuristic rule match| R8
+    R5 -->|c. Classification cache hit| R8
+    R5 -->|d. No shortcut| R6[6. CLASSIFY<br/>Classifier LLM call<br/>→ L1..L5 or default_level]
+    R6 --> R7[7. CACHE WRITE<br/>fingerprint → level with TTL]
+    R7 --> R8
 
-9.  ROUTE          level → settings.routing[level].model (+ per-tier param overrides)
-10. FORWARD        POST OpenRouter /api/v1/chat/completions
-                   On retryable error → next model in fallback chain
-                   (a fallback does NOT re-pin the session; the tier stays put)
-11. RESPOND        Stream or return JSON to Hermes, unmodified OpenAI shape
-                   + X-Router-* response headers (+ optional `router` object in body)
-12. RECORD         Log route decision, session id/turn, latencies, usage, cost
+    R8 --> R9
+    R9 --> R10[10. FORWARD<br/>POST OpenRouter<br/>retryable error → fallback chain]
+    R10 --> R11[11. RESPOND<br/>Stream or JSON + X-Router-* headers]
+    R11 --> R12[12. RECORD<br/>Log route, session, latency, usage, cost]
 ```
 
 Steps 5–8 execute **once per session**. Steps 1–4 and 9–12 execute on every turn; on a session hit the entire router overhead is a store lookup plus a config dictionary read.
