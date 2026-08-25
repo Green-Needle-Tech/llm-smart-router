@@ -180,7 +180,7 @@
     },
     "L3": {
       "label": "intermediate",
-      "model": "z-ai/glm-5.3",
+      "model": "z-ai/glm-5.2",
       "fallbacks": [
         "google/gemini-2.5-flash",
         "deepseek/deepseek-v4-flash"
