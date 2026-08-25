@@ -1,13 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.1 (streaming secret-leak hardening + guardrails + privacy + prompt caching)
+**Version:** 2.3 (per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
 **Date:** 2026-08-25
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
-**Changes from 1.1 (v2.0.0-beta + v2.1.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; 224 unit tests, 30 live full-suite, 22 live e2e.
+**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); 224 unit tests, 30 live full-suite, 22 live e2e.
 
 ---
 
@@ -84,9 +84,10 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
 
 - Fine-tuning or training a bespoke classifier model.
 - Multi-tenant billing, user accounts, or a web dashboard beyond read-only stats.
-- Providers other than OpenRouter (the provider layer is abstracted, but only OpenRouter ships in v1).
 - Prompt rewriting, compression, or RAG.
 - Semantic response caching (only classification caching in v1).
+
+> **Note:** Per-tier custom providers (§9.5) shipped in v2.3.0 — each tier and the classifier can now use a different OpenAI-compatible provider. The global provider remains OpenRouter by default.
 
 ---
 
@@ -103,7 +104,7 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
 | **Classifier Service** | Builds the classification prompt, calls the cheap model, parses and validates the L1–L5 label. Invoked **only on session-store misses**. |
 | **Classification Cache** | Secondary hash → level cache. Only helps *first* turns whose opening prompt repeats across sessions (common with templated agent scaffolding). |
 | **Router / Policy Engine** | Maps level → model, applies overrides, per-tier parameter overrides, and the fallback chain. |
-| **Provider Adapter** | OpenRouter HTTP client: request translation, streaming pass-through, retries, error normalization. |
+| **Provider Adapter** | OpenAI-compatible HTTP client: request translation, streaming pass-through, retries, error normalization. Supports per-tier `base_url` and `api_key` overrides (§9.5). |
 | **Config Manager** | Loads and validates `settings.json`, watches for changes, exposes hot reload. |
 | **Telemetry** | Structured JSON logs, Prometheus metrics, per-request cost accounting. |
 
@@ -858,6 +859,7 @@ Secrets (API keys) come **only** from environment variables or Docker secrets. `
     "low_confidence_action": "escalate",
     "prompt_file": "/app/config/prompts/classifier.txt",
     "rubric_version": "v1",
+    "api_key_env": null,
     "digest": {
       "system_chars": 500,
       "tail_chars": 2000,
@@ -958,7 +960,9 @@ Secrets (API keys) come **only** from environment variables or Docker secrets. `
       "model": "meta-llama/llama-3.3-8b-instruct",
       "fallbacks": ["mistralai/mistral-small-3.2-24b-instruct"],
       "params": { "temperature": 0.2, "max_tokens": 1024 },
-      "max_cost_per_request_usd": 0.005
+      "max_cost_per_request_usd": 0.005,
+      "base_url": null,
+      "api_key_env": null
     },
     "L2": {
       "label": "easy",
@@ -1033,6 +1037,8 @@ Secrets (API keys) come **only** from environment variables or Docker secrets. `
 | `SESSION_ENABLED` | No | `true` | Kill switch for pinning — reverts to per-request classification. |
 | `SESSION_IDLE_TTL_SECONDS` | No | `7200` | Overrides `session.idle_ttl_seconds`. |
 | `SESSION_FINGERPRINT_SALT` | No | random per boot | Set explicitly so fingerprints survive restarts. |
+| `L1_API_KEY`–`L5_API_KEY` | No | — | Per-tier API keys. Used when a tier's `api_key_env` names the corresponding variable (§9.5). |
+| `CLASSIFIER_API_KEY` | No | — | Classifier API key. Used when `classification.api_key_env` names this variable (§9.5). |
 
 ---
 
@@ -1541,6 +1547,63 @@ Automatically makes the most of provider KV/prefix caches:
 | Cache telemetry | `router_prompt_cached_tokens_total`, `router_prompt_cache_hit_ratio` surfaced in `/metrics`. |
 | Prefix stability | Session-stable redaction tokens (same IP → same `[ipaddress-NN]`) keep prefixes stable. Postfix stripping and redaction are cache-aware. |
 
+### 9.5 Per-Tier Custom Providers (v2.3.0)
+
+Each tier (L1–L5) and the classifier LLM can optionally use a **different OpenAI-compatible provider** instead of the global `provider.base_url` + `OPENROUTER_API_KEY`.
+
+#### Configuration
+
+Two optional fields on every `TierConfig` and on `ClassificationConfig`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `base_url` | `string \| null` | `null` | Custom API endpoint for this tier/classifier. When `null`, uses `provider.base_url`. |
+| `api_key_env` | `string \| null` | `null` | Environment variable name holding the API key. When `null`, uses `OPENROUTER_API_KEY`. |
+
+**Example:** L1 on a local vLLM, L2–L5 on OpenRouter, classifier on a separate provider:
+
+```json
+{
+  "routing": {
+    "L1": {
+      "model": "meta-llama/llama-3.3-8b-instruct",
+      "base_url": "http://vllm:8000/v1",
+      "api_key_env": "L1_API_KEY"
+    },
+    "L2": { "model": "openai/gpt-4.1-mini" }
+  },
+  "classification": {
+    "model": "google/gemini-2.5-flash-lite",
+    "base_url": "https://other-provider.com/v1",
+    "api_key_env": "CLASSIFIER_API_KEY"
+  }
+}
+```
+
+```bash
+# .env
+L1_API_KEY=token-for-vllm
+CLASSIFIER_API_KEY=sk-...
+OPENROUTER_API_KEY=sk-or-...   # still used by L2–L5
+```
+
+#### How it works
+
+1. **At request time**, `_resolve_tier_provider()` in `chat.py` checks the tier's `base_url` and `api_key_env`. If set, it reads the key from `os.environ` and passes both to the provider adapter.
+2. **`OpenRouterAdapter.chat_completion()`** accepts per-call `base_url` and `api_key` overrides. When provided, the request goes to the custom endpoint with the custom key; otherwise it uses the global defaults.
+3. **`FallbackExecutor`** uses the per-call `base_url` for all models in the fallback chain for that tier.
+4. **`ClassifierService`** resolves its own `_classifier_base_url` and `_classifier_auth_header` from the classification config, falling back to the global provider when unset.
+
+#### Security
+
+- API keys are **never stored in `settings.json`** — only the env var *name* is. The `validate_no_secrets` model validator rejects `sk-*` patterns in settings.
+- Keys are read from `os.environ` at request time, not cached in memory beyond the process.
+- `docker-compose.yml` passes `L1_API_KEY`–`L5_API_KEY` and `CLASSIFIER_API_KEY` as environment variables.
+
+#### Backward compatibility
+
+When `base_url` and `api_key_env` are both `null` (the default), the tier uses the global `provider.base_url` and `OPENROUTER_API_KEY` — identical to pre-v2.3.0 behavior. Existing deployments require zero config changes.
+
 ---
 
 ## 10. Failure Modes and Handling
@@ -1685,7 +1748,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 - **Context repair on escalation** — a protocol for Hermes to inject a re-examination note (or start a clean session with a summary) when a tier moves up, addressing the weak-inherited-context problem in §4.11.7.
 - **Pin persistence across restarts** — snapshot the memory store to disk on shutdown so a container restart does not re-classify every live session.
 - **Semantic response cache** — embedding-based near-duplicate response reuse.
-- **Multi-provider** — direct Anthropic/OpenAI/local vLLM adapters alongside OpenRouter, with per-tier provider choice. *(Partially shipped: Anthropic `cache_control` injection in v2.0.)*
+- **Multi-provider** — direct Anthropic/OpenAI/local vLLM adapters alongside OpenRouter, with per-tier provider choice. *(Shipped in v2.3.0: per-tier `base_url` + `api_key_env` — §9.5. Any OpenAI-compatible endpoint can serve a tier.)*
 - **Feedback loop** — Hermes reports task success back to `/v1/router/feedback`; mis-tiered prompts feed the eval set and rubric tuning.
 - **A/B routing** — send a sampled percentage of traffic one tier higher to continuously measure quality delta per tier.
 

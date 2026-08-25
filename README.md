@@ -34,6 +34,43 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.3.0
+
+### 🔀 Per-Tier Custom Provider Support
+
+Each tier (L1–L5) and the classifier LLM can now use a **different OpenAI-compatible provider** — not just OpenRouter. Set `base_url` and `api_key_env` on any tier or the classifier in `config/settings.json`:
+
+```json
+{
+  "routing": {
+    "L1": {
+      "model": "google/gemini-2.5-flash",
+      "base_url": "https://custom-provider.com/v1",
+      "api_key_env": "L1_API_KEY"
+    }
+  },
+  "classification": {
+    "model": "google/gemini-2.5-flash-lite",
+    "api_key_env": "CLASSIFIER_API_KEY"
+  }
+}
+```
+
+Then add the key to `.env`:
+```
+L1_API_KEY=sk-...
+CLASSIFIER_API_KEY=sk-...
+```
+
+**How it works:**
+- `base_url` — overrides `provider.base_url` for that tier's requests only
+- `api_key_env` — names the environment variable holding the API key; the key is read at request time, never stored in `settings.json`
+- When both are unset (default), the tier uses the global `OPENROUTER_API_KEY` and `provider.base_url` — zero changes needed for existing deployments
+
+**docker-compose.yml** passes `L1_API_KEY`–`L5_API_KEY` and `CLASSIFIER_API_KEY` through as env vars. Add as many or as few as you need.
+
+All 224 unit tests pass. Live e2e verified with per-tier override on L1.
+
 ## What's New in v2.2.0
 
 ### 🎯 Classifier Over-Escalation Fix
