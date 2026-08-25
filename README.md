@@ -34,6 +34,45 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.1.0
+
+### 🔐 Streaming Secret-Leak Hardening
+
+Three streaming secret-masking vectors found and fixed by a full end-to-end guardrails audit. All fixes are in the streaming carry-buffer pipeline (`app/guardrails/streaming.py` + `app/api/chat.py`):
+
+**1. Telegram bot token streaming leak**
+Tokenizers split Telegram bot tokens at the `:AA` separator or emit them character-by-character. The carry buffer's digit-run hold (`\d{4,10}`) was too narrow — single-digit chunks and digits+colon splits flushed before the full-secret regex could reassemble.
+
+- `_TG_DIGITS_COLON_RE`: holds `123456789:` + partial `:AA` continuation
+- `_TG_DIGIT_RUN_RE`: holds any trailing digit run ≥1 (was ≥4)
+- `_collapsed_tail_hold()`: whitespace-interleaved partial-secret hold
+
+**2. Tail leak on long secrets**
+`mask_secrets` fired at minimum regex length mid-growth (e.g. `sk-or-v1-` + 16 chars), destroying the marker — the remaining body (up to 43+ chars) then flushed as plaintext.
+
+- **Pipeline reorder**: `_rehydrate_chunk` now splits FIRST (holds the growing tail in carry), then masks only the flushable (terminated) part
+- **(a2) tail-leak guard**: holds still-growing bodies even when ≥ threshold+MARGIN, until a non-body char terminates them
+
+**3. Whitespace-interleaved evasion (engine-wide)**
+A jailbroken model could emit a secret one character per line (`s\nk\n-\no\nr...`) — no contiguous regex matches, in either streaming or non-streaming mode.
+
+- `find_interleaved_secrets()`: collapses all whitespace, runs strict SECRET_RULES over the collapsed text, maps matches back to original spans
+- Wired into `mask_secrets()` as a second pass with overlap-safe span merging
+- `_collapsed_tail_hold()`: extends the carry to hold interleaved partial secrets in streaming mode
+
+**4. [DONE] carry flush**
+The final carry buffer at `data: [DONE]` now runs through `mask_secrets()` before emitting — a secret that completes only at stream end is masked, not emitted raw.
+
+### Test Results (2026-08-25)
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| Unit (`pytest tests/ -q`) | 224 | ✅ All passed |
+| Live full guardrails (`test_guardrails_full.py`) | 30 | ✅ All passed |
+| Live e2e block + streaming (`test_guardrails_e2e_block_stream.py`) | 22 | ✅ All passed |
+
+**e2e coverage**: block-mode enforcement (4 injection payloads → HTTP 400, 2 benign → 200, 2 severity-gate → 200), streaming secret masking (11 provider types + split-carry), streaming IP redaction round-trip.
+
 ## What's New in v2.0.0-beta
 
 Three new request-path features, all hot-reloadable and enabled by default:
