@@ -1,25 +1,83 @@
-"""Guardrail engine: scans messages in / responses out, applies actions."""
+"""Guardrail engine: scans messages in / responses out, applies actions.
+
+P0 Improvements (Aug 2026):
+1. Validator abstraction layer — GuardrailFinding now has error spans (start/end).
+   Existing rules wrapped in RegexValidator via ValidatorRegistry.
+2. Error spans — all scan methods populate start/end from regex match positions.
+3. System prompt leak detection — SystemPromptLeakValidator for output scanning.
+
+The engine API is backward-compatible with chat.py. New features are opt-in
+via GuardrailConfig fields (system_prompt_leak_detection, system_prompt_fragments).
+"""
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from app.guardrails.base import (
+    BaseValidator, GuardrailFinding, RegexValidator, ValidatorRegistry,
+    SEV_ORDER, severity_at_least,
+)
 from app.guardrails.rules import (
     COMPILED_INJECTION, SECRET_RULES, SECRET_MASK, find_interleaved_secrets,
     INVISIBLE_CHARS_RE, detect_invisible_text, strip_invisible_text,
     PII_RULES, PII_MASK, _is_likely_credit_card,
     MALICIOUS_URL_RE, REFUSAL_RULES,
 )
+from app.guardrails.validators import SystemPromptLeakValidator
 
 _CODE_BLOCK_RE = re.compile(r"```")
 
 
-@dataclass
-class GuardrailFinding:
-    rule_id: str
-    severity: str
-    snippet: str = ""
+def _build_default_registry() -> ValidatorRegistry:
+    """Build the default validator registry from existing compiled rules.
+
+    Each injection rule and secret rule becomes a RegexValidator with
+    precise error spans. This makes them composable — new validators
+    can be added via registry.register() without touching engine code.
+    """
+    registry = ValidatorRegistry()
+
+    # Input: injection rules (24 patterns across 8 categories)
+    for rule_id, severity, pattern in COMPILED_INJECTION:
+        registry.register(RegexValidator(
+            rule_id=rule_id, severity=severity, pattern=pattern,
+            direction="input",
+        ))
+
+    # Output: secret rules (11 provider-prefixed credential patterns)
+    for rule_id, pattern in SECRET_RULES:
+        registry.register(RegexValidator(
+            rule_id=rule_id, severity="CRITICAL", pattern=pattern,
+            direction="output", mask_str=SECRET_MASK,
+        ))
+
+    # Output: PII rules
+    for rule_id, pattern in PII_RULES:
+        registry.register(RegexValidator(
+            rule_id=rule_id, severity="HIGH", pattern=pattern,
+            direction="output", mask_str=PII_MASK,
+        ))
+
+    # Output: malicious URL rules
+    registry.register(RegexValidator(
+        rule_id="malicious-url", severity="HIGH", pattern=MALICIOUS_URL_RE,
+        direction="output", mask_str="[REDACTED-URL]",
+    ))
+
+    # Output: refusal rules (log-only, LOW severity)
+    for rule_id, pattern in REFUSAL_RULES:
+        registry.register(RegexValidator(
+            rule_id=rule_id, severity="LOW", pattern=pattern,
+            direction="output",
+        ))
+
+    return registry
+
+
+# Build once at import; engine instances share the compiled patterns.
+_DEFAULT_REGISTRY = _build_default_registry()
 
 
 @dataclass
@@ -41,6 +99,12 @@ class GuardrailConfig:
     refusal_detection: bool = True
     # Malicious URL detection (output) — log or mask exfil domains
     malicious_url_detection: bool = True
+    # System prompt leak detection (output) — fuzzy match response vs fragments
+    system_prompt_leak_detection: bool = False
+    # Fragments of system prompts to check against (hot-reloadable)
+    system_prompt_fragments: list[str] = field(default_factory=list)
+    # Fuzzy similarity threshold (0.0–1.0; higher = fewer false positives)
+    system_prompt_leak_threshold: float = 0.85
 
 
 @dataclass
@@ -53,9 +117,6 @@ class InputScanResult:
         return bool(self.findings)
 
 
-_SEV_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
-
-
 def _in_code_block_heavy_text(text: str) -> bool:
     """Heuristic: message dominated by code blocks → likely educational."""
     fences = _CODE_BLOCK_RE.findall(text)
@@ -63,27 +124,53 @@ def _in_code_block_heavy_text(text: str) -> bool:
 
 
 class GuardrailEngine:
-    """Scans text on the request and response paths."""
+    """Scans text on the request and response paths.
+
+    Uses a ValidatorRegistry for composable validators. New validators
+    can be registered at runtime via engine.registry.register().
+    """
 
     def __init__(self, config: GuardrailConfig):
         self.config = config
+        self.registry = _build_default_registry()
+        self._spleak_validator: Optional[SystemPromptLeakValidator] = None
+        self._update_spleak_validator()
+
+    def _update_spleak_validator(self) -> None:
+        """Create or update the system prompt leak validator from config."""
+        if self.config.system_prompt_leak_detection and self.config.system_prompt_fragments:
+            if self._spleak_validator is None:
+                self._spleak_validator = SystemPromptLeakValidator(
+                    fragments=self.config.system_prompt_fragments,
+                    fuzzy_threshold=self.config.system_prompt_leak_threshold,
+                )
+            else:
+                self._spleak_validator.update_fragments(self.config.system_prompt_fragments)
+                self._spleak_validator._fuzzy_threshold = self.config.system_prompt_leak_threshold
+        else:
+            self._spleak_validator = None
 
     # --- Input path ----------------------------------------------------------
 
     def scan_text(self, text: str) -> list[GuardrailFinding]:
-        """Run injection rules over a single text. Skips code-block-heavy text."""
+        """Run injection rules over a single text. Skips code-block-heavy text.
+
+        Returns findings with error spans (start, end) from regex matches.
+        """
         if not text:
             return []
         if _in_code_block_heavy_text(text):
             return []
         findings = []
-        for pid, sev, pattern in COMPILED_INJECTION:
-            m = pattern.search(text)
-            if m:
-                findings.append(GuardrailFinding(
-                    rule_id=pid, severity=sev,
-                    snippet=m.group(0)[:80],
-                ))
+        # Use registry's input validators (injection rules)
+        # Match all non-secret, non-PII, non-URL, non-refusal input validators
+        _skip_prefixes = ("openrouter-", "anthropic-", "openai-", "github-",
+                          "aws-", "google-", "slack-", "gitlab-", "stripe-",
+                          "telegram-", "private-key-", "pii-", "malicious-",
+                          "refusal-")
+        for v in self.registry.input_validators:
+            if not v.rule_id.startswith(_skip_prefixes):
+                findings.extend(v.scan(text))
         return findings
 
     def scan_messages(self, messages: list) -> InputScanResult:
@@ -103,8 +190,8 @@ class GuardrailEngine:
                         all_findings.extend(self.scan_text(block["text"]))
         blocked = False
         if self.config.input_action == "block" and all_findings:
-            threshold = _SEV_ORDER.get(self.config.block_on_severity, 2)
-            blocked = any(_SEV_ORDER.get(f.severity, 0) >= threshold for f in all_findings)
+            threshold = SEV_ORDER.get(self.config.block_on_severity, 2)
+            blocked = any(SEV_ORDER.get(f.severity, 0) >= threshold for f in all_findings)
         return InputScanResult(findings=all_findings, blocked=blocked)
 
     # --- Invisible text detection (input) ------------------------------------
@@ -120,13 +207,16 @@ class GuardrailEngine:
         detected = detect_invisible_text(text)
         if not detected:
             return []
-        # Deduplicate by char name
         names = set(name for name, _ in detected)
         return [
             GuardrailFinding(
                 rule_id=f"invisible-text-{name.lower()}",
                 severity="MEDIUM",
                 snippet=f"{name} at pos {pos}",
+                start=pos,
+                end=pos + 1,
+                direction="input",
+                metadata={"char_name": name},
             )
             for name, pos in detected[:10]  # cap to avoid flooding
         ]
@@ -136,7 +226,8 @@ class GuardrailEngine:
     def scan_banned_substrings(self, text: str) -> list[GuardrailFinding]:
         """Check text against configurable banned substrings list.
 
-        Case-insensitive substring match. Returns HIGH severity findings.
+        Case-insensitive substring match. Returns HIGH severity findings
+        with error spans.
         """
         if not text or not self.config.banned_substrings:
             return []
@@ -145,12 +236,22 @@ class GuardrailEngine:
         for banned in self.config.banned_substrings:
             if not banned:
                 continue
-            if banned.lower() in text_lower:
+            banned_lower = banned.lower()
+            start = 0
+            while True:
+                idx = text_lower.find(banned_lower, start)
+                if idx == -1:
+                    break
                 findings.append(GuardrailFinding(
                     rule_id="banned-substring",
                     severity="HIGH",
                     snippet=banned[:40],
+                    start=idx,
+                    end=idx + len(banned),
+                    direction="input",
+                    metadata={"banned_term": banned},
                 ))
+                start = idx + len(banned_lower)
         return findings
 
     # --- Output path -----------------------------------------------------------
@@ -159,12 +260,13 @@ class GuardrailEngine:
         if not text:
             return []
         findings = []
-        for pid, pattern in SECRET_RULES:
-            m = pattern.search(text)
-            if m:
-                findings.append(GuardrailFinding(
-                    rule_id=pid, severity="CRITICAL", snippet=m.group(0)[:12] + "…",
-                ))
+        for v in self.registry.output_validators:
+            if v.rule_id in (
+                "openrouter-key", "anthropic-key", "openai-key", "github-token",
+                "aws-access-key", "google-api-key", "slack-token", "gitlab-token",
+                "stripe-key", "telegram-bot", "private-key-pem",
+            ):
+                findings.extend(v.scan(text))
         return findings
 
     def mask_secrets(self, text: str) -> tuple[str, list[GuardrailFinding]]:
@@ -180,14 +282,13 @@ class GuardrailEngine:
             def _sub(m: re.Match, _pid=pid) -> str:
                 findings.append(GuardrailFinding(
                     rule_id=_pid, severity="CRITICAL", snippet=m.group(0)[:12] + "…",
+                    start=m.start(), end=m.end(), direction="output",
                 ))
                 return SECRET_MASK
             text = pattern.sub(_sub, text)
         # Interleaved-evasion pass: mask whole spans (marker + interleaved body).
-        # Runs after the strict pass so contiguous secrets are already gone.
         interleaved = find_interleaved_secrets(text)
         if interleaved:
-            # Merge overlapping spans (union) so replacement indices stay valid.
             merged: list[tuple[str, int, int]] = []
             for rid, start, end in sorted(interleaved, key=lambda s: (s[1], s[2])):
                 if merged and start <= merged[-1][2]:
@@ -198,6 +299,7 @@ class GuardrailEngine:
                 findings.append(GuardrailFinding(
                     rule_id=rid, severity="CRITICAL",
                     snippet=text[start:start + 12].replace("\n", " ") + "…",
+                    start=start, end=end, direction="output",
                 ))
                 text = text[:start] + SECRET_MASK + text[end:]
         return text, findings
@@ -209,6 +311,7 @@ class GuardrailEngine:
 
         Returns (text, findings). Credit card matches are filtered through
         a false-positive guard (_is_likely_credit_card) to reduce noise.
+        Findings include error spans from regex matches.
         """
         if not text or not self.config.pii_masking_enabled:
             return text, []
@@ -216,11 +319,11 @@ class GuardrailEngine:
         for pid, pattern in PII_RULES:
             def _sub(m: re.Match, _pid=pid) -> str:
                 match_text = m.group(0)
-                # Credit card false-positive guard
                 if _pid == "pii-credit-card" and not _is_likely_credit_card(match_text):
                     return match_text  # don't mask non-CC digit runs
                 findings.append(GuardrailFinding(
                     rule_id=_pid, severity="HIGH", snippet=match_text[:20] + "…",
+                    start=m.start(), end=m.end(), direction="output",
                 ))
                 return PII_MASK
             text = pattern.sub(_sub, text)
@@ -231,8 +334,7 @@ class GuardrailEngine:
     def scan_malicious_urls(self, text: str) -> list[GuardrailFinding]:
         """Detect known exfiltration/malicious URLs in output text.
 
-        Returns HIGH severity findings. Does not mask — the caller decides
-        based on output_action.
+        Returns HIGH severity findings with error spans.
         """
         if not text or not self.config.malicious_url_detection:
             return []
@@ -242,6 +344,9 @@ class GuardrailEngine:
                 rule_id="malicious-url",
                 severity="HIGH",
                 snippet=m.group(0)[:60] + "…",
+                start=m.start(),
+                end=m.end(),
+                direction="output",
             ))
         return findings
 
@@ -256,6 +361,9 @@ class GuardrailEngine:
                 rule_id="malicious-url",
                 severity="HIGH",
                 snippet=m.group(0)[:60] + "…",
+                start=m.start(),
+                end=m.end(),
+                direction="output",
             ))
             return "[REDACTED-URL]"
         text = MALICIOUS_URL_RE.sub(_sub, text)
@@ -266,22 +374,49 @@ class GuardrailEngine:
     def scan_refusal(self, text: str) -> list[GuardrailFinding]:
         """Detect LLM refusal patterns for monitoring (log-only, never blocks).
 
-        Returns LOW severity findings — refusals are legitimate safety behavior,
-        not violations. Useful for observability and quality metrics.
+        Returns LOW severity findings with error spans.
         """
         if not text or not self.config.refusal_detection:
             return []
         findings = []
         for pid, pattern in REFUSAL_RULES:
-            if pattern.search(text):
+            for m in pattern.finditer(text):
                 findings.append(GuardrailFinding(
-                    rule_id=pid, severity="LOW",
+                    rule_id=pid,
+                    severity="LOW",
                     snippet="refusal detected",
+                    start=m.start(),
+                    end=m.end(),
+                    direction="output",
                 ))
         return findings
 
+    # --- System prompt leak detection (output) --------------------------------
+
+    def scan_system_prompt_leak(self, text: str) -> list[GuardrailFinding]:
+        """Detect system prompt content leaking in LLM responses.
+
+        Uses fuzzy matching against configured system prompt fragments.
+        Returns HIGH severity findings with error spans.
+
+        Requires system_prompt_leak_detection=True and system_prompt_fragments
+        to be configured.
+        """
+        if not text or not self._spleak_validator:
+            return []
+        return self._spleak_validator.scan(text)
+
+    def mask_system_prompt_leak(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Mask detected system prompt leaks with [REDACTED-SYSTEM-PROMPT]."""
+        if not text or not self._spleak_validator:
+            return text, []
+        return self._spleak_validator.mask(text)
+
+    # --- Full output processing ------------------------------------------------
+
     def process_response_content(self, message):
-        """Mask secrets, PII, and malicious URLs in a message dict's content, in place.
+        """Mask secrets, PII, malicious URLs, and system prompt leaks in a
+        message dict's content, in place.
 
         Also scans for refusal patterns (log-only, never modifies content).
         Accepts the message dict ({role, content}) and mutates
@@ -289,25 +424,32 @@ class GuardrailEngine:
         """
         if not self.config.output_enabled:
             return []
+        # Refresh spleak validator in case config changed
+        self._update_spleak_validator()
+
         content = message.get("content") if isinstance(message, dict) else message
         findings: list[GuardrailFinding] = []
         if isinstance(content, str):
             if self.config.output_action == "mask":
                 masked, fs = self.mask_secrets(content)
-                # PII masking
                 if self.config.pii_masking_enabled:
                     masked, pii_fs = self.mask_pii(masked)
                     fs.extend(pii_fs)
-                # Malicious URL masking
                 if self.config.malicious_url_detection:
                     masked, url_fs = self.mask_malicious_urls(masked)
                     fs.extend(url_fs)
+                # System prompt leak masking
+                if self._spleak_validator:
+                    masked, spleak_fs = self.mask_system_prompt_leak(masked)
+                    fs.extend(spleak_fs)
                 if masked != content and isinstance(message, dict):
                     message["content"] = masked
             else:
                 fs = self.scan_output_secrets(content)
                 if self.config.malicious_url_detection:
                     fs.extend(self.scan_malicious_urls(content))
+                if self._spleak_validator:
+                    fs.extend(self.scan_system_prompt_leak(content))
             # Refusal detection (always log-only, regardless of output_action)
             if self.config.refusal_detection:
                 fs.extend(self.scan_refusal(content))
@@ -323,12 +465,17 @@ class GuardrailEngine:
                         if self.config.malicious_url_detection:
                             masked, url_fs = self.mask_malicious_urls(masked)
                             fs_block.extend(url_fs)
+                        if self._spleak_validator:
+                            masked, spleak_fs = self.mask_system_prompt_leak(masked)
+                            fs_block.extend(spleak_fs)
                         if masked != block["text"]:
                             block["text"] = masked
                     else:
                         fs_block = self.scan_output_secrets(block["text"])
                         if self.config.malicious_url_detection:
                             fs_block.extend(self.scan_malicious_urls(block["text"]))
+                        if self._spleak_validator:
+                            fs_block.extend(self.scan_system_prompt_leak(block["text"]))
                     # Refusal detection
                     if self.config.refusal_detection:
                         fs_block.extend(self.scan_refusal(block["text"]))

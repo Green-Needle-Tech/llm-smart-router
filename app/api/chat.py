@@ -162,6 +162,9 @@ def _guardrail_scan_input(request, body):
         banned_substrings=cfg.banned_substrings,
         refusal_detection=cfg.refusal_detection,
         malicious_url_detection=cfg.malicious_url_detection,
+        system_prompt_leak_detection=getattr(cfg, "system_prompt_leak_detection", False),
+        system_prompt_fragments=getattr(cfg, "system_prompt_fragments", []),
+        system_prompt_leak_threshold=getattr(cfg, "system_prompt_leak_threshold", 0.85),
     )
     messages = [
         (m.model_dump() if hasattr(m, "model_dump") else m) for m in body.messages
@@ -279,7 +282,7 @@ def _guardrail_process_output(request, json_resp) -> None:
                 logger.info(
                     "router.guardrail.refusal_detected", rule=f.rule_id,
                 )
-            elif f.rule_id.startswith("pii-") or f.rule_id == "malicious-url":
+            elif f.rule_id.startswith("pii-") or f.rule_id == "malicious-url" or f.rule_id == "output-system-prompt-leak":
                 if engine.config.output_action == "mask":
                     router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
                 else:

@@ -10,13 +10,25 @@ agent's own guardrails and the upstream LLM API's safety filters):
    compiled from published detection rule sets. Configurable action:
    "log" (monitor) | "block" (reject with 400) | "tag" (annotate + forward).
 
-2. OUTPUT — secret / credential leak masking
+2. OUTPUT — secret / credential leak masking + system prompt leak detection
    Scans LLM responses for provider-prefixed API keys (sk-, sk-or-, sk-ant-,
    ghp_, github_pat_, AKIA…, AIza…, xox…, glpat-…) and PEM blocks, masking
-   them before the response reaches the caller. Action: "mask" | "log" | "block".
+   them before the response reaches the caller. Also detects system prompt
+   leakage via fuzzy matching against configured fragments.
+   Action: "mask" | "log" | "block".
+
+P0 Improvements (Aug 2026):
+- Validator abstraction layer (base.py): composable BaseValidator + ValidatorRegistry
+- Error spans (start, end) on all GuardrailFinding results
+- System prompt leak detection (validators.py): fuzzy match output vs fragments
 
 False-positive reduction: matches inside fenced code blocks are skipped
 for injection detection (educational/discussion contexts), per common
 practice in published rule sets.
 """
 from app.guardrails.scanner import GuardrailEngine, GuardrailConfig
+from app.guardrails.base import (
+    BaseValidator, GuardrailFinding, RegexValidator, ValidatorRegistry,
+    SEV_ORDER, severity_at_least,
+)
+from app.guardrails.validators import SystemPromptLeakValidator

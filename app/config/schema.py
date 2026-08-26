@@ -52,6 +52,12 @@ class GuardrailsConfig(BaseModel):
     refusal_detection: bool = True
     # Malicious URL detection (output) — detect/mask exfil domains
     malicious_url_detection: bool = True
+    # System prompt leak detection (output) — fuzzy match response vs fragments
+    system_prompt_leak_detection: bool = False
+    # Fragments of system prompts to check against (hot-reloadable)
+    system_prompt_fragments: list[str] = Field(default_factory=list)
+    # Fuzzy similarity threshold (0.0–1.0; higher = fewer false positives)
+    system_prompt_leak_threshold: float = 0.85
 
 
 class PrivacyConfig(BaseModel):
