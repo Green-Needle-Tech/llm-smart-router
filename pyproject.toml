@@ -2,6 +2,7 @@
 name = "llm-smart-router"
 version = "1.0.0"
 description = "Session-pinned LLM smart router with OpenAI-compatible API"
+license = { text = "AGPLv3 Dual License" }
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
