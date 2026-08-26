@@ -34,35 +34,59 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
-## What's New in v2.5.0
+## What's New in v2.6.0-beta
 
-### 🕐 Temporal Awareness — Full Pattern Coverage (`telemetry.temporal_awareness`)
+### 🕐 Temporal Awareness — Comprehensive Coverage with Typo Tolerance
 
-Normalizes temporal expressions in **system and user messages** to concrete ISO dates **before** classification and forwarding — so the classifier and tier models see `2026-08-25` instead of "today", eliminating ambiguity for models without real-time clock access.
+Normalizes temporal expressions in **system and user messages** to concrete ISO dates and datetimes **before** classification and forwarding — so the classifier and tier models see `2026-08-26T08:35:31+08:00` instead of "now", eliminating ambiguity for models without real-time clock access.
 
-**v2.5.0 expands coverage from 3 patterns to all 17 pattern types** defined in `rules.py`:
+**v2.6.0 expands coverage from 17 patterns to 104 patterns across 91 unique tags**, with full typo and grammar mistake tolerance:
 
-| Pattern | Example | Resolved To |
-|---------|---------|-------------|
-| today / yesterday / tomorrow | "today" | `2026-08-26` |
-| last / next \<weekday\> | "next Friday" | `2026-08-28` |
-| this / coming \<weekday\> | "coming Wednesday" | `2026-09-02` |
-| last / this / next week | "next week" | `2026-08-31..2026-09-06` |
-| last / this / next month | "last month" | `2026-07-01..2026-07-31` |
-| last / this / next year | "this year" | `2026-01-01..2026-12-31` |
-| last / past N \<unit\>s | "last 3 days" | `2026-08-23` |
-| N \<unit\>s ago | "2 days ago" | `2026-08-24` |
-| in N \<unit\>s | "in 2 weeks" | `2026-09-09` |
+| Category | Examples | Resolved To |
+|----------|----------|-------------|
+| Basic days + typos | today, tomorow, yesteday, tmrw, 2day | `2026-08-26` |
+| Compound days | day after tomorrow, day before yesterday, overmorrow | `2026-08-28` |
+| Day parts | now, this morning, noon, midnight, midday | `2026-08-26T09:00:00+08:00` |
+| Tonight + typos | tonight, tonite, tonigt, 2nite | `2026-08-26T22:00:00+08:00` |
+| Relative day parts | yesterday morning, last night, tomorrow evening | `2026-08-25T22:00:00+08:00` |
+| Specific times | at 3pm, by 5:30 PM, 9:15 AM, 3 p.m. | `2026-08-26T15:00:00+08:00` |
+| O'clock / quarter / half | 3 o'clock, quarter past 3, half past 5 | `2026-08-26T03:15:00+08:00` |
+| Military time | 1430 hours, 14 hundred hours | `2026-08-26T14:30:00+08:00` |
+| Days of week (with abbreviations) | next Mon, last Fri, coming Wed, on Thu | `2026-09-01` |
+| Relative periods | last/this/next week, month, year | `2026-08-31..2026-09-06` |
+| N units (ago/from/in/back/hence) | 3 days ago, in 2 weeks, 5 hrs back | `2026-08-23` or datetime |
+| A/an unit | a day ago, a week from now | `2026-08-25` |
+| Couple / few | a couple of days ago, a few weeks from now | `2026-08-24` |
+| Fortnight | a fortnight ago, in a fortnight | `2026-08-12` |
+| Colloquial | the other day, a while ago, in a bit, soon, shortly | `2026-08-24` or datetime |
+| End / beginning of period | EOD, COB, EOW, EOM, EOY, month-end | `2026-08-26T17:00:00+08:00` |
+| Meal times | lunchtime, dinnertime, teatime, breakfast time | `2026-08-26T12:30:00+08:00` |
+| First thing | first thing tomorrow, first thing in the morning | `2026-08-27T08:00:00+08:00` |
+| Weekend | this/last/next weekend | `2026-08-30..2026-08-31` |
+| Seasons | this/last/next summer, winter, fall, autumn | `2026-06-01..2026-08-31` |
+| Quarters | this/last/next quarter, Q1–Q4 | `2026-01-01..2026-03-31` |
+| Decades | this/last/next decade | `2020..2029` |
 
-**Other v2.5.0 changes:**
+**Typo tolerance examples:**
+- tomorrow → tomorow, tomoro, tomorro, tomorrrow, tmrw, tmr, 2mrw, 2morrow
+- yesterday → yesteday, yesturday, yestreday, yestarday, yday
+- tonight → tonite, tonigt, tonigh, 2nite
+- days → dys, weeks → wks, months → mnths, years → yrs, hours → hrs
 
-- **System role processing** — temporal expressions in system prompts are now also replaced (was user-only)
-- **Multimodal content support** — text blocks in list-type content (images + text) are processed
-- **Right-to-left replacement** — longer patterns matched first to avoid partial overlaps
-- Timezone-aware via `default_timezone` (IANA format, default `UTC`)
-- `strategy: "replace"` (default) swaps expressions in-place
+**Grammar tolerance:**
+- `a` / `an` before units
+- `couple of` / `couple` (with or without "of")
+- `o'clock` / `o clock` / `o' clock`
+- `a.m.` / `p.m.` (with periods) alongside `am` / `pm`
+
+**Key improvements:**
+- Hours/minutes/seconds resolve to full ISO datetimes (not just dates)
+- Auto-sort patterns longest-first to minimize overlap conflicts
+- System role + multimodal content support (from v2.5.0)
+- Right-to-left replacement preserves match indices
+- Timezone-aware via `default_timezone` (IANA format)
 - Hot-reloadable — toggle on/off via `settings.json` without restart
-- Powered by [pendulum](https://pendulum.eustance.dev/) for reliable timezone math
+- Powered by [pendulum](https://pendulum.eustance.dev/)
 
 **Config** (`config/settings.json` → `telemetry.temporal_awareness`):
 
@@ -78,11 +102,15 @@ Normalizes temporal expressions in **system and user messages** to concrete ISO 
 }
 ```
 
-**E2E test**: `python3 tests/test_temporal_awareness.py` — 7 cases covering today/yesterday/tomorrow replacement, multiple expressions, non-temporal pass-through, and feature toggle.
+**Tests**: 304 unit tests + 7 E2E tests, all passing. 77/78 sample expressions resolved correctly (1 non-temporal text unchanged).
 
-### 🔧 RoutingEngine Hot-Reload Fix
+### v2.5.0 — Temporal Awareness Full Pattern Coverage
 
-`RoutingEngine` previously held a static `Settings` snapshot from startup — `set_tier_model.py` + `/admin/settings/reload` confirmed the change but session pins still recorded the old model. Fixed: `RoutingEngine` now takes the `ConfigManager` and resolves config via a `@property` on every call, with a `hasattr` guard so unit test fakes still work.
+Expanded from 3 patterns (today/yesterday/tomorrow) to 17 pattern types. Added system role processing, multimodal content support, right-to-left replacement. RoutingEngine hot-reload fix.
+
+### v2.4.0 — Temporal Awareness Initial Release
+
+Introduced temporal awareness converting relative dates to ISO dates. Added pendulum dependency.
 
 ## What's New in v2.3.0
 
@@ -296,7 +324,7 @@ flowchart TD
     subgraph Router [Request Pipeline]
         C --> P1["🛡️ Guardrails<br/>Injection detection (log/block)<br/>+ Secret masking on output"]
         P1 --> P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
-        P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>next week → 2026-08-31..2026-09-06<br/>17 pattern types"]
+        P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags<br/>typo + grammar tolerant"]
         P2T --> D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
     end
 

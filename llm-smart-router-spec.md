@@ -1,13 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.5 (full temporal pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
+**Version:** 2.6-beta (comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
 **Date:** 2026-08-26
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
-**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); RoutingEngine hot-reload fix; 224 unit tests, 30 live full-suite, 22 live e2e, 7 temporal awareness e2e.
+**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; 304 unit tests, 7 temporal awareness e2e.
 
 ---
 
@@ -43,7 +43,7 @@ flowchart TD
     B -->|"OpenAI-format response<br/>+ X-Router-* headers"| A
     B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/ log"]
     G --> P["IP REDACTION<br/>raw IPs → placeholders"]
-    P --> P2T["TEMPORAL AWARENESS\ntoday → 2026-08-26\nnext week → 2026-08-31..2026-09-06\n17 pattern types"]
+    P --> P2T["TEMPORAL AWARENESS\ntoday → 2026-08-26\nnow → 2026-08-26T08:35+08:00\n104 patterns / 91 tags\ntypo + grammar tolerant"]
     P2T --> S["Session Store<br/>session_id → level, model, turn, expires"]
 
     S -->|"MISS — first turn"| C["Classifier LLM<br/>gemini-2.5-flash-lite"]
@@ -116,7 +116,7 @@ flowchart TD
     R1[1. RECEIVE<br/>POST /v1/chat/completions] --> R2[2. AUTHENTICATE<br/>Bearer token check]
     R2 --> R2G[2b. GUARDRAIL INPUT SCAN<br/>injection/jailbreak detection<br/>block → HTTP 400]
     R2G --> R2P[2c. IP REDACTION<br/>redact raw IPs → placeholders<br/>session-scoped SQLite map]
-    R2P --> R2T[2d. TEMPORAL AWARENESS<br/>today → 2026-08-26<br/>17 pattern types from rules.py]
+    R2P --> R2T[2d. TEMPORAL AWARENESS<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags from rules.py<br/>typo + grammar tolerant]
     R2T --> R3[3. RESOLVE<br/>Derive session_id]
     R3 --> R4{4. SESSION LOOKUP}
 
@@ -1607,11 +1607,11 @@ OPENROUTER_API_KEY=sk-or-...   # still used by L2–L5
 When `base_url` and `api_key_env` are both `null` (the default), the tier uses the global `provider.base_url` and `OPENROUTER_API_KEY` — identical to pre-v2.3.0 behavior. Existing deployments require zero config changes.
 
 
-### 9.6 Temporal Awareness (`telemetry.temporal_awareness`) — v2.4.0 → v2.5.0
+### 9.6 Temporal Awareness (`telemetry.temporal_awareness`) — v2.4.0 → v2.5.0 → v2.6.0-beta
 
 Normalizes temporal expressions in **system and user messages** to concrete ISO dates before classification and forwarding. The classifier and tier models see `2026-08-26` instead of "today", eliminating ambiguity for models without real-time clock access.
 
-**v2.5.0 expands coverage from 3 patterns (today/yesterday/tomorrow) to all 17 pattern types** defined in `rules.py`:
+**v2.6.0-beta expands coverage from 17 patterns to 104 patterns across 91 unique tags**, with full typo and grammar mistake tolerance. Time expressions (now, this morning, at 3pm, military time) resolve to full ISO datetimes, not just dates.
 
 | Tag | Pattern | Example | Resolved To |
 |-----|---------|---------|-------------|
@@ -1633,7 +1633,34 @@ Normalizes temporal expressions in **system and user messages** to concrete ISO 
 | `n_units_ago` | `N <unit>s ago` | "2 days ago" | `2026-08-24` |
 | `in_n_units` | `in N <unit>s` | "in 2 weeks" | `2026-09-09` |
 
-Week and month/year expressions resolve to **date ranges** (`YYYY-MM-DD..YYYY-MM-DD`); all others resolve to a single `YYYY-MM-DD` date.
+**v2.6.0-beta adds 87 new patterns** covering:
+
+| Category | Examples | Resolved To |
+|----------|----------|-------------|
+| Compound days | day after tomorrow, day before yesterday, overmorrow | `2026-08-28` |
+| Day parts + time | now, this morning, noon, midnight, midday | `2026-08-26T09:00:00+08:00` |
+| Tonight + typos | tonight, tonite, tonigt, 2nite | `2026-08-26T22:00:00+08:00` |
+| Relative day parts | yesterday morning, last night, tomorrow evening | `2026-08-25T22:00:00+08:00` |
+| Specific times | at 3pm, by 5:30 PM, 9:15 AM, 3 p.m. | `2026-08-26T15:00:00+08:00` |
+| O'clock / quarter / half | 3 o'clock, quarter past 3, half past 5 | `2026-08-26T03:15:00+08:00` |
+| Military time | 1430 hours, 14 hundred hours | `2026-08-26T14:30:00+08:00` |
+| Weekday abbreviations | next Mon, last Fri, coming Wed, on Thu | `2026-09-01` |
+| N units (back/hence) | 3 days back, 2 weeks hence, 5 hrs ago | datetime or date |
+| A/an unit | a day ago, a week from now, an hour hence | `2026-08-25` |
+| Couple / few | a couple of days ago, a few weeks from now | `2026-08-24` |
+| Fortnight | a fortnight ago, in a fortnight | `2026-08-12` |
+| Colloquial | the other day, a while ago, in a bit, soon, shortly | datetime or date |
+| End / beginning of period | EOD, COB, EOW, EOM, EOY, month-end, year-end | datetime or date |
+| Meal times | lunchtime, dinnertime, teatime, breakfast time | `2026-08-26T12:30:00+08:00` |
+| First thing | first thing tomorrow, first thing in the morning | `2026-08-27T08:00:00+08:00` |
+| Weekend | this/last/next weekend | `2026-08-30..2026-08-31` |
+| Seasons | this/last/next summer, winter, fall, autumn | date range |
+| Quarters | this/last/next quarter, Q1–Q4 | date range |
+| Decades | this/last/next decade | `2020..2029` |
+| Typo tolerance | tomorow, yesteday, tonite, dys, wks, mnths, yrs | resolved date/datetime |
+| Grammar tolerance | a/an unit, couple of/couple, o'clock/o clock, a.m./p.m. | resolved date/datetime |
+
+Hours, minutes, and seconds resolve to **full ISO datetimes** (`YYYY-MM-DDTHH:MM:SS+TZ`); days, weeks, months, and years resolve to dates or date ranges (`YYYY-MM-DD..YYYY-MM-DD`).
 
 #### Configuration
 
@@ -1660,7 +1687,7 @@ Week and month/year expressions resolve to **date ranges** (`YYYY-MM-DD..YYYY-MM
 #### How it works
 
 1. After IP redaction and before session resolution/classification, `_process_temporal_awareness()` in `chat.py` runs the `TemporalAwarenessEngine` over all **system and user** messages (v2.5.0: system role added).
-2. The engine iterates all 17 compiled patterns from `rules.py` and resolves each match using [pendulum](https://pendulum.eustance.dev/) in the configured timezone.
+2. The engine iterates all 104 compiled patterns from `rules.py` (auto-sorted longest-first) and resolves each match using [pendulum](https://pendulum.eustance.dev/) in the configured timezone.
 3. Replacements are applied right-to-left within each pattern to preserve match indices.
 4. **Multimodal content** (list-type content blocks) are processed — each text block is normalized (v2.5.0).
 5. Replacements are written back onto the pydantic message objects in-place, so both the classifier digest and the upstream model see the concrete dates.
@@ -1678,7 +1705,7 @@ Toggle `telemetry.temporal_awareness.enabled` in `settings.json` and `POST /admi
 
 #### E2E test
 
-`python3 tests/test_temporal_awareness.py` — 7 cases: today/yesterday/tomorrow replacement, multiple expressions in one message, non-temporal pass-through, feature toggle off/on.
+`python3 tests/test_temporal_awareness.py` — 7 E2E cases: today/yesterday/tomorrow replacement, multiple expressions, non-temporal pass-through, feature toggle. `tests/unit/test_temporal_time.py` — 80 unit tests covering all 91 tags including typos, abbreviations, military time, seasons, quarters, weekends, colloquial expressions, and edge cases.
 
 #### RoutingEngine hot-reload fix (v2.4.0)
 
