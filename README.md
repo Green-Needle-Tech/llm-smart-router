@@ -59,6 +59,55 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.8.0
+
+### 🛡️ Phase 1 Guardrail Enhancements
+
+Five new scanner features inspired by analysis of [protectai/llm-guard](https://github.com/protectai/llm-guard) (archived Jul 2026), strengthening the router's guardrail pipeline beyond the existing injection detection + secret masking:
+
+**1. Invisible Text Detection** (input) — Detects and strips zero-width/format Unicode characters (U+200B-D, U+2060, U+FEFF, U+202A-E, U+2066-9) used for injection smuggling. MEDIUM severity, strips chars before forwarding upstream.
+
+**2. PII Masking** (output) — Masks email addresses, US phone numbers, SSNs, and credit card numbers with `[REDACTED-PII]`. Credit card false-positive guard requires separators or exactly 16 contiguous digits. PII rules ordered CC > SSN > email > phone to prevent phone regex matching CC digit substrings.
+
+**3. Malicious URL Detection** (output) — Scans and masks known exfiltration domains (pastebin, discord webhooks, bit.ly, tinyurl, ngrok, webhook.site, pipedream, etc.) in model responses. Masks with `[REDACTED-URL]` when `output_action=mask`.
+
+**4. Configurable Banned Substrings** (input) — Case-insensitive substring matching against a configurable list in `settings.json`. HIGH severity, participates in block decisions when `input_action=block`. Pre-populated with 18 dangerous command patterns:
+
+| Category | Substrings |
+|----------|-----------|
+| Account manipulation | `passwd`, `chpasswd`, `useradd`, `usermod`, `adduser` |
+| Permission escalation | `chmod 777`, `chmod -R`, `chown root` |
+| Privilege escalation | `sudo su`, `sudo -i`, `sudo bash`, `visudo`, `sudoers` |
+| Security bypass | `setenforce 0`, `iptables -F` |
+| Destructive ops | `mkfs`, `dd if=`, `rm -rf /` |
+
+These complement the existing `tool-bash-abuse` and `tool-filesystem-abuse` injection rules, which only catch phrasings like "use the Bash tool to run: sudo...". The banned substrings scanner catches raw commands regardless of phrasing, closing the gap for prompts like "change the root password".
+
+**5. Refusal Detection** (output, log-only) — Monitors LLM refusal patterns (direct, policy-based, sorry, inappropriate) for observability. LOW severity, never blocks or modifies content.
+
+**Config** (`config/settings.json` → `telemetry.guardrails`):
+
+```json
+{
+  "telemetry": {
+    "guardrails": {
+      "input_enabled": true,
+      "input_action": "log",
+      "block_on_severity": "HIGH",
+      "output_enabled": true,
+      "output_action": "mask",
+      "invisible_text_detection": true,
+      "pii_masking_enabled": true,
+      "banned_substrings": ["passwd", "chpasswd", "useradd", ...],
+      "refusal_detection": true,
+      "malicious_url_detection": true
+    }
+  }
+}
+```
+
+**Tests**: 360 total (304 existing + 56 new Phase 1 tests). All passing.
+
 ## What's New in v2.6.0-beta
 
 ### 🕐 Temporal Awareness — Comprehensive Coverage with Typo Tolerance
@@ -320,9 +369,9 @@ Raw IP addresses in prompts are replaced with session-stable placeholders (`[ipa
 - 24-hour retention with background purge job
 
 ### 🛡️ LLM Guardrails (`telemetry.guardrails`)
-Two router-layer guardrails, independent of your agent's or the upstream API's own safety filters:
-- **Input**: 24-rule prompt-injection/jailbreak catalog (8 categories: instruction override, jailbreak personas, system-prompt/secret exfiltration, tool abuse, sandbox evasion, social engineering, encoded payloads, multi-turn manipulation) with CRITICAL/HIGH/MEDIUM/LOW severities. Actions: `log` (default) | `block` (400 at/above severity threshold). Code-block-heavy messages skipped to avoid false positives.
-- **Output**: 11 provider-prefixed credential patterns (OpenRouter, OpenAI, Anthropic, GitHub, AWS, Google, Slack, GitLab, Stripe, Telegram, PEM) masked with `***REDACTED***` before responses reach the caller.
+Router-layer guardrails, independent of your agent's or the upstream API's own safety filters:
+- **Input**: 24-rule prompt-injection/jailbreak catalog (8 categories: instruction override, jailbreak personas, system-prompt/secret exfiltration, tool abuse, sandbox evasion, social engineering, encoded payloads, multi-turn manipulation) with CRITICAL/HIGH/MEDIUM/LOW severities. Actions: `log` (default) | `block` (400 at/above severity threshold). Code-block-heavy messages skipped to avoid false positives. Plus invisible text detection (zero-width Unicode stripping), and configurable banned substrings (18 dangerous command patterns pre-loaded).
+- **Output**: 11 provider-prefixed credential patterns (OpenRouter, OpenAI, Anthropic, GitHub, AWS, Google, Slack, GitLab, Stripe, Telegram, PEM) masked with `***REDACTED***` before responses reach the caller. Plus PII masking (email, phone, SSN, credit card → `[REDACTED-PII]`), malicious URL masking (exfil domains → `[REDACTED-URL]`), and refusal detection (log-only monitoring).
 - Run `python3 scripts/test_guardrails.py` for the router-level differential test (bypasses agent and upstream guardrails).
 
 ### ⚡ Upstream Prompt Caching (`provider.prompt_caching`)
@@ -347,7 +396,7 @@ flowchart TD
     B --> C[LLM-Smart-Router]
 
     subgraph Router [Request Pipeline]
-        C --> P1["🛡️ Guardrails<br/>Injection detection (log/block)<br/>+ Secret masking on output"]
+        C --> P1["🛡️ Guardrails Input<br/>Injection detection (log/block)<br/>+ Invisible text stripping<br/>+ Banned substrings scan"]
         P1 --> P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
         P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags<br/>typo + grammar tolerant"]
         P2T --> D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
@@ -365,7 +414,7 @@ flowchart TD
     F3 --> C
     H --> C
 
-    C -->|"🔒 Secrets masked<br/>🔒 IPs re-hydrated"| B
+    C -->|"🔒 Secrets masked<br/>🔒 PII masked<br/>🔒 Malicious URLs masked<br/>🔒 IPs re-hydrated<br/>📊 Refusal logged"| B
     B --> A
 ```
 
@@ -394,9 +443,9 @@ Turn 2+ skips the classifier: the session pin routes straight to the tier model,
 - `POST /admin/settings/reload` — Hot-reload config
 
 ### Guardrail metrics
-- `router_guardrail_findings_total{rule_id,severity,direction}` — injection/secret findings
+- `router_guardrail_findings_total{rule_id,severity,direction}` — injection/secret/PII/URL/refusal findings
 - `router_guardrail_blocks_total{rule_id,severity}` — requests blocked in block mode
-- `router_guardrail_secret_masks_total{rule_id}` — secrets masked in output
+- `router_guardrail_secret_masks_total{rule_id}` — secrets, PII, and malicious URLs masked in output
 - `router_privacy_redactions_total` — requests passing through IP redaction
 - `router_prompt_cached_tokens_total` / `router_prompt_cache_hit_ratio` — KV-cache usage
 

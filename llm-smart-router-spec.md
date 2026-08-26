@@ -1,13 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.6-beta (comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
+**Version:** 2.8 (Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection + comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
 **Date:** 2026-08-26
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
-**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; 304 unit tests, 7 temporal awareness e2e.
+**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta + v2.8.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection (§9.3.5–§9.3.9); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; 360 unit tests, 7 temporal awareness e2e.
 
 ---
 
@@ -1538,6 +1538,92 @@ r...`) — no contiguous regex matches, in either streaming or non-streaming mod
 - Wired into `mask_secrets()` as a second pass with overlap-safe span merging
 - `_collapsed_tail_hold()`: extends the carry to hold interleaved partials in streaming mode
 
+#### 9.3.5 Invisible Text Detection (v2.8.0)
+
+Detects and strips zero-width and format Unicode characters from input messages before forwarding upstream. These characters can be used to hide injection instructions or smuggle content past human review.
+
+**Detected characters:**
+
+| Character | Code Point | Name |
+|-----------|-----------|------|
+| U+200B | ZERO_WIDTH_SPACE | Invisible space |
+| U+200C | ZERO_WIDTH_NON_JOINER | ZWNJ |
+| U+200D | ZERO_WIDTH_JOINER | ZWJ |
+| U+2060 | WORD_JOINER | Invisible hyphen |
+| U+FEFF | ZERO_WIDTH_NO_BREAK_SPACE | BOM |
+| U+202A–U+202E | Directional overrides | RTL/LTR embedding/override |
+| U+2066–U+2069 | Directional isolates | LTR/RTL/FSI isolates |
+
+**Behavior:** MEDIUM severity finding logged + counted. Invisible characters are stripped from message content in place before the message is forwarded to classification or upstream models.
+
+**Config:** `telemetry.guardrails.invisible_text_detection` (default: `true`, hot-reloadable).
+
+#### 9.3.6 PII Masking (v2.8.0)
+
+Masks common PII patterns in model output responses with `[REDACTED-PII]` before they reach the caller.
+
+**PII patterns:**
+
+| Rule ID | Pattern | Matches |
+|---------|---------|---------|
+| `pii-credit-card` | `\b(?:\d[ -]*?){13,19}\b` | 13–19 digit groups with separators, or 16 contiguous digits |
+| `pii-ssn` | `\b(?!000\|666\|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b` | US SSN (area ≠ 000/666/9xx, group ≠ 00, serial ≠ 0000) |
+| `pii-email` | `\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b` | Email addresses |
+| `pii-phone` | `(?:\+1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b` | US phone numbers |
+
+**Rule ordering:** Credit card runs first (longest pattern), then SSN, email, phone — preventing the phone regex from matching credit card digit substrings.
+
+**False-positive guard:** Credit card matches are filtered through `_is_likely_credit_card()` — requires separators (spaces/dashes) or exactly 16 contiguous digits. Pure 13–19 digit numbers without separators (timestamps, IDs) are not masked.
+
+**Config:** `telemetry.guardrails.pii_masking_enabled` (default: `true`, hot-reloadable).
+
+#### 9.3.7 Malicious URL Detection (v2.8.0)
+
+Scans and masks known exfiltration/malicious domains in model output responses.
+
+**Detected domains:**
+
+`pastebin.com`, `discord.com/api/webhooks`, `bit.ly`, `tinyurl.com`, `ngrok.io`, `requestbin.com`, `webhook.site`, `pipedream.net`, `hookbin.com`, `beeceptor.com`
+
+**Behavior:** HIGH severity. When `output_action=mask`, URLs matching these domains are replaced with `[REDACTED-URL]`. When `output_action=log`, findings are logged only.
+
+**Config:** `telemetry.guardrails.malicious_url_detection` (default: `true`, hot-reloadable).
+
+#### 9.3.8 Configurable Banned Substrings (v2.8.0)
+
+Case-insensitive substring matching against a configurable list in `settings.json`. Catches dangerous commands and phrases regardless of phrasing, complementing the injection rules which require specific "use the [Tool] tool to..." syntax.
+
+**Pre-populated dangerous commands (18 patterns):**
+
+| Category | Substrings |
+|----------|-----------|
+| Account manipulation | `passwd`, `chpasswd`, `useradd`, `usermod`, `adduser` |
+| Permission escalation | `chmod 777`, `chmod -R`, `chown root` |
+| Privilege escalation | `sudo su`, `sudo -i`, `sudo bash`, `visudo`, `sudoers` |
+| Security bypass | `setenforce 0`, `iptables -F` |
+| Destructive ops | `mkfs`, `dd if=`, `rm -rf /` |
+
+**Behavior:** HIGH severity. Participates in block decisions when `input_action=block`. Findings logged + counted in metrics regardless of action mode.
+
+**Config:** `telemetry.guardrails.banned_substrings` (default: `[]`, hot-reloadable). Populate with any list of substrings to block.
+
+#### 9.3.9 Refusal Detection (v2.8.0, log-only)
+
+Monitors LLM refusal patterns in model output for observability and quality metrics. Refusals are legitimate safety behavior — this scanner never blocks or modifies content.
+
+**Refusal patterns:**
+
+| Rule ID | Pattern | Matches |
+|---------|---------|---------|
+| `refusal-direct` | `I can't/cannot/won't... help/assist/provide/generate` | Direct refusals |
+| `refusal-policy` | `As an AI... prevent/prohibit/unable/can't` | Policy-based refusals |
+| `refusal-sorry` | `I'm sorry... can't/unable/won't/cannot` | Apologetic refusals |
+| `refusal-inappropriate` | `inappropriate/against guidelines/rules/policy` | Content-based refusals |
+
+**Behavior:** LOW severity. Findings logged via `logger.info()` and counted in `router_guardrail_findings_total{direction="output"}`. Never appears in block decisions.
+
+**Config:** `telemetry.guardrails.refusal_detection` (default: `true`, hot-reloadable).
+
 ### 9.4 Upstream Prompt Caching (`provider.prompt_caching`)
 
 Automatically makes the most of provider KV/prefix caches:
@@ -1777,6 +1863,7 @@ Toggle `telemetry.temporal_awareness.enabled` in `settings.json` and `POST /admi
 - **Guardrail streaming** — secret masking across chunked SSE: 11 provider types (OpenRouter, Anthropic, OpenAI, GitHub, AWS, Google, Slack, GitLab, Stripe, Telegram, PEM), split-secret carry (one-char-per-line), whitespace-interleaved evasion, tail-leak on long secrets, [DONE] carry flush masking. 7 regression tests in `tests/unit/test_guardrails_streaming.py`.
 - **Guardrail live e2e** — `scripts/test_guardrails_e2e_block_stream.py` (22 checks): block-mode enforcement (4 injection → HTTP 400, 2 benign → 200, 2 severity-gate → 200), streaming secret masking (11 types + split-carry), streaming IP redaction round-trip.
 - **Guardrail live full** — `scripts/test_guardrails_full.py` (30 checks): injection categories, benign pass-through, 11 secret types masked, IP round-trip, Prometheus metrics, session pinning.
+- **Guardrail Phase 1** (v2.8.0) — `tests/unit/test_guardrails_phase1.py` (56 tests): invisible text detection (12 tests), PII masking (14 tests), malicious URL detection (8 tests), banned substrings (9 tests including dangerous command detection + benign FP guard), refusal detection (8 tests), integration with `process_response_content` (6 tests).
 
 ### 11.2 Classifier evaluation
 
@@ -1845,6 +1932,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M5 — Evaluation & hardening** | Labeled session-opener eval set, `eval_classifier.py`, `bench_router.py`, session drift measurement, escalation guards, budget caps, security review, README. | Section 11.2 and 11.3 thresholds met, including session drift ≤ 5%. |
 | **M6 — Privacy & guardrails (v2.0.0-beta)** | IP redaction & re-hydration (§9.2), LLM guardrails — injection detection + secret masking (§9.3), upstream prompt caching (§9.4). | 197 unit tests + 3 live differential tests pass; privacy SQLite store active; guardrails input=log output=mask; prompt-cache metrics in `/metrics`. |
 | **M7 — Streaming secret-leak hardening (v2.1.0)** | Telegram split-token leak, tail-leak on long secrets, whitespace-interleaved evasion, [DONE] carry flush, pipeline reorder. | 224 unit tests + 30 live full + 22 live e2e pass; zero secret leaks across all chunk patterns. |
+| **M8 — Phase 1 Guardrail Enhancements (v2.8.0)** | Invisible text detection (§9.3.5), PII masking (§9.3.6), malicious URL detection (§9.3.7), configurable banned substrings (§9.3.8), refusal detection (§9.3.9). Inspired by protectai/llm-guard analysis. | 360 unit tests (304 existing + 56 Phase 1) pass; container rebuilt and live; 18 dangerous command substrings pre-loaded; all new features hot-reloadable. |
 
 ---
 
