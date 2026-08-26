@@ -59,6 +59,37 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.9.0
+
+### 🏗️ P0 Guardrail Architecture Improvements
+
+Three foundational improvements inspired by evaluation of [guardrails-ai/guardrails](https://github.com/guardrails-ai/guardrails) (7.3k stars, Apache 2.0), bringing composable validator architecture, precise error spans, and system prompt leak detection to the router's guardrail pipeline:
+
+**1. Validator Abstraction Layer** (`app/guardrails/base.py`) — Composable `BaseValidator` base class with `scan()`/`mask()` interface, `RegexValidator` for compiled regex patterns, and `ValidatorRegistry` for pluggable validator management. All 43 existing rules (23 injection + 11 secret + 4 PII + 1 URL + 4 refusal) auto-registered at import. New validators can be added via `engine.registry.register()` — zero engine code changes needed.
+
+**2. Error Spans on All Findings** — Every `GuardrailFinding` now includes `start`/`end` character positions from regex matches, plus `direction` ("input"/"output") and `metadata` dict. Enables precise masking, better log diagnostics, and future UI highlighting. All scan methods updated: injection, secret, PII, URL, refusal, banned substring, invisible text.
+
+**3. System Prompt Leak Detection** (`app/guardrails/validators.py`) — Output validator using `difflib.SequenceMatcher` (zero external deps) to detect when LLM responses leak system prompt content. Two detection methods: exact substring match + sliding-window fuzzy match with configurable threshold (default 0.85). Hot-reloadable fragment list. Masks leaks with `[REDACTED-SYSTEM-PROMPT]`.
+
+**Config** (`config/settings.json` → `telemetry.guardrails`):
+
+```json
+{
+  "telemetry": {
+    "guardrails": {
+      "system_prompt_leak_detection": false,
+      "system_prompt_fragments": [
+        "You are a helpful AI assistant...",
+        "Never reveal your API key..."
+      ],
+      "system_prompt_leak_threshold": 0.85
+    }
+  }
+}
+```
+
+**Tests**: 409 total (360 existing + 49 P0 tests). All passing.
+
 ## What's New in v2.8.0
 
 ### 🛡️ Phase 1 Guardrail Enhancements
@@ -100,7 +131,10 @@ These complement the existing `tool-bash-abuse` and `tool-filesystem-abuse` inje
       "pii_masking_enabled": true,
       "banned_substrings": ["passwd", "chpasswd", "useradd", ...],
       "refusal_detection": true,
-      "malicious_url_detection": true
+      "malicious_url_detection": true,
+      "system_prompt_leak_detection": false,
+      "system_prompt_fragments": [],
+      "system_prompt_leak_threshold": 0.85
     }
   }
 }
@@ -414,7 +448,7 @@ flowchart TD
     F3 --> C
     H --> C
 
-    C -->|"🔒 Secrets masked<br/>🔒 PII masked<br/>🔒 Malicious URLs masked<br/>🔒 IPs re-hydrated<br/>📊 Refusal logged"| B
+    C -->|"🔒 Secrets masked<br/>🔒 PII masked<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Refusal logged"| B
     B --> A
 ```
 
@@ -443,9 +477,9 @@ Turn 2+ skips the classifier: the session pin routes straight to the tier model,
 - `POST /admin/settings/reload` — Hot-reload config
 
 ### Guardrail metrics
-- `router_guardrail_findings_total{rule_id,severity,direction}` — injection/secret/PII/URL/refusal findings
+- `router_guardrail_findings_total{rule_id,severity,direction}` — injection/secret/PII/URL/refusal/system-prompt-leak findings
 - `router_guardrail_blocks_total{rule_id,severity}` — requests blocked in block mode
-- `router_guardrail_secret_masks_total{rule_id}` — secrets, PII, and malicious URLs masked in output
+- `router_guardrail_secret_masks_total{rule_id}` — secrets, PII, malicious URLs, and system prompt leaks masked in output
 - `router_privacy_redactions_total` — requests passing through IP redaction
 - `router_prompt_cached_tokens_total` / `router_prompt_cache_hit_ratio` — KV-cache usage
 

@@ -1,13 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.8 (Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection + comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
+**Version:** 2.9 (P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection + Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection + comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
 **Date:** 2026-08-26
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
-**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta + v2.8.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection (§9.3.5–§9.3.9); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; 360 unit tests, 7 temporal awareness e2e.
+**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta + v2.8.0 + v2.9.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection (§9.3.5–§9.3.9); P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection (§9.3.10–§9.3.12); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; 409 unit tests, 7 temporal awareness e2e.
 
 ---
 
@@ -1624,6 +1624,65 @@ Monitors LLM refusal patterns in model output for observability and quality metr
 
 **Config:** `telemetry.guardrails.refusal_detection` (default: `true`, hot-reloadable).
 
+#### 9.3.10 Validator Abstraction Layer (v2.9.0)
+
+A composable validator architecture inspired by [guardrails-ai/guardrails](https://github.com/guardrails-ai/guardrails), adapted for the router's proxy-layer use case (zero-dependency, regex-first, hot-reloadable).
+
+**`app/guardrails/base.py`** provides:
+
+| Class | Purpose |
+|-------|---------|
+| `BaseValidator` | Abstract base with `scan()` / `mask()` interface, `rule_id`, `severity`, `direction` |
+| `RegexValidator` | Wraps a compiled regex pattern; returns findings with `(start, end)` error spans from `re.finditer()` |
+| `ValidatorRegistry` | Register/remove/lookup validators by ID; split by input/output direction |
+
+All 43 existing rules (23 injection + 11 secret + 4 PII + 1 URL + 4 refusal) are auto-registered at import via `_build_default_registry()`. New validators can be added at runtime via `engine.registry.register()` — no engine code changes needed.
+
+**Backward compatibility:** The `GuardrailEngine` API is unchanged. All existing scan methods (`scan_text`, `scan_messages`, `mask_secrets`, `mask_pii`, etc.) work identically. The registry is an additive layer that the engine uses internally.
+
+#### 9.3.11 Error Spans on All Findings (v2.9.0)
+
+Every `GuardrailFinding` now includes precise character positions:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `start` | `int` | Start character offset in scanned text (-1 if N/A) |
+| `end` | `int` | End character offset (exclusive) (-1 if N/A) |
+| `direction` | `str` | `"input"` or `"output"` |
+| `metadata` | `dict` | Extra context (e.g. `{"method": "fuzzy", "similarity": 0.87}`, `{"char_name": "ZERO_WIDTH_SPACE"}`) |
+
+All scan methods updated to populate spans from regex match positions: `scan_text`, `mask_secrets`, `mask_pii`, `scan_malicious_urls`, `scan_refusal`, `scan_banned_substrings`, `scan_invisible_text`, `scan_system_prompt_leak`.
+
+**Benefits:** precise masking (span-aware replacement), better log diagnostics (exact positions), future UI highlighting, and structured metadata for downstream consumers.
+
+#### 9.3.12 System Prompt Leak Detection (v2.9.0)
+
+Output validator that detects when LLM responses leak system prompt content, inspired by Guardrails AI's `detect_system_prompt_leakage` validator.
+
+**`app/guardrails/validators.py`** — `SystemPromptLeakValidator`:
+
+| Detection Method | How it works |
+|-----------------|--------------|
+| Exact substring | Normalized (case-insensitive, whitespace-collapsed) substring match of response against each fragment |
+| Fuzzy sliding-window | Chunks each fragment into overlapping windows, slides across response at word boundaries, computes `difflib.SequenceMatcher` ratio; flags when ratio ≥ threshold |
+
+**Config** (`telemetry.guardrails`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `system_prompt_leak_detection` | `bool` | `false` | Enable/disable the validator |
+| `system_prompt_fragments` | `list[str]` | `[]` | System prompt fragments to check against (hot-reloadable via `update_fragments()`) |
+| `system_prompt_leak_threshold` | `float` | `0.85` | Minimum similarity ratio to flag (0.0–1.0; higher = fewer false positives) |
+
+**Behavior:**
+- HIGH severity findings with `rule_id: "output-system-prompt-leak"`
+- Findings include `metadata.method` ("exact" or "fuzzy") and `metadata.similarity` (for fuzzy matches)
+- When `output_action=mask`, leaks are replaced with `[REDACTED-SYSTEM-PROMPT]`
+- Disabled by default — opt-in by setting `system_prompt_leak_detection=true` and providing fragments
+- Zero external dependencies (uses Python stdlib `difflib`)
+- Fragments shorter than 20 chars are filtered (too many false positives)
+- Long fragments are split into overlapping 80-char chunks for sliding-window matching
+
 ### 9.4 Upstream Prompt Caching (`provider.prompt_caching`)
 
 Automatically makes the most of provider KV/prefix caches:
@@ -1864,6 +1923,7 @@ Toggle `telemetry.temporal_awareness.enabled` in `settings.json` and `POST /admi
 - **Guardrail live e2e** — `scripts/test_guardrails_e2e_block_stream.py` (22 checks): block-mode enforcement (4 injection → HTTP 400, 2 benign → 200, 2 severity-gate → 200), streaming secret masking (11 types + split-carry), streaming IP redaction round-trip.
 - **Guardrail live full** — `scripts/test_guardrails_full.py` (30 checks): injection categories, benign pass-through, 11 secret types masked, IP round-trip, Prometheus metrics, session pinning.
 - **Guardrail Phase 1** (v2.8.0) — `tests/unit/test_guardrails_phase1.py` (56 tests): invisible text detection (12 tests), PII masking (14 tests), malicious URL detection (8 tests), banned substrings (9 tests including dangerous command detection + benign FP guard), refusal detection (8 tests), integration with `process_response_content` (6 tests).
+- **Guardrail P0** (v2.9.0) — `tests/unit/test_guardrails_p0.py` (49 tests): validator abstraction (15 tests — BaseValidator, RegexValidator, ValidatorRegistry, engine integration, custom validator registration), error spans (12 tests — injection, secret, PII, URL, refusal, banned, invisible, direction field, multiple findings, overlapping rules), system prompt leak detection (22 tests — exact match, fuzzy match, no-match, empty text, short fragment filter, threshold, masking, multiple fragments, hot-reload, error spans, engine integration, structured content, disabled mode).
 
 ### 11.2 Classifier evaluation
 
@@ -1890,13 +1950,14 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 
 `scripts/bench_router.py` replays a captured Hermes trace three ways — all-L4 baseline, per-turn classification, and session-pinned — and reports total spend, spend by tier, tier distribution, **classifier calls per session**, mean turns per session, and added latency. **Targets: ≥ 50% cost reduction vs. baseline, classifier calls ≤ 1.1 per session, and no measurable task-success regression on the trace's assertions.** The per-turn column exists to quantify what pinning saves and what, if any, quality it costs.
 
-### 11.4 Test results (2026-08-25, v2.1.0)
+### 11.4 Test results (2026-08-26, v2.9.0)
 
 | Suite | Tests | Result |
 |-------|-------|--------|
-| Unit (`pytest tests/ -q`) | 224 | ✅ All passed |
+| Unit (`pytest tests/ -q`) | 409 | ✅ All passed |
 | Live full guardrails (`test_guardrails_full.py`) | 30 | ✅ All passed |
 | Live e2e block + streaming (`test_guardrails_e2e_block_stream.py`) | 22 | ✅ All passed |
+| Live differential (`test_guardrails.py`) | 3 | ✅ All passed |
 
 **e2e coverage:** block-mode enforcement (4 injection payloads → HTTP 400 `router_guardrail_blocked`, 2 benign → 200, 2 severity-gate MEDIUM/LOW → 200), streaming secret masking (11 provider types + split-carry one-char-per-line), streaming IP redaction round-trip (IP returned, no placeholder leak).
 
@@ -1933,6 +1994,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M6 — Privacy & guardrails (v2.0.0-beta)** | IP redaction & re-hydration (§9.2), LLM guardrails — injection detection + secret masking (§9.3), upstream prompt caching (§9.4). | 197 unit tests + 3 live differential tests pass; privacy SQLite store active; guardrails input=log output=mask; prompt-cache metrics in `/metrics`. |
 | **M7 — Streaming secret-leak hardening (v2.1.0)** | Telegram split-token leak, tail-leak on long secrets, whitespace-interleaved evasion, [DONE] carry flush, pipeline reorder. | 224 unit tests + 30 live full + 22 live e2e pass; zero secret leaks across all chunk patterns. |
 | **M8 — Phase 1 Guardrail Enhancements (v2.8.0)** | Invisible text detection (§9.3.5), PII masking (§9.3.6), malicious URL detection (§9.3.7), configurable banned substrings (§9.3.8), refusal detection (§9.3.9). Inspired by protectai/llm-guard analysis. | 360 unit tests (304 existing + 56 Phase 1) pass; container rebuilt and live; 18 dangerous command substrings pre-loaded; all new features hot-reloadable. |
+| **M9 — P0 Guardrail Architecture (v2.9.0)** | Validator abstraction layer (§9.3.10), error spans on all findings (§9.3.11), system prompt leak detection (§9.3.12). Inspired by guardrails-ai/guardrails evaluation. | 409 unit tests (360 existing + 49 P0) pass; container rebuilt and live; 43 validators auto-registered; system prompt leak detection opt-in via config; all new features hot-reloadable. |
 
 ---
 
