@@ -321,6 +321,64 @@ class TestBannedSubstrings:
         fs = e.scan_banned_substrings("clean text")
         assert fs == []
 
+    def test_dangerous_command_substrings(self):
+        """Verify the default dangerous-command list catches privilege escalation."""
+        dangerous = [
+            "passwd", "chpasswd", "useradd", "usermod", "adduser",
+            "chmod 777", "chmod -R", "chown root",
+            "sudo su", "sudo -i", "sudo bash",
+            "visudo", "sudoers",
+            "setenforce 0", "iptables -F",
+            "mkfs", "dd if=", "rm -rf /",
+        ]
+        e = _engine(banned_substrings=dangerous)
+        # Each dangerous command should be detected
+        test_cases = [
+            "please change the passwd for root",
+            "run chpasswd to set the new password",
+            "use useradd to create a new account",
+            "run usermod -aG sudo myuser",
+            "execute adduser bob",
+            "set permissions with chmod 777 /tmp",
+            "do chmod -R on the whole directory",
+            "run chown root on the file",
+            "escalate with sudo su",
+            "get a shell via sudo -i",
+            "drop to root with sudo bash",
+            "edit visudo to add my user",
+            "add my user to sudoers",
+            "disable SELinux with setenforce 0",
+            "flush rules with iptables -F",
+            "format the disk with mkfs",
+            "overwrite with dd if=/dev/zero",
+            "wipe everything with rm -rf /",
+        ]
+        for tc in test_cases:
+            fs = e.scan_banned_substrings(tc)
+            assert len(fs) >= 1, f"Failed to detect dangerous command in: {tc!r}"
+
+    def test_benign_text_not_flagged_by_dangerous_commands(self):
+        """False-positive guard: benign text mentioning 'password' conceptually."""
+        dangerous = [
+            "passwd", "chpasswd", "useradd", "usermod", "adduser",
+            "chmod 777", "chmod -R", "chown root",
+            "sudo su", "sudo -i", "sudo bash",
+            "visudo", "sudoers",
+            "setenforce 0", "iptables -F",
+            "mkfs", "dd if=", "rm -rf /",
+        ]
+        e = _engine(banned_substrings=dangerous)
+        # These should NOT trigger (no exact substring match)
+        benign = [
+            "What is the capital of France?",
+            "How do I reset my password on the website?",
+            "Explain how file permissions work in Linux.",
+            "What does sudo do in Linux?",
+        ]
+        for tc in benign:
+            fs = e.scan_banned_substrings(tc)
+            assert fs == [], f"False positive on benign text: {tc!r}"
+
 
 # ---------------------------------------------------------------------------
 # 5. Refusal detection

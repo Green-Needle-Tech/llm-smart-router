@@ -250,7 +250,31 @@
       "block_on_severity": "HIGH",
       "output_enabled": true,
       "output_action": "mask",
-      "_doc": "Router-layer guardrails: injection detection on input, secret masking on output"
+      "_doc": "Router-layer guardrails: injection detection on input, secret masking on output",
+      "invisible_text_detection": true,
+      "pii_masking_enabled": true,
+      "banned_substrings": [
+        "passwd",
+        "chpasswd",
+        "useradd",
+        "usermod",
+        "adduser",
+        "chmod 777",
+        "chmod -R",
+        "chown root",
+        "sudo su",
+        "sudo -i",
+        "sudo bash",
+        "visudo",
+        "sudoers",
+        "setenforce 0",
+        "iptables -F",
+        "mkfs",
+        "dd if=",
+        "rm -rf /"
+      ],
+      "refusal_detection": true,
+      "malicious_url_detection": true
     },
     "temporal_awareness": {
       "enabled": true,
