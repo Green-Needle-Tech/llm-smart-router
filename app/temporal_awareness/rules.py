@@ -33,8 +33,14 @@ TEMPORAL_EXPRESSION_PATTERNS = [
     # Date ranges (e.g., "from X to Y") - more complex, might need custom parsing
     # (r"from\s+(.+?)\s+to\s+(.+?)", "date_range"),
 
-    # Time expressions (e.g., "morning", "afternoon", "evening") - for future expansion
-    # (r"\b(morning|afternoon|evening|night)\b", "time_of_day"),
+    # Time expressions
+    (r"\bnow\b", "now_datetime"),
+    (r"\bthis\s+morning\b", "this_morning_datetime"),
+    (r"\bthis\s+afternoon\b", "this_afternoon_datetime"),
+    (r"\bthis\s+evening\b", "this_evening_datetime"),
+    (r"\btonight\b", "tonight_datetime"),
+    (r"\b(at|by)\s+(\d{1,2})(?:[:](\d{2}))?\s*(am|pm)?\b", "specific_time_datetime"),
+    (r"\b(\d{1,2})(?:[:](\d{2}))?\s*(am|pm)\b", "specific_time_datetime"),
 ]
 
 # Compile all patterns for efficiency

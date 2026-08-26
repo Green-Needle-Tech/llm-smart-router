@@ -86,6 +86,47 @@ class TemporalAwarenessEngine:
         if tag == "tomorrow":
             return self._format_date(now + timedelta(days=1))
 
+        if tag == "now_datetime":
+            return self._format_datetime(now)
+
+        if tag == "this_morning_datetime":
+            # Assuming morning is 6 AM to 12 PM
+            return self._format_datetime(now.set(hour=9, minute=0, second=0, microsecond=0))
+
+        if tag == "this_afternoon_datetime":
+            # Assuming afternoon is 12 PM to 6 PM
+            return self._format_datetime(now.set(hour=15, minute=0, second=0, microsecond=0))
+
+        if tag == "this_evening_datetime":
+            # Assuming evening is 6 PM to 10 PM
+            return self._format_datetime(now.set(hour=20, minute=0, second=0, microsecond=0))
+
+        if tag == "tonight_datetime":
+            # Assuming tonight is 10 PM
+            return self._format_datetime(now.set(hour=22, minute=0, second=0, microsecond=0))
+
+        if tag == "specific_time_datetime":
+            # groups: (at|by), hour, minute, am/pm
+            # or: hour, minute, am/pm
+            if len(groups) == 4: # (at|by), hour, minute, am/pm
+                hour_str = groups[1]
+                minute_str = groups[2]
+                ampm = groups[3]
+            else: # hour, minute, am/pm
+                hour_str = groups[0]
+                minute_str = groups[1]
+                ampm = groups[2]
+
+            hour = int(hour_str)
+            minute = int(minute_str) if minute_str else 0
+
+            if ampm and ampm.lower() == "pm" and hour < 12:
+                hour += 12
+            elif ampm and ampm.lower() == "am" and hour == 12: # 12 AM is midnight
+                hour = 0
+
+            return self._format_datetime(now.set(hour=hour, minute=minute, second=0, microsecond=0))
+
         # Days of the week: (last|next) <weekday>
         if tag == "relative_day_of_week":
             direction = groups[0].lower()  # "last" or "next"
