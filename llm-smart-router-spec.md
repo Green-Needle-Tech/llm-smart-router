@@ -1,13 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.4 (temporal awareness + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
-**Date:** 2026-08-25
+**Version:** 2.5 (full temporal pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
+**Date:** 2026-08-26
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
-**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); RoutingEngine hot-reload fix; 224 unit tests, 30 live full-suite, 22 live e2e, 7 temporal awareness e2e.
+**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); RoutingEngine hot-reload fix; 224 unit tests, 30 live full-suite, 22 live e2e, 7 temporal awareness e2e.
 
 ---
 
@@ -43,7 +43,7 @@ flowchart TD
     B -->|"OpenAI-format response<br/>+ X-Router-* headers"| A
     B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/ log"]
     G --> P["IP REDACTION<br/>raw IPs → placeholders"]
-    P --> P2T["TEMPORAL AWARENESS\ntoday → concrete date"]
+    P --> P2T["TEMPORAL AWARENESS\ntoday → 2026-08-26\nnext week → 2026-08-31..2026-09-06\n17 pattern types"]
     P2T --> S["Session Store<br/>session_id → level, model, turn, expires"]
 
     S -->|"MISS — first turn"| C["Classifier LLM<br/>gemini-2.5-flash-lite"]
@@ -116,7 +116,7 @@ flowchart TD
     R1[1. RECEIVE<br/>POST /v1/chat/completions] --> R2[2. AUTHENTICATE<br/>Bearer token check]
     R2 --> R2G[2b. GUARDRAIL INPUT SCAN<br/>injection/jailbreak detection<br/>block → HTTP 400]
     R2G --> R2P[2c. IP REDACTION<br/>redact raw IPs → placeholders<br/>session-scoped SQLite map]
-    R2P --> R2T[2d. TEMPORAL AWARENESS<br/>today → 2026-08-25<br/>yesterday → 2026-08-24]
+    R2P --> R2T[2d. TEMPORAL AWARENESS<br/>today → 2026-08-26<br/>17 pattern types from rules.py]
     R2T --> R3[3. RESOLVE<br/>Derive session_id]
     R3 --> R4{4. SESSION LOOKUP}
 
@@ -1607,16 +1607,40 @@ OPENROUTER_API_KEY=sk-or-...   # still used by L2–L5
 When `base_url` and `api_key_env` are both `null` (the default), the tier uses the global `provider.base_url` and `OPENROUTER_API_KEY` — identical to pre-v2.3.0 behavior. Existing deployments require zero config changes.
 
 
-### 9.6 Temporal Awareness (`telemetry.temporal_awareness`) — v2.4.0
+### 9.6 Temporal Awareness (`telemetry.temporal_awareness`) — v2.4.0 → v2.5.0
 
-Normalizes temporal expressions in **user messages** to concrete ISO dates before classification and forwarding. The classifier and tier models see `2026-08-25` instead of "today", eliminating ambiguity for models without real-time clock access.
+Normalizes temporal expressions in **system and user messages** to concrete ISO dates before classification and forwarding. The classifier and tier models see `2026-08-26` instead of "today", eliminating ambiguity for models without real-time clock access.
+
+**v2.5.0 expands coverage from 3 patterns (today/yesterday/tomorrow) to all 17 pattern types** defined in `rules.py`:
+
+| Tag | Pattern | Example | Resolved To |
+|-----|---------|---------|-------------|
+| `today` | `\btoday\b` | "today" | `2026-08-26` |
+| `yesterday` | `\byesterday\b` | "yesterday" | `2026-08-25` |
+| `tomorrow` | `\btomorrow\b` | "tomorrow" | `2026-08-27` |
+| `relative_day_of_week` | `(last\|next) <weekday>` | "next Friday" | `2026-08-28` |
+| `this_coming_day_of_week` | `(this\|coming) <weekday>` | "coming Wednesday" | `2026-09-02` |
+| `last_week` | `\blast\s+week\b` | "last week" | `2026-08-17..2026-08-23` |
+| `this_week` | `\bthis\s+week\b` | "this week" | `2026-08-24..2026-08-30` |
+| `next_week` | `\bnext\s+week\b` | "next week" | `2026-08-31..2026-09-06` |
+| `last_month` | `\blast\s+month\b` | "last month" | `2026-07-01..2026-07-31` |
+| `this_month` | `\bthis\s+month\b` | "this month" | `2026-08-01..2026-08-31` |
+| `next_month` | `\bnext\s+month\b` | "next month" | `2026-09-01..2026-09-30` |
+| `last_year` | `\blast\s+year\b` | "last year" | `2025-01-01..2025-12-31` |
+| `this_year` | `\bthis\s+year\b` | "this year" | `2026-01-01..2026-12-31` |
+| `next_year` | `\bnext\s+year\b` | "next year" | `2027-01-01..2027-12-31` |
+| `past_n_units` | `(last\|past) N <unit>s` | "last 3 days" | `2026-08-23` |
+| `n_units_ago` | `N <unit>s ago` | "2 days ago" | `2026-08-24` |
+| `in_n_units` | `in N <unit>s` | "in 2 weeks" | `2026-09-09` |
+
+Week and month/year expressions resolve to **date ranges** (`YYYY-MM-DD..YYYY-MM-DD`); all others resolve to a single `YYYY-MM-DD` date.
 
 #### Configuration
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `false` | Enable temporal expression normalization. |
-| `default_timezone` | `string` | `"UTC"` | IANA timezone (e.g. `America/New_York`) for date resolution. |
+| `default_timezone` | `string` | `"UTC"` | IANA timezone (e.g. `Asia/Singapore`) for date resolution. |
 | `strategy` | `string` | `"replace"` | `"replace"` swaps expressions in-place. `"context_block"` reserved for future use. |
 
 **Example:**
@@ -1626,7 +1650,7 @@ Normalizes temporal expressions in **user messages** to concrete ISO dates befor
   "telemetry": {
     "temporal_awareness": {
       "enabled": true,
-      "default_timezone": "UTC",
+      "default_timezone": "Asia/Singapore",
       "strategy": "replace"
     }
   }
@@ -1635,10 +1659,12 @@ Normalizes temporal expressions in **user messages** to concrete ISO dates befor
 
 #### How it works
 
-1. After IP redaction and before session resolution/classification, `_process_temporal_awareness()` in `chat.py` runs the `TemporalAwarenessEngine` over all user messages.
-2. The engine uses [pendulum](https://pendulum.eustance.dev/) to resolve `today`, `yesterday`, `tomorrow` to concrete `YYYY-MM-DD` dates in the configured timezone.
-3. Replacements are written back onto the pydantic message objects in-place, so both the classifier digest and the upstream model see the concrete dates.
-4. Non-user messages (system, assistant) are passed through unchanged.
+1. After IP redaction and before session resolution/classification, `_process_temporal_awareness()` in `chat.py` runs the `TemporalAwarenessEngine` over all **system and user** messages (v2.5.0: system role added).
+2. The engine iterates all 17 compiled patterns from `rules.py` and resolves each match using [pendulum](https://pendulum.eustance.dev/) in the configured timezone.
+3. Replacements are applied right-to-left within each pattern to preserve match indices.
+4. **Multimodal content** (list-type content blocks) are processed — each text block is normalized (v2.5.0).
+5. Replacements are written back onto the pydantic message objects in-place, so both the classifier digest and the upstream model see the concrete dates.
+6. Assistant messages are passed through unchanged.
 
 #### Pipeline position
 

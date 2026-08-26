@@ -252,7 +252,7 @@
     },
     "temporal_awareness": {
       "enabled": true,
-      "default_timezone": "UTC",
+      "default_timezone": "Asia/Singapore",
       "strategy": "replace",
       "_doc": "Dynamic temporal expression normalization and preprocessing"
     }

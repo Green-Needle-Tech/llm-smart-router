@@ -34,14 +34,31 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
-## What's New in v2.4.0
+## What's New in v2.5.0
 
-### 🕐 Temporal Awareness (`telemetry.temporal_awareness`)
+### 🕐 Temporal Awareness — Full Pattern Coverage (`telemetry.temporal_awareness`)
 
-Normalizes temporal expressions in user messages to concrete ISO dates **before** classification and forwarding — so the classifier and tier models see `2026-08-25` instead of "today", eliminating ambiguity for models without real-time clock access.
+Normalizes temporal expressions in **system and user messages** to concrete ISO dates **before** classification and forwarding — so the classifier and tier models see `2026-08-25` instead of "today", eliminating ambiguity for models without real-time clock access.
 
-- Replaces: `today` → `YYYY-MM-DD`, `yesterday` → previous day, `tomorrow` → next day
-- Runs after IP redaction, before classification — the classifier benefits from concrete dates
+**v2.5.0 expands coverage from 3 patterns to all 17 pattern types** defined in `rules.py`:
+
+| Pattern | Example | Resolved To |
+|---------|---------|-------------|
+| today / yesterday / tomorrow | "today" | `2026-08-26` |
+| last / next \<weekday\> | "next Friday" | `2026-08-28` |
+| this / coming \<weekday\> | "coming Wednesday" | `2026-09-02` |
+| last / this / next week | "next week" | `2026-08-31..2026-09-06` |
+| last / this / next month | "last month" | `2026-07-01..2026-07-31` |
+| last / this / next year | "this year" | `2026-01-01..2026-12-31` |
+| last / past N \<unit\>s | "last 3 days" | `2026-08-23` |
+| N \<unit\>s ago | "2 days ago" | `2026-08-24` |
+| in N \<unit\>s | "in 2 weeks" | `2026-09-09` |
+
+**Other v2.5.0 changes:**
+
+- **System role processing** — temporal expressions in system prompts are now also replaced (was user-only)
+- **Multimodal content support** — text blocks in list-type content (images + text) are processed
+- **Right-to-left replacement** — longer patterns matched first to avoid partial overlaps
 - Timezone-aware via `default_timezone` (IANA format, default `UTC`)
 - `strategy: "replace"` (default) swaps expressions in-place
 - Hot-reloadable — toggle on/off via `settings.json` without restart
@@ -54,7 +71,7 @@ Normalizes temporal expressions in user messages to concrete ISO dates **before*
   "telemetry": {
     "temporal_awareness": {
       "enabled": true,
-      "default_timezone": "UTC",
+      "default_timezone": "Asia/Singapore",
       "strategy": "replace"
     }
   }
@@ -279,7 +296,7 @@ flowchart TD
     subgraph Router [Request Pipeline]
         C --> P1["🛡️ Guardrails<br/>Injection detection (log/block)<br/>+ Secret masking on output"]
         P1 --> P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
-        P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-25<br/>yesterday → 2026-08-24"]
+        P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>next week → 2026-08-31..2026-09-06<br/>17 pattern types"]
         P2T --> D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
     end
 

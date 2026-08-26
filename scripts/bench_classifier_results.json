@@ -1,0 +1,756 @@
+{
+  "results": {
+    "google/gemini-3.1-flash-lite": [
+      {
+        "ok": true,
+        "latency": 1.2515934209804982,
+        "cost": 0.000159,
+        "completion_tokens": 26,
+        "level": "UNKNOWN",
+        "confidence": 1.0,
+        "case": "greeting",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 1.0329042240045965,
+        "cost": 0.00015625,
+        "completion_tokens": 24,
+        "level": "UNKNOWN",
+        "confidence": 1.0,
+        "case": "vague",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 0.7722499968949705,
+        "cost": 0.00015375,
+        "completion_tokens": 21,
+        "level": "L1",
+        "confidence": 1.0,
+        "case": "trivial-upper",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 0.8395736860111356,
+        "cost": 0.00016,
+        "completion_tokens": 25,
+        "level": "L1",
+        "confidence": 1.0,
+        "case": "trivial-extract",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 0.8770641980227083,
+        "cost": 0.0001545,
+        "completion_tokens": 22,
+        "level": "L2",
+        "confidence": 1.0,
+        "case": "easy-fact",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 0.8641751320101321,
+        "cost": 0.000157,
+        "completion_tokens": 23,
+        "level": "L2",
+        "confidence": 1.0,
+        "case": "easy-draft",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 0.9399136090651155,
+        "cost": 0.000173,
+        "completion_tokens": 31,
+        "level": "L4",
+        "confidence": 0.95,
+        "case": "medium-code",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 1.084673480829224,
+        "cost": 0.0001705,
+        "completion_tokens": 30,
+        "level": "L4",
+        "confidence": 0.95,
+        "case": "medium-analysis",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 0.9678619070909917,
+        "cost": 0.0001725,
+        "completion_tokens": 31,
+        "level": "L4",
+        "confidence": 0.95,
+        "case": "hard-arch",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 0.9276151820085943,
+        "cost": 0.0001635,
+        "completion_tokens": 26,
+        "level": "L4",
+        "confidence": 0.95,
+        "case": "hard-math",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 0.9834980010055006,
+        "cost": 0.00017225,
+        "completion_tokens": 30,
+        "level": "L5",
+        "confidence": 1.0,
+        "case": "extreme-orch",
+        "expect": "L5"
+      },
+      {
+        "ok": true,
+        "latency": 0.8730993459466845,
+        "cost": 0.00016325,
+        "completion_tokens": 25,
+        "level": "L5",
+        "confidence": 0.95,
+        "case": "extreme-novel",
+        "expect": "L5"
+      }
+    ],
+    "google/gemini-2.5-flash-lite": [
+      {
+        "ok": true,
+        "latency": 0.6244694318156689,
+        "cost": 5.84e-05,
+        "completion_tokens": 26,
+        "level": "UNKNOWN",
+        "confidence": 1.0,
+        "case": "greeting",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 0.6781878240872175,
+        "cost": 5.93e-05,
+        "completion_tokens": 28,
+        "level": "UNKNOWN",
+        "confidence": 1.0,
+        "case": "vague",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 0.6834315250162035,
+        "cost": 5.89e-05,
+        "completion_tokens": 25,
+        "level": "L1",
+        "confidence": 1.0,
+        "case": "trivial-upper",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 0.6940139709040523,
+        "cost": 5.9e-05,
+        "completion_tokens": 25,
+        "level": "L1",
+        "confidence": 1.0,
+        "case": "trivial-extract",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 0.6475181609857827,
+        "cost": 5.86e-05,
+        "completion_tokens": 25,
+        "level": "L2",
+        "confidence": 0.9,
+        "case": "easy-fact",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 0.7049511480145156,
+        "cost": 5.9e-05,
+        "completion_tokens": 25,
+        "level": "L2",
+        "confidence": 0.9,
+        "case": "easy-draft",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 0.6661150590516627,
+        "cost": 6.02e-05,
+        "completion_tokens": 24,
+        "level": "L4",
+        "confidence": 0.9,
+        "case": "medium-code",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 0.7132276319898665,
+        "cost": 6.06e-05,
+        "completion_tokens": 26,
+        "level": "L3",
+        "confidence": 0.9,
+        "case": "medium-analysis",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 0.7362810610793531,
+        "cost": 6.04e-05,
+        "completion_tokens": 25,
+        "level": "L4",
+        "confidence": 0.9,
+        "case": "hard-arch",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 0.7070223428308964,
+        "cost": 5.94e-05,
+        "completion_tokens": 24,
+        "level": "L4",
+        "confidence": 0.9,
+        "case": "hard-math",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 0.7326245640870184,
+        "cost": 6.13e-05,
+        "completion_tokens": 26,
+        "level": "L5",
+        "confidence": 0.9,
+        "case": "extreme-orch",
+        "expect": "L5"
+      },
+      {
+        "ok": true,
+        "latency": 0.7142459438182414,
+        "cost": 6.07e-05,
+        "completion_tokens": 26,
+        "level": "L5",
+        "confidence": 0.9,
+        "case": "extreme-novel",
+        "expect": "L5"
+      }
+    ],
+    "openai/gpt-oss-20b": [
+      {
+        "ok": true,
+        "latency": 1.5904424220789224,
+        "cost": 3.717e-05,
+        "completion_tokens": 107,
+        "level": "UNKNOWN",
+        "confidence": 0.9,
+        "case": "greeting",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 1.256009193137288,
+        "cost": 3.826e-05,
+        "completion_tokens": 114,
+        "level": "UNKNOWN",
+        "confidence": 0.9,
+        "case": "vague",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 1.0125840150285512,
+        "cost": 3.119e-05,
+        "completion_tokens": 65,
+        "level": "L1",
+        "confidence": 0.99,
+        "case": "trivial-upper",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 1.0489836821798235,
+        "cost": 3.318e-05,
+        "completion_tokens": 78,
+        "level": "L1",
+        "confidence": 0.95,
+        "case": "trivial-extract",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 1.0472094889264554,
+        "cost": 3.287e-05,
+        "completion_tokens": 77,
+        "level": "L2",
+        "confidence": 0.95,
+        "case": "easy-fact",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 1.0217303200624883,
+        "cost": 3.348e-05,
+        "completion_tokens": 80,
+        "level": "L2",
+        "confidence": 0.95,
+        "case": "easy-draft",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 2.1992487080860883,
+        "cost": 6.157e-05,
+        "completion_tokens": 263,
+        "level": "L3",
+        "confidence": 0.8,
+        "case": "medium-code",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 1.8493913118727505,
+        "cost": 5.155e-05,
+        "completion_tokens": 197,
+        "level": "L3",
+        "confidence": 0.8,
+        "case": "medium-analysis",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 1.963865420082584,
+        "cost": 5.462e-05,
+        "completion_tokens": 218,
+        "level": "L4",
+        "confidence": 0.9,
+        "case": "hard-arch",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 2.227010355098173,
+        "cost": 6.1e-05,
+        "completion_tokens": 260,
+        "level": "L3",
+        "confidence": 0.9,
+        "case": "hard-math",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 1.6343618489336222,
+        "cost": 4.928e-05,
+        "completion_tokens": 180,
+        "level": "L5",
+        "confidence": 0.95,
+        "case": "extreme-orch",
+        "expect": "L5"
+      },
+      {
+        "ok": true,
+        "latency": 1.738964786985889,
+        "cost": 4.994e-05,
+        "completion_tokens": 186,
+        "level": "L5",
+        "confidence": 0.95,
+        "case": "extreme-novel",
+        "expect": "L5"
+      }
+    ],
+    "openai/gpt-oss-120b": [
+      {
+        "ok": true,
+        "latency": 0.755944259930402,
+        "cost": 9.8e-05,
+        "completion_tokens": 86,
+        "level": "UNKNOWN",
+        "confidence": 0.99,
+        "case": "greeting",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 0.8151926039718091,
+        "cost": 0.0001011,
+        "completion_tokens": 92,
+        "level": "UNKNOWN",
+        "confidence": 0.9,
+        "case": "vague",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 0.8248622750397772,
+        "cost": 9.03e-05,
+        "completion_tokens": 69,
+        "level": "L1",
+        "confidence": 0.99,
+        "case": "trivial-upper",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 0.719291270012036,
+        "cost": 9.29e-05,
+        "completion_tokens": 74,
+        "level": "L1",
+        "confidence": 0.99,
+        "case": "trivial-extract",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 0.7573691951110959,
+        "cost": 9.5e-05,
+        "completion_tokens": 79,
+        "level": "L2",
+        "confidence": 0.99,
+        "case": "easy-fact",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 0.665583458961919,
+        "cost": 0.0001079,
+        "completion_tokens": 104,
+        "level": "L2",
+        "confidence": 0.96,
+        "case": "easy-draft",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 1.4567764471285045,
+        "cost": 0.000157,
+        "completion_tokens": 199,
+        "level": "L4",
+        "confidence": 0.78,
+        "case": "medium-code",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 1.5133152871858329,
+        "cost": 0.0001722,
+        "completion_tokens": 230,
+        "level": "L3",
+        "confidence": 0.86,
+        "case": "medium-analysis",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 1.2941677880007774,
+        "cost": 0.00014,
+        "completion_tokens": 166,
+        "level": "L4",
+        "confidence": 0.93,
+        "case": "hard-arch",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 1.6280760949011892,
+        "cost": 0.0002082,
+        "completion_tokens": 302,
+        "level": "L4",
+        "confidence": 0.92,
+        "case": "hard-math",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 1.0514452559873462,
+        "cost": 0.0001414,
+        "completion_tokens": 167,
+        "level": "L5",
+        "confidence": 0.97,
+        "case": "extreme-orch",
+        "expect": "L5"
+      },
+      {
+        "ok": true,
+        "latency": 0.8885676788631827,
+        "cost": 0.0001273,
+        "completion_tokens": 140,
+        "level": "L5",
+        "confidence": 0.92,
+        "case": "extreme-novel",
+        "expect": "L5"
+      }
+    ],
+    "deepseek/deepseek-v4-flash": [
+      {
+        "ok": true,
+        "latency": 2.112622704124078,
+        "cost": 0.00010906,
+        "completion_tokens": 56,
+        "level": "UNKNOWN",
+        "confidence": 1.0,
+        "case": "greeting",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 2.0253437671344727,
+        "cost": 0.00010332,
+        "completion_tokens": 121,
+        "level": "UNKNOWN",
+        "confidence": 1.0,
+        "case": "vague",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": true,
+        "latency": 1.4668604279868305,
+        "cost": 9.338e-05,
+        "completion_tokens": 82,
+        "level": "L1",
+        "confidence": 1.0,
+        "case": "trivial-upper",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 1.9596275829244405,
+        "cost": 0.00011354,
+        "completion_tokens": 67,
+        "level": "L1",
+        "confidence": 0.98,
+        "case": "trivial-extract",
+        "expect": "L1"
+      },
+      {
+        "ok": true,
+        "latency": 1.5396485349629074,
+        "cost": 5.6448e-05,
+        "completion_tokens": 54,
+        "level": "L2",
+        "confidence": 1.0,
+        "case": "easy-fact",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 1.9167750850319862,
+        "cost": 6.3168e-05,
+        "completion_tokens": 76,
+        "level": "L2",
+        "confidence": 0.95,
+        "case": "easy-draft",
+        "expect": "L2"
+      },
+      {
+        "ok": true,
+        "latency": 3.1434226220007986,
+        "cost": 0.000109088,
+        "completion_tokens": 232,
+        "level": "L4",
+        "confidence": 0.8,
+        "case": "medium-code",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 2.3801877507939935,
+        "cost": 0.00012614,
+        "completion_tokens": 107,
+        "level": "L3",
+        "confidence": 0.9,
+        "case": "medium-analysis",
+        "expect": "L3"
+      },
+      {
+        "ok": true,
+        "latency": 3.1227571128401905,
+        "cost": 0.000105588,
+        "completion_tokens": 221,
+        "level": "L4",
+        "confidence": 0.95,
+        "case": "hard-arch",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 4.08550167712383,
+        "cost": 0.000139188,
+        "completion_tokens": 342,
+        "level": "L4",
+        "confidence": 0.85,
+        "case": "hard-math",
+        "expect": "L4"
+      },
+      {
+        "ok": true,
+        "latency": 2.275204058038071,
+        "cost": 0.00012628,
+        "completion_tokens": 103,
+        "level": "L5",
+        "confidence": 0.98,
+        "case": "extreme-orch",
+        "expect": "L5"
+      },
+      {
+        "ok": true,
+        "latency": 3.6825152339879423,
+        "cost": 0.000126028,
+        "completion_tokens": 294,
+        "level": "L5",
+        "confidence": 0.95,
+        "case": "extreme-novel",
+        "expect": "L5"
+      }
+    ],
+    "mistralai/mistral-small-3.2-24b-instruct": [
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.03181332489475608,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "greeting",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.02556636999361217,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "vague",
+        "expect": "UNKNOWN"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.02222822397015989,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "trivial-upper",
+        "expect": "L1"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.025106346933171153,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "trivial-extract",
+        "expect": "L1"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.030099378898739815,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "easy-fact",
+        "expect": "L2"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.03470068797469139,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "easy-draft",
+        "expect": "L2"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.031626413809135556,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "medium-code",
+        "expect": "L3"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.03780853119678795,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "medium-analysis",
+        "expect": "L3"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.02500940579921007,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "hard-arch",
+        "expect": "L4"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.027983939042314887,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "hard-math",
+        "expect": "L4"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.06009028502739966,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "extreme-orch",
+        "expect": "L5"
+      },
+      {
+        "ok": false,
+        "status": 404,
+        "latency": 0.0291832338552922,
+        "err": "{\"error\":{\"message\":\"No allowed providers are available for the selected model. Providers serving mi",
+        "case": "extreme-novel",
+        "expect": "L5"
+      }
+    ]
+  },
+  "summary": {
+    "google/gemini-3.1-flash-lite": {
+      "acc": 10,
+      "within1": 12,
+      "fails": 0,
+      "avg_lat": 0.9511851819891793,
+      "cost": 0.00016295833333333331
+    },
+    "google/gemini-2.5-flash-lite": {
+      "acc": 11,
+      "within1": 12,
+      "fails": 0,
+      "avg_lat": 0.6918407219733732,
+      "cost": 5.964999999999999e-05
+    },
+    "openai/gpt-oss-20b": {
+      "acc": 11,
+      "within1": 12,
+      "fails": 0,
+      "avg_lat": 1.5491501293727197,
+      "cost": 4.4509166666666664e-05
+    },
+    "openai/gpt-oss-120b": {
+      "acc": 11,
+      "within1": 12,
+      "fails": 0,
+      "avg_lat": 1.030882634591156,
+      "cost": 0.00012760833333333332
+    },
+    "deepseek/deepseek-v4-flash": {
+      "acc": 11,
+      "within1": 12,
+      "fails": 0,
+      "avg_lat": 2.4758722130791284,
+      "cost": 0.00010593566666666668
+    },
+    "mistralai/mistral-small-3.2-24b-instruct": {
+      "acc": 0,
+      "within1": 0,
+      "fails": 12,
+      "avg_lat": 0.03176801178293923,
+      "cost": 0
+    }
+  }
+}
