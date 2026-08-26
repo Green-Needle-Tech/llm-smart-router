@@ -7,6 +7,9 @@ from typing import Any, Optional
 
 from app.guardrails.rules import (
     COMPILED_INJECTION, SECRET_RULES, SECRET_MASK, find_interleaved_secrets,
+    INVISIBLE_CHARS_RE, detect_invisible_text, strip_invisible_text,
+    PII_RULES, PII_MASK, _is_likely_credit_card,
+    MALICIOUS_URL_RE, REFUSAL_RULES,
 )
 
 _CODE_BLOCK_RE = re.compile(r"```")
@@ -28,6 +31,16 @@ class GuardrailConfig:
     # Output guardrail
     output_enabled: bool = True
     output_action: str = "mask"     # "mask" | "log" | "block"
+    # Invisible text detection (input) — strip zero-width/format chars
+    invisible_text_detection: bool = True
+    # PII masking (output) — mask email, phone, SSN, credit card
+    pii_masking_enabled: bool = True
+    # Banned substrings (input) — configurable list, blocks or logs
+    banned_substrings: list[str] = field(default_factory=list)
+    # Refusal detection (output) — log-only monitoring
+    refusal_detection: bool = True
+    # Malicious URL detection (output) — log or mask exfil domains
+    malicious_url_detection: bool = True
 
 
 @dataclass
@@ -94,6 +107,52 @@ class GuardrailEngine:
             blocked = any(_SEV_ORDER.get(f.severity, 0) >= threshold for f in all_findings)
         return InputScanResult(findings=all_findings, blocked=blocked)
 
+    # --- Invisible text detection (input) ------------------------------------
+
+    def scan_invisible_text(self, text: str) -> list[GuardrailFinding]:
+        """Detect invisible/zero-width characters in text.
+
+        Returns findings with MEDIUM severity. Does not modify the text —
+        the caller (chat.py) is responsible for stripping if desired.
+        """
+        if not text or not self.config.invisible_text_detection:
+            return []
+        detected = detect_invisible_text(text)
+        if not detected:
+            return []
+        # Deduplicate by char name
+        names = set(name for name, _ in detected)
+        return [
+            GuardrailFinding(
+                rule_id=f"invisible-text-{name.lower()}",
+                severity="MEDIUM",
+                snippet=f"{name} at pos {pos}",
+            )
+            for name, pos in detected[:10]  # cap to avoid flooding
+        ]
+
+    # --- Banned substrings (input) -------------------------------------------
+
+    def scan_banned_substrings(self, text: str) -> list[GuardrailFinding]:
+        """Check text against configurable banned substrings list.
+
+        Case-insensitive substring match. Returns HIGH severity findings.
+        """
+        if not text or not self.config.banned_substrings:
+            return []
+        findings = []
+        text_lower = text.lower()
+        for banned in self.config.banned_substrings:
+            if not banned:
+                continue
+            if banned.lower() in text_lower:
+                findings.append(GuardrailFinding(
+                    rule_id="banned-substring",
+                    severity="HIGH",
+                    snippet=banned[:40],
+                ))
+        return findings
+
     # --- Output path -----------------------------------------------------------
 
     def scan_output_secrets(self, text: str) -> list[GuardrailFinding]:
@@ -143,9 +202,88 @@ class GuardrailEngine:
                 text = text[:start] + SECRET_MASK + text[end:]
         return text, findings
 
-    def process_response_content(self, message):
-        """Mask secrets in a message dict's content, in place.
+    # --- PII masking (output) -------------------------------------------------
 
+    def mask_pii(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Replace PII matches (email, phone, SSN, credit card) with [REDACTED-PII].
+
+        Returns (text, findings). Credit card matches are filtered through
+        a false-positive guard (_is_likely_credit_card) to reduce noise.
+        """
+        if not text or not self.config.pii_masking_enabled:
+            return text, []
+        findings: list[GuardrailFinding] = []
+        for pid, pattern in PII_RULES:
+            def _sub(m: re.Match, _pid=pid) -> str:
+                match_text = m.group(0)
+                # Credit card false-positive guard
+                if _pid == "pii-credit-card" and not _is_likely_credit_card(match_text):
+                    return match_text  # don't mask non-CC digit runs
+                findings.append(GuardrailFinding(
+                    rule_id=_pid, severity="HIGH", snippet=match_text[:20] + "…",
+                ))
+                return PII_MASK
+            text = pattern.sub(_sub, text)
+        return text, findings
+
+    # --- Malicious URL detection (output) -------------------------------------
+
+    def scan_malicious_urls(self, text: str) -> list[GuardrailFinding]:
+        """Detect known exfiltration/malicious URLs in output text.
+
+        Returns HIGH severity findings. Does not mask — the caller decides
+        based on output_action.
+        """
+        if not text or not self.config.malicious_url_detection:
+            return []
+        findings = []
+        for m in MALICIOUS_URL_RE.finditer(text):
+            findings.append(GuardrailFinding(
+                rule_id="malicious-url",
+                severity="HIGH",
+                snippet=m.group(0)[:60] + "…",
+            ))
+        return findings
+
+    def mask_malicious_urls(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Replace malicious URLs with [REDACTED-URL]."""
+        if not text or not self.config.malicious_url_detection:
+            return text, []
+        findings: list[GuardrailFinding] = []
+
+        def _sub(m: re.Match) -> str:
+            findings.append(GuardrailFinding(
+                rule_id="malicious-url",
+                severity="HIGH",
+                snippet=m.group(0)[:60] + "…",
+            ))
+            return "[REDACTED-URL]"
+        text = MALICIOUS_URL_RE.sub(_sub, text)
+        return text, findings
+
+    # --- Refusal detection (output, log-only) ---------------------------------
+
+    def scan_refusal(self, text: str) -> list[GuardrailFinding]:
+        """Detect LLM refusal patterns for monitoring (log-only, never blocks).
+
+        Returns LOW severity findings — refusals are legitimate safety behavior,
+        not violations. Useful for observability and quality metrics.
+        """
+        if not text or not self.config.refusal_detection:
+            return []
+        findings = []
+        for pid, pattern in REFUSAL_RULES:
+            if pattern.search(text):
+                findings.append(GuardrailFinding(
+                    rule_id=pid, severity="LOW",
+                    snippet="refusal detected",
+                ))
+        return findings
+
+    def process_response_content(self, message):
+        """Mask secrets, PII, and malicious URLs in a message dict's content, in place.
+
+        Also scans for refusal patterns (log-only, never modifies content).
         Accepts the message dict ({role, content}) and mutates
         message["content"] when masking applies. Returns findings.
         """
@@ -155,19 +293,44 @@ class GuardrailEngine:
         findings: list[GuardrailFinding] = []
         if isinstance(content, str):
             if self.config.output_action == "mask":
-                masked, findings = self.mask_secrets(content)
+                masked, fs = self.mask_secrets(content)
+                # PII masking
+                if self.config.pii_masking_enabled:
+                    masked, pii_fs = self.mask_pii(masked)
+                    fs.extend(pii_fs)
+                # Malicious URL masking
+                if self.config.malicious_url_detection:
+                    masked, url_fs = self.mask_malicious_urls(masked)
+                    fs.extend(url_fs)
                 if masked != content and isinstance(message, dict):
                     message["content"] = masked
             else:
-                findings = self.scan_output_secrets(content)
+                fs = self.scan_output_secrets(content)
+                if self.config.malicious_url_detection:
+                    fs.extend(self.scan_malicious_urls(content))
+            # Refusal detection (always log-only, regardless of output_action)
+            if self.config.refusal_detection:
+                fs.extend(self.scan_refusal(content))
+            findings.extend(fs)
         elif isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and isinstance(block.get("text"), str):
                     if self.config.output_action == "mask":
-                        masked, fs = self.mask_secrets(block["text"])
+                        masked, fs_block = self.mask_secrets(block["text"])
+                        if self.config.pii_masking_enabled:
+                            masked, pii_fs = self.mask_pii(masked)
+                            fs_block.extend(pii_fs)
+                        if self.config.malicious_url_detection:
+                            masked, url_fs = self.mask_malicious_urls(masked)
+                            fs_block.extend(url_fs)
                         if masked != block["text"]:
                             block["text"] = masked
                     else:
-                        fs = self.scan_output_secrets(block["text"])
-                    findings.extend(fs)
+                        fs_block = self.scan_output_secrets(block["text"])
+                        if self.config.malicious_url_detection:
+                            fs_block.extend(self.scan_malicious_urls(block["text"]))
+                    # Refusal detection
+                    if self.config.refusal_detection:
+                        fs_block.extend(self.scan_refusal(block["text"]))
+                    findings.extend(fs_block)
         return findings

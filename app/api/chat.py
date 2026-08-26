@@ -23,6 +23,9 @@ from app.middleware.auth import check_router_auth, unauthorized_response
 from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
 from app.privacy.ip_redaction import IPRedactionEngine
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
+from app.guardrails.rules import strip_invisible_text
+
+_SEV_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 from app.temporal_awareness.engine import TemporalAwarenessEngine
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
@@ -139,6 +142,9 @@ def _guardrail_scan_input(request, body):
     Returns a JSONResponse (400) when configured to block and the request
     trips the severity threshold; otherwise None. Findings are always
     counted in metrics and logged.
+
+    Also detects invisible/zero-width characters and banned substrings,
+    and strips invisible characters from message content before forwarding.
     """
     engine: Optional[GuardrailEngine] = getattr(request.app.state, "guardrails", None)
     if engine is None:
@@ -151,10 +157,69 @@ def _guardrail_scan_input(request, body):
         block_on_severity=cfg.block_on_severity,
         output_enabled=cfg.output_enabled,
         output_action=cfg.output_action,
+        invisible_text_detection=cfg.invisible_text_detection,
+        pii_masking_enabled=cfg.pii_masking_enabled,
+        banned_substrings=cfg.banned_substrings,
+        refusal_detection=cfg.refusal_detection,
+        malicious_url_detection=cfg.malicious_url_detection,
     )
     messages = [
         (m.model_dump() if hasattr(m, "model_dump") else m) for m in body.messages
     ]
+
+    # Invisible text detection + stripping
+    invisible_findings: list = []
+    if cfg.invisible_text_detection:
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and content:
+                ifs = engine.scan_invisible_text(content)
+                if ifs:
+                    invisible_findings.extend(ifs)
+                    # Strip invisible chars from the message in place
+                    msg["content"] = strip_invisible_text(content)
+                    # Also update the original body.messages list
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        ifs = engine.scan_invisible_text(block["text"])
+                        if ifs:
+                            invisible_findings.extend(ifs)
+                            block["text"] = strip_invisible_text(block["text"])
+        for f in invisible_findings:
+            router_guardrail_findings_total.labels(
+                rule_id=f.rule_id, severity=f.severity, direction="input",
+            ).inc()
+            logger.warning(
+                "router.guardrail.invisible_text",
+                rule=f.rule_id, severity=f.severity,
+            )
+
+    # Banned substrings detection
+    banned_findings: list = []
+    if cfg.banned_substrings:
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                banned_findings.extend(engine.scan_banned_substrings(content))
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        banned_findings.extend(engine.scan_banned_substrings(block["text"]))
+        for f in banned_findings:
+            router_guardrail_findings_total.labels(
+                rule_id=f.rule_id, severity=f.severity, direction="input",
+            ).inc()
+            logger.warning(
+                "router.guardrail.banned_substring",
+                rule=f.rule_id, severity=f.severity, action=cfg.input_action,
+            )
+
+    # Standard injection scan
     result = engine.scan_messages(messages)
     for f in result.findings:
         router_guardrail_findings_total.labels(
@@ -164,8 +229,16 @@ def _guardrail_scan_input(request, body):
             "router.guardrail.input_finding",
             rule=f.rule_id, severity=f.severity, action=cfg.input_action,
         )
-    if result.blocked:
-        top = max(result.findings, key=lambda f: {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}.get(f.severity, 0))
+
+    # Combine all findings for block decision
+    all_findings = result.findings + banned_findings
+    blocked = False
+    if cfg.input_action == "block" and all_findings:
+        threshold = _SEV_ORDER.get(cfg.block_on_severity, 2)
+        blocked = any(_SEV_ORDER.get(f.severity, 0) >= threshold for f in all_findings)
+
+    if blocked:
+        top = max(all_findings, key=lambda f: _SEV_ORDER.get(f.severity, 0))
         router_guardrail_blocks_total.labels(rule_id=top.rule_id, severity=top.severity).inc()
         return JSONResponse(
             status_code=400,
@@ -183,7 +256,12 @@ def _guardrail_scan_input(request, body):
 
 
 def _guardrail_process_output(request, json_resp) -> None:
-    """Mask (or log) secrets in a non-streaming response, in place."""
+    """Mask (or log) secrets, PII, and malicious URLs in a non-streaming response, in place.
+
+    Also logs refusal patterns (log-only monitoring). Findings are counted
+    in metrics: secret/PII/URL masks use router_guardrail_secret_masks_total;
+    refusals and log-mode findings use router_guardrail_findings_total.
+    """
     engine: Optional[GuardrailEngine] = getattr(request.app.state, "guardrails", None)
     if engine is None:
         return
@@ -193,16 +271,37 @@ def _guardrail_process_output(request, json_resp) -> None:
             continue
         findings = engine.process_response_content(message)
         for f in findings:
-            if engine.config.output_action == "mask":
-                router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
-            else:
+            if f.rule_id.startswith("refusal-"):
+                # Refusals are always log-only, regardless of output_action
                 router_guardrail_findings_total.labels(
                     rule_id=f.rule_id, severity=f.severity, direction="output",
                 ).inc()
-            logger.warning(
-                "router.guardrail.output_finding", rule=f.rule_id,
-                action=engine.config.output_action,
-            )
+                logger.info(
+                    "router.guardrail.refusal_detected", rule=f.rule_id,
+                )
+            elif f.rule_id.startswith("pii-") or f.rule_id == "malicious-url":
+                if engine.config.output_action == "mask":
+                    router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+                else:
+                    router_guardrail_findings_total.labels(
+                        rule_id=f.rule_id, severity=f.severity, direction="output",
+                    ).inc()
+                logger.warning(
+                    "router.guardrail.output_finding", rule=f.rule_id,
+                    action=engine.config.output_action,
+                )
+            else:
+                # Secret findings (existing behavior)
+                if engine.config.output_action == "mask":
+                    router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+                else:
+                    router_guardrail_findings_total.labels(
+                        rule_id=f.rule_id, severity=f.severity, direction="output",
+                    ).inc()
+                logger.warning(
+                    "router.guardrail.output_finding", rule=f.rule_id,
+                    action=engine.config.output_action,
+                )
 
 
 async def _redact_incoming(request, body) -> Optional[str]:
@@ -903,6 +1002,16 @@ async def _handle_stream(
                 flush, fs = guardrail_engine.mask_secrets(flush)
                 for f in fs:
                     router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+                # PII masking (email, phone, SSN, credit card)
+                if hasattr(guardrail_engine.config, "pii_masking_enabled") and guardrail_engine.config.pii_masking_enabled:
+                    flush, pii_fs = guardrail_engine.mask_pii(flush)
+                    for f in pii_fs:
+                        router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+                # Malicious URL masking
+                if hasattr(guardrail_engine.config, "malicious_url_detection") and guardrail_engine.config.malicious_url_detection:
+                    flush, url_fs = guardrail_engine.mask_malicious_urls(flush)
+                    for f in url_fs:
+                        router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
             return flush, carry
 
         _guardrail_mask_active = (
@@ -947,6 +1056,15 @@ async def _handle_stream(
                             carry, _fs = guardrail_engine.mask_secrets(carry)
                             for f in _fs:
                                 router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+                            # PII + malicious URL masking on carry flush
+                            if hasattr(guardrail_engine.config, "pii_masking_enabled") and guardrail_engine.config.pii_masking_enabled:
+                                carry, pii_fs = guardrail_engine.mask_pii(carry)
+                                for f in pii_fs:
+                                    router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+                            if hasattr(guardrail_engine.config, "malicious_url_detection") and guardrail_engine.config.malicious_url_detection:
+                                carry, url_fs = guardrail_engine.mask_malicious_urls(carry)
+                                for f in url_fs:
+                                    router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
                         flush_event = {"choices": [{"delta": {"content": carry}}]}
                         yield f"data: {json.dumps(flush_event)}\n\n"
                         carry = ""

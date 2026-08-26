@@ -33,7 +33,7 @@ class PromptCachingConfig(BaseModel):
 
 
 class GuardrailsConfig(BaseModel):
-    """LLM guardrails: input injection detection + output secret masking."""
+    """LLM guardrails: input injection detection + output secret/PII masking."""
     input_enabled: bool = True
     # "log" — monitor only | "block" — reject request | "tag" — log + annotate
     input_action: str = "log"
@@ -42,6 +42,16 @@ class GuardrailsConfig(BaseModel):
     output_enabled: bool = True
     # "mask" — replace secrets with ***REDACTED*** | "log" | "block"
     output_action: str = "mask"
+    # Invisible text detection (input) — detect zero-width/format chars
+    invisible_text_detection: bool = True
+    # PII masking (output) — mask email, phone, SSN, credit card
+    pii_masking_enabled: bool = True
+    # Banned substrings (input) — configurable list, case-insensitive
+    banned_substrings: list[str] = Field(default_factory=list)
+    # Refusal detection (output) — log-only monitoring, never blocks
+    refusal_detection: bool = True
+    # Malicious URL detection (output) — detect/mask exfil domains
+    malicious_url_detection: bool = True
 
 
 class PrivacyConfig(BaseModel):
