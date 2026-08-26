@@ -1,0 +1,5 @@
+{
+  "openai.baseUrl": "http://localhost:8080/v1",
+  "openai.apiKey": "${ROUTER_API_KEY}",
+  "openai.model": "smart-router"
+}

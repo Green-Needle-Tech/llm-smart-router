@@ -24,6 +24,21 @@ docker compose up -d --build
 curl localhost:8080/healthz
 ```
 
+### ⚡ Fast Agent Onboarding & Setup
+
+Run the built-in setup helper to verify health and generate ready-to-use configs for your agent:
+
+```bash
+# Interactive health check and connection printout
+python3 scripts/agent_setup.py
+
+# Generate specific agent configs (hermes, langchain, llamaindex, cursor, env)
+python3 scripts/generate_agent_config.py --agent hermes
+python3 scripts/generate_agent_config.py --agent all
+```
+
+Drop-in template files are also available in `templates/` (`templates/hermes_config.yaml`, `templates/agent.env`, `templates/cursor_config.json`).
+
 Point any OpenAI-compatible client at `http://localhost:8080/v1`:
 
 ```python

@@ -1,0 +1,11 @@
+model:
+  provider: custom
+  default: smart-router
+  base_url: http://localhost:8080/v1
+  api_mode: chat_completions
+  context_length: 1000000
+  api_key: "${ROUTER_API_KEY}"
+
+fallback_providers:
+  - provider: openrouter
+    model: z-ai/glm-5.2
