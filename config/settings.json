@@ -159,9 +159,10 @@
     "global_min_level": "L1",
     "L1": {
       "label": "trivial",
-      "model": "google/gemini-2.5-flash",
+      "model": "openai/gpt-5.6-luna",
       "fallbacks": [
-        "minimax/minimax-m3"
+        "deepseek/deepseek-v4-flash",
+        "google/gemini-2.5-flash"
       ],
       "params": {
         "temperature": 0.2
@@ -172,9 +173,10 @@
     },
     "L2": {
       "label": "routine",
-      "model": "deepseek/deepseek-v4-flash",
+      "model": "z-ai/glm-5.2",
       "fallbacks": [
-        "google/gemini-2.5-flash"
+        "openai/gpt-5.6-luna",
+        "deepseek/deepseek-v4-flash"
       ],
       "params": {
         "temperature": 0.4
@@ -184,10 +186,10 @@
     },
     "L3": {
       "label": "intermediate",
-      "model": "z-ai/glm-5.2",
+      "model": "google/gemini-3.7-flash",
       "fallbacks": [
-        "google/gemini-2.5-flash",
-        "deepseek/deepseek-v4-flash"
+        "z-ai/glm-5.2",
+        "openai/gpt-5.6-luna"
       ],
       "params": {
         "temperature": 0.6
@@ -212,7 +214,7 @@
       "label": "expert",
       "model": "anthropic/claude-opus-5",
       "fallbacks": [
-        "z-ai/glm-5.2",
+        "z-ai/glm-5.3",
         "openai/gpt-5.6-sol"
       ],
       "params": {

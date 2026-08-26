@@ -122,7 +122,7 @@ Each tier (L1–L5) and the classifier LLM can now use a **different OpenAI-comp
 {
   "routing": {
     "L1": {
-      "model": "google/gemini-2.5-flash",
+      "model": "openai/gpt-5.6-luna",
       "base_url": "https://custom-provider.com/v1",
       "api_key_env": "L1_API_KEY"
     }
@@ -328,9 +328,9 @@ flowchart TD
         P2T --> D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
     end
 
-    D -->|L1| E[Gemini 2.5 Flash<br/>OpenRouter]
-    D -->|L2| F[DeepSeek V4 Flash<br/>OpenRouter]
-    D -->|L3| F2[GLM 5.2<br/>OpenRouter]
+    D -->|L1| E[GPT-5.6 Luna<br/>OpenRouter]
+    D -->|L2| F[GLM 5.2<br/>OpenRouter]
+    D -->|L3| F2[Gemini 3.7 Flash<br/>OpenRouter]
     D -->|L4| F3[GLM 5.3<br/>OpenRouter]
     D -->|L5| H[Opus 5<br/>Claude API]
 

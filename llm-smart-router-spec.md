@@ -51,9 +51,9 @@ flowchart TD
 
     C -->|"classify once → pin session"| R
 
-    R -->|"L1"| M1["Gemini 2.5 Flash<br/>OpenRouter"]
-    R -->|"L2"| M2["DeepSeek V4 Flash<br/>OpenRouter"]
-    R -->|"L3"| M3["GLM 5.2<br/>OpenRouter"]
+    R -->|"L1"| M1["GPT-5.6 Luna<br/>OpenRouter"]
+    R -->|"L2"| M2["GLM 5.2<br/>OpenRouter"]
+    R -->|"L3"| M3["Gemini 3.7 Flash<br/>OpenRouter"]
     R -->|"L4"| M4["GLM 5.3<br/>OpenRouter"]
     R -->|"L5"| M5["Opus 5<br/>Claude API"]
 
