@@ -59,6 +59,22 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.10.1
+
+### ⚡ Tier L3 Update — Gemini 3.7 Flash
+
+Swapped L3 (intermediate tier) primary model to `google/gemini-3.7-flash` via OpenRouter:
+
+| Tier | Model | Fallbacks |
+|------|-------|-----------|
+| L1 (trivial) | `z-ai/glm-5.3-flash` | `deepseek/deepseek-v4-flash`, `google/gemini-2.5-flash` |
+| L2 (routine) | `z-ai/glm-5.3-flash` | `openai/gpt-5.6-luna`, `deepseek/deepseek-v4-flash` |
+| L3 (intermediate) | `google/gemini-3.7-flash` | `z-ai/glm-5.2`, `openai/gpt-5.6-luna` |
+| L4 (advanced) | `z-ai/glm-5.3` | `z-ai/glm-5.2`, `anthropic/claude-opus-5` |
+| L5 (expert) | `anthropic/claude-opus-5` | `z-ai/glm-5.3`, `openai/gpt-5.6-sol` |
+
+Verified live: container restarted healthy, direct probe on `smart-router/L3` returned HTTP 200 PONG.
+
 ## What's New in v2.10.0
 
 ### ⚡ Tier Lineup Realignment — GLM 5.3 Flash on L1–L3
@@ -468,7 +484,7 @@ flowchart TD
 
     D -->|L1| E[GLM 5.3 Flash<br/>OpenRouter]
     D -->|L2| F[GLM 5.3 Flash<br/>OpenRouter]
-    D -->|L3| F2[GLM 5.3 Flash<br/>OpenRouter]
+    D -->|L3| F2[Gemini 3.7 Flash<br/>OpenRouter]
     D -->|L4| F3[GLM 5.3<br/>OpenRouter]
     D -->|L5| H[Opus 5<br/>Claude API]
 
