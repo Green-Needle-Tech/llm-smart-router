@@ -15,7 +15,7 @@ Two features, both applied to the upstream payload just before forwarding:
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 # Model id prefixes that require explicit cache_control breakpoints.
 # Everything else (OpenAI, Google, DeepSeek, Z.AI, ...) caches implicitly.
@@ -33,7 +33,7 @@ class PromptCachingConfigView:
         self.min_tokens = int(getattr(cfg, "min_tokens", 1024))
 
 
-def _view(config: Any) -> Optional[PromptCachingConfigView]:
+def _view(config: Any) -> PromptCachingConfigView | None:
     provider = getattr(config, "provider", None)
     if provider is None:
         return None
@@ -133,7 +133,7 @@ def extract_cache_usage(json_resp: dict[str, Any]) -> tuple[int, int]:
 
 def apply_prompt_cache_features(
     payload: dict[str, Any],
-    session_id: Optional[str],
+    session_id: str | None,
     config: Any,
 ) -> dict[str, Any]:
     """Mutate the upstream payload for maximal provider-side cache hits."""

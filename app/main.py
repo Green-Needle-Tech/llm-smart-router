@@ -3,33 +3,31 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from app.config.loader import ConfigManager
-from app.telemetry.logging import setup_logging, get_logger
-from app.telemetry.metrics import router_info
-from app.providers.openrouter import OpenRouterAdapter
-from app.routing.engine import RoutingEngine
-from app.classify.classifier import ClassifierService
-from app.session.memory_store import MemorySessionStore
-from app.session.redis_store import RedisSessionStore
+from app.api.admin import router as admin_router
+from app.api.chat import router as chat_router
+from app.api.health import router as health_router
+from app.api.models import router as models_router
+from app.api.router_debug import router as router_debug_router
+from app.api.sessions import router as sessions_router
 from app.cache.memory import MemoryClassificationCache
 from app.cache.redis import RedisClassificationCache
-from app.privacy.ip_redaction import IPRedactionEngine, IPRedactionStore
+from app.classify.classifier import ClassifierService
+from app.config.loader import ConfigManager
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
+from app.privacy.ip_redaction import IPRedactionEngine, IPRedactionStore
+from app.providers.openrouter import OpenRouterAdapter
+from app.routing.engine import RoutingEngine
+from app.session.memory_store import MemorySessionStore
+from app.session.redis_store import RedisSessionStore
+from app.telemetry.logging import get_logger, setup_logging
+from app.telemetry.metrics import router_info
 from app.temporal_awareness.engine import TemporalAwarenessEngine
-
-from app.api.chat import router as chat_router
-from app.api.models import router as models_router
-from app.api.health import router as health_router
-from app.api.sessions import router as sessions_router
-from app.api.router_debug import router as router_debug_router
-from app.api.admin import router as admin_router
 
 
 @asynccontextmanager

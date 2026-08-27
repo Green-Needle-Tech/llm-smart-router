@@ -1,8 +1,6 @@
 """In-memory classification cache (TTL + LRU)."""
 from __future__ import annotations
 
-from typing import Any, Optional
-
 from cachetools import TTLCache
 
 
@@ -12,7 +10,7 @@ class MemoryClassificationCache:
     def __init__(self, ttl_seconds: int = 3600, max_entries: int = 10000):
         self._cache: TTLCache[str, dict] = TTLCache(maxsize=max_entries, ttl=ttl_seconds)
 
-    async def get(self, key: str) -> Optional[dict]:
+    async def get(self, key: str) -> dict | None:
         return self._cache.get(key)
 
     async def put(self, key: str, value: dict) -> None:

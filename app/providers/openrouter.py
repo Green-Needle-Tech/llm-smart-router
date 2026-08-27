@@ -1,13 +1,13 @@
 """OpenRouter provider adapter: request translation, streaming, retries."""
 from __future__ import annotations
 
-import asyncio
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 import httpx
 
-from .base import ProviderAdapter
 from app.routing.fallback import FallbackExecutor
+
+from .base import ProviderAdapter
 
 
 class OpenRouterAdapter(ProviderAdapter):

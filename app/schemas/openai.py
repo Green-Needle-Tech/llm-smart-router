@@ -1,50 +1,51 @@
 """OpenAI-compatible API schemas."""
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel
 
 
 class ChatMessage(BaseModel):
     role: str
     content: Any = None
-    name: Optional[str] = None
-    tool_calls: Optional[list[dict[str, Any]]] = None
-    tool_call_id: Optional[str] = None
-    function_call: Optional[dict[str, Any]] = None
+    name: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
+    function_call: dict[str, Any] | None = None
 
 
 class ChatCompletionRequest(BaseModel):
     model: str = "smart-router"
     messages: list[ChatMessage]
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    max_tokens: Optional[int] = None
-    max_completion_tokens: Optional[int] = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
     stream: bool = False
-    stop: Optional[Any] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
-    seed: Optional[int] = None
-    response_format: Optional[dict[str, Any]] = None
-    tools: Optional[list[dict[str, Any]]] = None
-    tool_choice: Optional[Any] = None
-    n: Optional[int] = None
-    user: Optional[str] = None
-    stream_options: Optional[dict[str, Any]] = None
+    stop: Any | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    seed: int | None = None
+    response_format: dict[str, Any] | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: Any | None = None
+    n: int | None = None
+    user: str | None = None
+    stream_options: dict[str, Any] | None = None
 
     # Non-standard router extension (stripped before forwarding)
-    router: Optional[dict[str, Any]] = None
+    router: dict[str, Any] | None = None
 
     model_config = {"extra": "allow"}
 
 
 class Choice(BaseModel):
     index: int = 0
-    message: Optional[ChatMessage] = None
-    delta: Optional[dict[str, Any]] = None
-    finish_reason: Optional[str] = None
-    logprobs: Optional[Any] = None
+    message: ChatMessage | None = None
+    delta: dict[str, Any] | None = None
+    finish_reason: str | None = None
+    logprobs: Any | None = None
 
 
 class Usage(BaseModel):
@@ -59,9 +60,9 @@ class ChatCompletionResponse(BaseModel):
     created: int
     model: str
     choices: list[Choice]
-    usage: Optional[Usage] = None
-    system_fingerprint: Optional[str] = None
-    router: Optional[dict[str, Any]] = None
+    usage: Usage | None = None
+    system_fingerprint: str | None = None
+    router: dict[str, Any] | None = None
 
     model_config = {"extra": "allow"}
 
@@ -69,8 +70,8 @@ class ChatCompletionResponse(BaseModel):
 class ErrorDetail(BaseModel):
     message: str
     type: str
-    param: Optional[str] = None
-    code: Optional[str] = None
+    param: str | None = None
+    code: str | None = None
 
 
 class ErrorResponse(BaseModel):

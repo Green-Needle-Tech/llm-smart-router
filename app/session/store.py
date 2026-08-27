@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
-from app.schemas.router import SessionPin, Level
+from app.schemas.router import SessionPin
 
 
 class SessionStore(ABC):
     """Abstract session store for pin management."""
 
     @abstractmethod
-    async def get(self, session_id: str) -> Optional[SessionPin]:
+    async def get(self, session_id: str) -> SessionPin | None:
         """Look up a session pin by id. Returns None if not found or expired."""
         ...
 
@@ -31,7 +30,7 @@ class SessionStore(ABC):
         ...
 
     @abstractmethod
-    async def list_sessions(self, level: Optional[str] = None, offset: int = 0, limit: int = 50) -> list[SessionPin]:
+    async def list_sessions(self, level: str | None = None, offset: int = 0, limit: int = 50) -> list[SessionPin]:
         """List active pins, optionally filtered by level."""
         ...
 

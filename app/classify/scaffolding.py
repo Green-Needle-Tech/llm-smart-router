@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 
 class CommonPrefixLearner:
@@ -81,9 +80,9 @@ def split_scaffolding(
     *,
     strip_enabled: bool = True,
     learn_prefix: bool = True,
-    prefix_learner: Optional[CommonPrefixLearner] = None,
-    strip_patterns: Optional[list[str]] = None,
-    task_text: Optional[str] = None,
+    prefix_learner: CommonPrefixLearner | None = None,
+    strip_patterns: list[str] | None = None,
+    task_text: str | None = None,
     ignore_system: bool = False,
 ) -> dict:
     """Split a request into scaffolding and task payload.

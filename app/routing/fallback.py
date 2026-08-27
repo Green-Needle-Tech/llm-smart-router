@@ -1,7 +1,6 @@
 """Fallback chain execution: try primary, then fallbacks in order."""
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import httpx
@@ -75,14 +74,14 @@ class FallbackExecutor:
                     resp.raise_for_status()
                     return resp.json(), None, model, i > 0, None
 
-            except (httpx.TimeoutException, asyncio.TimeoutError):
+            except (TimeoutError, httpx.TimeoutException):
                 last_error = f"timeout for {model}"
                 continue
             except httpx.HTTPStatusError as e:
                 last_error = f"upstream {e.response.status_code} for {model}"
                 continue
             except Exception as e:
-                last_error = f"error for {model}: {str(e)}"
+                last_error = f"error for {model}: {e!s}"
                 continue
 
         return None, None, primary_model, False, last_error or "all fallbacks exhausted"

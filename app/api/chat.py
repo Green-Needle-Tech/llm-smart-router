@@ -1,52 +1,58 @@
 """POST /v1/chat/completions — the primary endpoint."""
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.guardrails.rules import strip_invisible_text
+from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
+from app.middleware.auth import check_router_auth, unauthorized_response
+from app.privacy.ip_redaction import IPRedactionEngine
+from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
 from app.schemas.openai import ChatCompletionRequest
 from app.schemas.router import (
-    Level, ClassificationResult, ClassificationSource,
-    RouteDecision, SessionPin, SessionStatus, SessionSource,
+    ClassificationResult,
+    ClassificationSource,
+    Level,
+    RouteDecision,
+    SessionPin,
+    SessionStatus,
 )
-from app.session.resolver import resolve_session_id
-from app.session.locks import acquire_or_wait
 from app.session.lifecycle import check_expiry, check_turn_cap
-from app.middleware.auth import check_router_auth, unauthorized_response
-from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
-from app.privacy.ip_redaction import IPRedactionEngine
-from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
-from app.guardrails.rules import strip_invisible_text
+from app.session.locks import acquire_or_wait
+from app.session.resolver import resolve_session_id
 
 _SEV_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
-from app.temporal_awareness.engine import TemporalAwarenessEngine
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
-    router_requests_total, router_active_requests,
-    router_sessions_active, router_sessions_created_total,
-    router_session_lookups_total, router_session_turns,
-    router_classifier_calls_total, router_classification_duration_seconds,
-    router_upstream_duration_seconds, router_tokens_total,
-    router_cost_usd_total, router_fallbacks_total,
-    router_reclassifications_total, router_escalations_total,
+    router_active_requests,
+    router_cache_events_total,
+    router_cost_usd_total,
     router_escalation_signals_total,
     router_escalation_turn,
-    router_cache_events_total,
-    router_prompt_cached_tokens_total,
-    router_prompt_cache_writes_total,
-    router_prompt_cache_hit_ratio,
-    router_privacy_redactions_total,
-    router_guardrail_findings_total,
+    router_escalations_total,
+    router_fallbacks_total,
     router_guardrail_blocks_total,
+    router_guardrail_findings_total,
     router_guardrail_secret_masks_total,
+    router_privacy_redactions_total,
+    router_prompt_cache_hit_ratio,
+    router_prompt_cache_writes_total,
+    router_prompt_cached_tokens_total,
+    router_requests_total,
+    router_session_lookups_total,
+    router_sessions_active,
+    router_sessions_created_total,
+    router_tokens_total,
+    router_upstream_duration_seconds,
 )
+from app.temporal_awareness.engine import TemporalAwarenessEngine
 
 router = APIRouter()
 logger = get_logger("chat")
@@ -146,7 +152,7 @@ def _guardrail_scan_input(request, body):
     Also detects invisible/zero-width characters and banned substrings,
     and strips invisible characters from message content before forwarding.
     """
-    engine: Optional[GuardrailEngine] = getattr(request.app.state, "guardrails", None)
+    engine: GuardrailEngine | None = getattr(request.app.state, "guardrails", None)
     if engine is None:
         return None
     config = request.app.state.config.get()
@@ -265,7 +271,7 @@ def _guardrail_process_output(request, json_resp) -> None:
     in metrics: secret/PII/URL masks use router_guardrail_secret_masks_total;
     refusals and log-mode findings use router_guardrail_findings_total.
     """
-    engine: Optional[GuardrailEngine] = getattr(request.app.state, "guardrails", None)
+    engine: GuardrailEngine | None = getattr(request.app.state, "guardrails", None)
     if engine is None:
         return
     for choice in json_resp.get("choices", []):
@@ -307,14 +313,14 @@ def _guardrail_process_output(request, json_resp) -> None:
                 )
 
 
-async def _redact_incoming(request, body) -> Optional[str]:
+async def _redact_incoming(request, body) -> str | None:
     """Run IP redaction over the incoming messages if enabled.
 
     Returns the re-hydration key (session id), or None when the privacy
     module is disabled. The key mirrors the routing session resolution so
     re-hydration on the response side looks up the same mapping bucket.
     """
-    engine: Optional[IPRedactionEngine] = getattr(
+    engine: IPRedactionEngine | None = getattr(
         request.app.state, "ip_redaction", None
     )
     if engine is None:
@@ -335,7 +341,7 @@ async def _redact_incoming(request, body) -> Optional[str]:
 
 def _process_temporal_awareness(request, body) -> None:
     """Normalize temporal expressions (today, yesterday, tomorrow) to concrete dates."""
-    engine: Optional[TemporalAwarenessEngine] = getattr(
+    engine: TemporalAwarenessEngine | None = getattr(
         request.app.state, "temporal_awareness_engine", None
     )
     if engine is None:
@@ -348,7 +354,7 @@ def _process_temporal_awareness(request, body) -> None:
             orig.content = content
 
 
-def _rehydrate_response_content(engine, json_resp, key: Optional[str]) -> None:
+def _rehydrate_response_content(engine, json_resp, key: str | None) -> None:
     """Re-hydrate placeholders in a non-streaming response in place (sync path)."""
     if engine is None or key is None:
         return
@@ -391,11 +397,7 @@ async def _session_pinned_route(
     if pin is not None and pin.status != SessionStatus.CLASSIFYING:
         # Check expiry
         expired_reason = check_expiry(pin)
-        if expired_reason:
-            await store.delete(session_id)
-            pin = None
-            router_session_lookups_total.labels(result="miss").inc()
-        elif check_turn_cap(pin, config.session.max_turns):
+        if expired_reason or check_turn_cap(pin, config.session.max_turns):
             await store.delete(session_id)
             pin = None
             router_session_lookups_total.labels(result="miss").inc()
@@ -667,7 +669,7 @@ def _extract_raw_user_text(body) -> str:
     return last_user_text.strip()
 
 
-def _check_escalation_signals(body, pin, config) -> Optional[tuple[Level, str]]:
+def _check_escalation_signals(body, pin, config) -> tuple[Level, str] | None:
     """Check free-signal escalation. Returns (new_level, new_model) if escalated."""
     esc_cfg = config.session.escalation
     if not esc_cfg.enabled:
@@ -965,7 +967,7 @@ async def _handle_stream(
         # passes through a carry buffer that holds back a trailing partial
         # "[ipaddress-..." tail until it can no longer complete a match.
         rehydrate_engine = getattr(request.app.state, "ip_redaction", None)
-        guardrail_engine: Optional[GuardrailEngine] = getattr(
+        guardrail_engine: GuardrailEngine | None = getattr(
             request.app.state, "guardrails", None
         )
 
@@ -989,6 +991,7 @@ async def _handle_stream(
             return text, ""
 
         import re as _re
+
         from app.guardrails.streaming import secret_carry_split
         _PARTIAL_TAIL_RE = _re.compile(r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?$", _re.IGNORECASE)
 
@@ -1014,6 +1017,11 @@ async def _handle_stream(
                 if hasattr(guardrail_engine.config, "malicious_url_detection") and guardrail_engine.config.malicious_url_detection:
                     flush, url_fs = guardrail_engine.mask_malicious_urls(flush)
                     for f in url_fs:
+                        router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+                # System prompt leak masking
+                if hasattr(guardrail_engine.config, "system_prompt_leak_detection") and guardrail_engine.config.system_prompt_leak_detection:
+                    flush, spleak_fs = guardrail_engine.mask_system_prompt_leak(flush)
+                    for f in spleak_fs:
                         router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
             return flush, carry
 
@@ -1068,6 +1076,10 @@ async def _handle_stream(
                                 carry, url_fs = guardrail_engine.mask_malicious_urls(carry)
                                 for f in url_fs:
                                     router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
+                            if hasattr(guardrail_engine.config, "system_prompt_leak_detection") and guardrail_engine.config.system_prompt_leak_detection:
+                                carry, spleak_fs = guardrail_engine.mask_system_prompt_leak(carry)
+                                for f in spleak_fs:
+                                    router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
                         flush_event = {"choices": [{"delta": {"content": carry}}]}
                         yield f"data: {json.dumps(flush_event)}\n\n"
                         carry = ""
@@ -1082,7 +1094,7 @@ async def _handle_stream(
                 yield f"{line}\n"
         except Exception as e:
             # Stream broke — emit error event
-            error_data = {"error": {"message": f"stream interrupted: {str(e)}", "type": "upstream_error"}}
+            error_data = {"error": {"message": f"stream interrupted: {e!s}", "type": "upstream_error"}}
             yield f"data: {json.dumps(error_data)}\n\n"
         finally:
             await stream_resp.aclose()

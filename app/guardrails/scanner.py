@@ -13,17 +13,24 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
 
 from app.guardrails.base import (
-    BaseValidator, GuardrailFinding, RegexValidator, ValidatorRegistry,
-    SEV_ORDER, severity_at_least,
+    SEV_ORDER,
+    GuardrailFinding,
+    RegexValidator,
+    ValidatorRegistry,
 )
 from app.guardrails.rules import (
-    COMPILED_INJECTION, SECRET_RULES, SECRET_MASK, find_interleaved_secrets,
-    INVISIBLE_CHARS_RE, detect_invisible_text, strip_invisible_text,
-    PII_RULES, PII_MASK, _is_likely_credit_card,
-    MALICIOUS_URL_RE, REFUSAL_RULES,
+    COMPILED_INJECTION,
+    MALICIOUS_URL_RE,
+    PII_MASK,
+    PII_RULES,
+    REFUSAL_RULES,
+    SECRET_MASK,
+    SECRET_RULES,
+    _is_likely_credit_card,
+    detect_invisible_text,
+    find_interleaved_secrets,
 )
 from app.guardrails.validators import SystemPromptLeakValidator
 
@@ -133,7 +140,7 @@ class GuardrailEngine:
     def __init__(self, config: GuardrailConfig):
         self.config = config
         self.registry = _build_default_registry()
-        self._spleak_validator: Optional[SystemPromptLeakValidator] = None
+        self._spleak_validator: SystemPromptLeakValidator | None = None
         self._update_spleak_validator()
 
     def _update_spleak_validator(self) -> None:
@@ -207,7 +214,6 @@ class GuardrailEngine:
         detected = detect_invisible_text(text)
         if not detected:
             return []
-        names = set(name for name, _ in detected)
         return [
             GuardrailFinding(
                 rule_id=f"invisible-text-{name.lower()}",

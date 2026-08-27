@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
 
-from app.schemas.router import Level, ClassificationResult, ClassificationSource
+from app.schemas.router import Level
 
 
 def evaluate_heuristics(
@@ -14,11 +13,11 @@ def evaluate_heuristics(
     code_fences: int = 0,
     json_mode: bool = False,
     prompt_tokens: int = 0,
-    task_chars: Optional[int] = None,
+    task_chars: int | None = None,
     huge_context_tokens: int = 32000,
     rules: list[dict] | None = None,
     measure: str = "task_payload",
-) -> Optional[tuple[Level, bool, str]]:
+) -> tuple[Level, bool, str] | None:
     """Evaluate heuristic rules. Returns (level, stop, rule_name) or None.
 
     If stop=True, the classifier is skipped entirely.
@@ -60,7 +59,7 @@ def evaluate_heuristics(
     )
 
     # Evaluate explicit rules
-    floor_level: Optional[Level] = None
+    floor_level: Level | None = None
     for rule in rules:
         name = rule.get("name", "")
         when = rule.get("when", "")

@@ -3,16 +3,15 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Optional
 
-from app.schemas.router import Level, ClassificationResult, ClassificationSource
+from app.schemas.router import ClassificationResult, ClassificationSource, Level
 
 
 def parse_classifier_output(
     raw: str,
     source: ClassificationSource = ClassificationSource.MODEL,
-    classifier_model: Optional[str] = None,
-    rubric_version: Optional[str] = None,
+    classifier_model: str | None = None,
+    rubric_version: str | None = None,
     latency_ms: int = 0,
 ) -> ClassificationResult:
     """Parse classifier output into a ClassificationResult.

@@ -1,9 +1,7 @@
 """Routing engine: maps level → model, applies overrides, floors/ceilings."""
 from __future__ import annotations
 
-from typing import Any, Optional
-
-from app.schemas.router import Level, RouteDecision, ClassificationResult, ClassificationSource
+from app.schemas.router import ClassificationResult, Level, RouteDecision
 
 
 class RoutingEngine:
@@ -25,9 +23,9 @@ class RoutingEngine:
         level: Level,
         classification: ClassificationResult,
         *,
-        max_level: Optional[Level] = None,
-        min_level: Optional[Level] = None,
-        forced_model: Optional[str] = None,
+        max_level: Level | None = None,
+        min_level: Level | None = None,
+        forced_model: str | None = None,
     ) -> RouteDecision:
         """Resolve a level to a RouteDecision with model, params, and cost estimate."""
         # Apply ceilings and floors

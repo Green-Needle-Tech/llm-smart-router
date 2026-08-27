@@ -9,7 +9,6 @@ seasons, quarters, and end/beginning-of-period expressions.
 """
 import re
 from datetime import timedelta
-from typing import Optional, List
 
 import pendulum
 from pendulum import DateTime
@@ -117,7 +116,7 @@ class TemporalAwarenessEngine:
     # ── Time parsing helpers ────────────────────────────────────────
 
     @staticmethod
-    def _parse_ampm(ampm: Optional[str]) -> Optional[str]:
+    def _parse_ampm(ampm: str | None) -> str | None:
         """Normalize AM/PM variants (a.m., p.m.) to 'am'/'pm'."""
         if ampm is None:
             return None
@@ -126,7 +125,7 @@ class TemporalAwarenessEngine:
             return ampm
         return None
 
-    def _apply_ampm(self, hour: int, ampm: Optional[str]) -> int:
+    def _apply_ampm(self, hour: int, ampm: str | None) -> int:
         """Apply AM/PM conversion to a 12-hour value."""
         ampm = self._parse_ampm(ampm)
         if ampm == "pm" and hour < 12:
@@ -137,7 +136,7 @@ class TemporalAwarenessEngine:
 
     # ── Main resolution dispatcher ─────────────────────────────────
 
-    def _resolve_match(self, match: re.Match, tag: str, now: DateTime) -> Optional[str]:
+    def _resolve_match(self, match: re.Match, tag: str, now: DateTime) -> str | None:
         """Resolve a matched temporal expression to a concrete date/datetime string."""
         groups = match.groups()
 
@@ -660,7 +659,7 @@ class TemporalAwarenessEngine:
 
         return processed
 
-    def process_messages(self, messages: List[dict]) -> List[dict]:
+    def process_messages(self, messages: list[dict]) -> list[dict]:
         if not self.config.enabled:
             return messages
 

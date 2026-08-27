@@ -1,19 +1,17 @@
 """Classifier service: calls the cheap model to classify the opening prompt."""
 from __future__ import annotations
 
-import asyncio
 import os
 import time
-from typing import Any, Optional
 
 import httpx
 
-from app.schemas.router import Level, ClassificationResult, ClassificationSource
-from app.schemas.openai import ChatMessage, ChatCompletionRequest
+from app.schemas.openai import ChatMessage
+from app.schemas.router import ClassificationResult, ClassificationSource, Level
+
 from .digest import DigestBuilder
-from .parser import parse_classifier_output
 from .heuristics import evaluate_heuristics
-from .injection_guard import check_injection
+from .parser import parse_classifier_output
 
 
 class ClassifierService:
@@ -93,7 +91,7 @@ class ClassifierService:
         messages: list[ChatMessage],
         tools: list[dict] | None = None,
         response_format: dict | None = None,
-        task_text: Optional[str] = None,
+        task_text: str | None = None,
         ignore_system: bool = False,
         bypass_cache: bool = False,
     ) -> tuple[ClassificationResult, dict]:
@@ -198,7 +196,7 @@ class ClassifierService:
 
             return result, digest_info
 
-        except (httpx.TimeoutException, asyncio.TimeoutError):
+        except (TimeoutError, httpx.TimeoutException):
             latency_ms = int((time.monotonic() - start) * 1000)
             default_level = Level.from_str(self.config.classification.default_level)
             result = ClassificationResult(

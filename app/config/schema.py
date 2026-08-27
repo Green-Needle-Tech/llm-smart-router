@@ -1,7 +1,8 @@
 """Pydantic models mirroring settings.json structure."""
 from __future__ import annotations
 
-from typing import Any, Optional, Union
+from typing import Any
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -119,9 +120,9 @@ class ClassificationConfig(BaseModel):
     prompt_file: str = "/app/config/prompts/classifier.txt"
     rubric_version: str = "v1"
     # Custom provider for classifier (optional — overrides global provider)
-    base_url: Optional[str] = None
+    base_url: str | None = None
     # Environment variable name holding the API key for the classifier.
-    api_key_env: Optional[str] = None
+    api_key_env: str | None = None
     digest: DigestConfig = Field(default_factory=DigestConfig)
     cache: ClassificationCacheConfig = Field(default_factory=ClassificationCacheConfig)
 
@@ -149,8 +150,8 @@ class EscalationConfig(BaseModel):
     escalate_after_turns: int = 12
     escalate_on_context_growth_tokens: int = 24000
     huge_context_hard_override: bool = True
-    shadow_classify_every_n_turns: Optional[int] = None
-    reclassify_every_n_turns: Optional[int] = None
+    shadow_classify_every_n_turns: int | None = None
+    reclassify_every_n_turns: int | None = None
     retry_on_failure: bool = False
     retry_on_failure_max_per_session: int = 2
 
@@ -166,7 +167,7 @@ class SessionConfig(BaseModel):
     on_unidentifiable: str = "classify"
     idle_ttl_seconds: int = 7200
     max_ttl_seconds: int = 86400
-    max_turns: Optional[int] = None
+    max_turns: int | None = None
     max_sessions: int = 50000
     max_provisional_turns: int = 3
     lock_wait_ms: int = 5000
@@ -204,13 +205,13 @@ class TierConfig(BaseModel):
     # "auto" = detect from OpenRouter /v1/models API (max_completion_tokens)
     # int  = use this fixed cap
     # unset/None = inherit from params or provider default
-    max_tokens: Union[int, str] = "auto"
+    max_tokens: int | str = "auto"
     # Custom provider configuration (optional — overrides global provider)
     # When set, the tier uses this base URL instead of settings.provider.base_url
-    base_url: Optional[str] = None
+    base_url: str | None = None
     # Environment variable name holding the API key for this tier.
     # When set, the actual key is read from os.environ at request time.
-    api_key_env: Optional[str] = None
+    api_key_env: str | None = None
 
 
 class RoutingConfig(BaseModel):
@@ -236,7 +237,7 @@ class RoutingConfig(BaseModel):
     def get_params(self, level: str) -> dict[str, Any]:
         return self.get_tier(level).params
 
-    def get_max_tokens(self, level: str) -> Union[int, str]:
+    def get_max_tokens(self, level: str) -> int | str:
         """Return the tier's max_tokens setting ('auto' or int)."""
         return self.get_tier(level).max_tokens
 
@@ -279,7 +280,7 @@ class Settings(BaseModel):
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
 
     @model_validator(mode="after")
-    def validate_no_secrets(self) -> "Settings":
+    def validate_no_secrets(self) -> Settings:
         """Reject any value matching sk-* or sk-or-* patterns."""
         import json
         raw = json.dumps(self.model_dump())
@@ -291,6 +292,6 @@ class Settings(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_memory_workers(self) -> "Settings":
+    def validate_memory_workers(self) -> Settings:
         """Memory backend with WORKERS > 1 is rejected at startup in loader."""
         return self

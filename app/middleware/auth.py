@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import hmac
 import os
-from typing import Optional
 
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 
@@ -17,7 +16,7 @@ def _get_router_keys() -> list[str]:
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
-def _get_admin_key() -> Optional[str]:
+def _get_admin_key() -> str | None:
     return os.environ.get("ADMIN_API_KEY") or None
 
 

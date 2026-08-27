@@ -34,10 +34,8 @@ from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
-from typing import Optional
 
 from app.guardrails.base import BaseValidator, GuardrailFinding
-
 
 # Default config values
 DEFAULT_FUZZY_THRESHOLD = 0.85
@@ -87,7 +85,7 @@ class SystemPromptLeakValidator(BaseValidator):
 
     def __init__(
         self,
-        fragments: Optional[list[str]] = None,
+        fragments: list[str] | None = None,
         fuzzy_threshold: float = DEFAULT_FUZZY_THRESHOLD,
         min_fragment_len: int = DEFAULT_MIN_FRAGMENT_LEN,
         fragment_overlap: int = DEFAULT_FRAGMENT_OVERLAP,

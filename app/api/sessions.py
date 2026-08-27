@@ -1,14 +1,10 @@
 """Session management endpoints."""
 from __future__ import annotations
 
-from typing import Optional
-
-from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.schemas.router import Level, SessionPin, SessionStatus
-from datetime import datetime, timezone
 
 router = APIRouter(prefix="/v1/router/sessions")
 

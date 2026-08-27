@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
 
 import redis.asyncio as aioredis
 
@@ -18,7 +17,7 @@ class RedisClassificationCache:
     def _key(k: str) -> str:
         return f"classify_cache:{k}"
 
-    async def get(self, key: str) -> Optional[dict]:
+    async def get(self, key: str) -> dict | None:
         raw = await self._redis.get(self._key(key))
         if raw is None:
             return None

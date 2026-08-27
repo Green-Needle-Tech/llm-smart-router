@@ -4,9 +4,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import OrderedDict
-from typing import Optional
 
-from app.schemas.router import SessionPin, SessionStatus
+from app.schemas.router import SessionPin
+
 from .store import SessionStore
 
 
@@ -20,7 +20,7 @@ class MemorySessionStore(SessionStore):
         self._global_lock = asyncio.Lock()
         self._max_sessions = max_sessions
 
-    async def get(self, session_id: str) -> Optional[SessionPin]:
+    async def get(self, session_id: str) -> SessionPin | None:
         async with self._global_lock:
             pin = self._store.get(session_id)
             if pin is None:
@@ -53,7 +53,7 @@ class MemorySessionStore(SessionStore):
             self._reservations.clear()
             return count
 
-    async def list_sessions(self, level: Optional[str] = None, offset: int = 0, limit: int = 50) -> list[SessionPin]:
+    async def list_sessions(self, level: str | None = None, offset: int = 0, limit: int = 50) -> list[SessionPin]:
         async with self._global_lock:
             pins = list(self._store.values())
             # Filter expired

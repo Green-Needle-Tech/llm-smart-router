@@ -1,8 +1,9 @@
 """GET /v1/models endpoint."""
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
@@ -12,7 +13,7 @@ async def list_models(request: Request):
     """List virtual router models and optionally upstream tier models."""
     config = request.app.state.config.get()
 
-    models = []
+    models: list[dict[str, Any]] = []
     # Virtual router models
     models.append({
         "id": "smart-router",

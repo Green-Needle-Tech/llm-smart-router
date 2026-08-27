@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Optional
+from typing import Any
 
 from app.schemas.openai import ChatMessage
+
 from .scaffolding import CommonPrefixLearner, split_scaffolding
 
 
@@ -94,7 +95,7 @@ class DigestBuilder:
         messages: list[ChatMessage],
         tools: list[dict] | None = None,
         response_format: dict | None = None,
-        task_text: Optional[str] = None,
+        task_text: str | None = None,
         ignore_system: bool = False,
     ) -> dict:
         """Build the digest and metadata.

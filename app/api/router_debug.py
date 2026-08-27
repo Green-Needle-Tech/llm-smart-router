@@ -1,8 +1,7 @@
 """Debug endpoint for classification."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Query, Request
 
 from app.schemas.openai import ChatCompletionRequest
 
@@ -13,7 +12,6 @@ router = APIRouter(prefix="/v1/router")
 async def classify(request: Request, body: ChatCompletionRequest, debug: str = Query(default="")):
     """Debug: classify a prompt without forwarding or pinning."""
     classifier = request.app.state.classifier
-    config = request.app.state.config.get()
 
     # Get router overrides
     task_text = None

@@ -1,14 +1,13 @@
 """Session-id resolution from headers, body, user field, or fingerprint."""
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
-
-from app.schemas.router import SessionSource
 from app.schemas.openai import ChatCompletionRequest
-from .fingerprint import derive_fingerprint, _extract_text
+from app.schemas.router import SessionSource
+
+from .fingerprint import _extract_text, derive_fingerprint
 
 
-def _get_api_key_id(auth_header: Optional[str]) -> str:
+def _get_api_key_id(auth_header: str | None) -> str:
     """Extract a short identifier from the Authorization header."""
     if not auth_header:
         return "anon"
@@ -36,7 +35,7 @@ def resolve_session_id(
     headers: dict[str, str],
     config,
     fingerprint_salt: str = "",
-) -> Tuple[Optional[str], SessionSource]:
+) -> tuple[str | None, SessionSource]:
     """Resolve session_id in strict priority order.
 
     Returns (session_id, source). session_id is None if unresolvable.

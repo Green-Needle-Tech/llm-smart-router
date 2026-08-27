@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 
 @dataclass
@@ -147,7 +146,6 @@ class ValidatorRegistry:
         """Register a validator. Replaces existing with same rule_id."""
         if validator.rule_id in self._by_id:
             # Replace existing
-            old = self._by_id[validator.rule_id]
             self._validators = [v for v in self._validators if v.rule_id != validator.rule_id]
         self._validators.append(validator)
         self._by_id[validator.rule_id] = validator
@@ -162,7 +160,7 @@ class ValidatorRegistry:
             self._validators = [v for v in self._validators if v.rule_id != rule_id]
             del self._by_id[rule_id]
 
-    def get(self, rule_id: str) -> Optional[BaseValidator]:
+    def get(self, rule_id: str) -> BaseValidator | None:
         return self._by_id.get(rule_id)
 
     @property

@@ -17,12 +17,10 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional
 
 # --- Detection ---------------------------------------------------------------
 

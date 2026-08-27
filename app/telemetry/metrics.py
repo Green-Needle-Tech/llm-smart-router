@@ -1,7 +1,7 @@
 """Prometheus metrics definitions."""
 from __future__ import annotations
 
-from prometheus_client import Counter, Histogram, Gauge, Info
+from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Request metrics
 router_requests_total = Counter(

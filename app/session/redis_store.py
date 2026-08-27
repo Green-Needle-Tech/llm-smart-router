@@ -1,13 +1,10 @@
 """Redis-backed session store for multi-worker mode."""
 from __future__ import annotations
 
-import json
-import time
-from typing import Optional
-
 import redis.asyncio as aioredis
 
-from app.schemas.router import SessionPin, SessionStatus
+from app.schemas.router import SessionPin
+
 from .store import SessionStore
 
 
@@ -26,7 +23,7 @@ class RedisSessionStore(SessionStore):
     def _res_key(session_id: str) -> str:
         return f"session:res:{session_id}"
 
-    async def get(self, session_id: str) -> Optional[SessionPin]:
+    async def get(self, session_id: str) -> SessionPin | None:
         raw = await self._redis.get(self._key(session_id))
         if raw is None:
             return None
@@ -37,8 +34,8 @@ class RedisSessionStore(SessionStore):
         return pin
 
     async def put(self, pin: SessionPin) -> None:
-        ttl = pin.session_config_ttl if hasattr(pin, "session_config_ttl") else 7200
-        await self._redis.set(self._key(pin.session_id), pin.model_dump_json())
+        ttl = getattr(pin, "session_config_ttl", 7200)
+        await self._redis.set(self._key(pin.session_id), pin.model_dump_json(), ex=ttl)
 
     async def delete(self, session_id: str) -> bool:
         deleted = await self._redis.delete(self._key(session_id))
@@ -52,7 +49,7 @@ class RedisSessionStore(SessionStore):
             await self._redis.delete(*res_keys)
         return len(res_keys) if res_keys else 0
 
-    async def list_sessions(self, level: Optional[str] = None, offset: int = 0, limit: int = 50) -> list[SessionPin]:
+    async def list_sessions(self, level: str | None = None, offset: int = 0, limit: int = 50) -> list[SessionPin]:
         keys = await self._redis.keys("session:*")
         keys = [k for k in keys if ":res:" not in k]
         pins = []

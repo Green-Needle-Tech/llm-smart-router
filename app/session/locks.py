@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
 
-from app.schemas.router import SessionPin, Level, SessionStatus
+from app.schemas.router import SessionPin, SessionStatus
+
 from .store import SessionStore
 
 
@@ -15,7 +15,7 @@ async def acquire_or_wait(
     ttl_seconds: int,
     wait_ms: int,
     poll_interval_ms: int = 25,
-) -> tuple[bool, Optional[SessionPin]]:
+) -> tuple[bool, SessionPin | None]:
     """Try to reserve a session for classification.
 
     Returns (won, existing_pin):

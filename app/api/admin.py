@@ -1,12 +1,9 @@
 """Admin endpoints: stats, sessions list, settings management."""
 from __future__ import annotations
 
-from typing import Optional
+from fastapi import APIRouter, HTTPException, Query, Request
 
-from fastapi import APIRouter, Request, HTTPException, Query
-from fastapi.responses import JSONResponse
-
-from app.middleware.auth import check_admin_auth, unauthorized_response
+from app.middleware.auth import check_admin_auth
 
 router = APIRouter(prefix="/admin")
 
@@ -21,7 +18,7 @@ def _check_admin(request: Request):
 @router.get("/sessions")
 async def list_sessions(
     request: Request,
-    level: Optional[str] = Query(default=None),
+    level: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
 ):
@@ -61,7 +58,7 @@ async def reload_settings(request: Request):
         settings = cm.reload()
         return {"status": "ok", "version": settings.version}
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Config validation failed: {str(e)}")
+        raise HTTPException(status_code=422, detail=f"Config validation failed: {e!s}")
 
 
 @router.get("/stats")
@@ -71,11 +68,8 @@ async def get_stats(request: Request):
     store = request.app.state.session_store
 
     # Collect from Prometheus registry
-    from prometheus_client import REGISTRY
-    from prometheus_client.parser import text_string_to_metric_families
 
     # Get metrics as text then parse key stats
-    import io
     from prometheus_client import generate_latest
     metrics_text = generate_latest().decode()
 

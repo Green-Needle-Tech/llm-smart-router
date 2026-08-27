@@ -1,9 +1,10 @@
 """Router-internal schemas for routing decisions and session state."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -15,7 +16,7 @@ class Level(str, Enum):
     L5 = "L5"
 
     @classmethod
-    def from_str(cls, s: str) -> "Level":
+    def from_str(cls, s: str) -> Level:
         s = s.upper().strip()
         for m in cls:
             if m.value == s:
@@ -27,20 +28,28 @@ class Level(str, Enum):
         return {"L1": 1, "L2": 2, "L3": 3, "L4": 4, "L5": 5}[self.value]
 
     @classmethod
-    def from_numeric(cls, n: int) -> "Level":
+    def from_numeric(cls, n: int) -> Level:
         n = max(1, min(5, n))
         return cls(f"L{n}")
 
-    def __lt__(self, other: "Level") -> bool:
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, Level):
+            return NotImplemented
         return self.numeric < other.numeric
 
-    def __le__(self, other: "Level") -> bool:
+    def __le__(self, other: object) -> bool:
+        if not isinstance(other, Level):
+            return NotImplemented
         return self.numeric <= other.numeric
 
-    def __gt__(self, other: "Level") -> bool:
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, Level):
+            return NotImplemented
         return self.numeric > other.numeric
 
-    def __ge__(self, other: "Level") -> bool:
+    def __ge__(self, other: object) -> bool:
+        if not isinstance(other, Level):
+            return NotImplemented
         return self.numeric >= other.numeric
 
 
@@ -62,12 +71,12 @@ class SessionSource(str, Enum):
 
 
 class ClassificationResult(BaseModel):
-    level: Optional[Level] = None
+    level: Level | None = None
     confidence: float = 1.0
     reason: str = ""
     source: ClassificationSource = ClassificationSource.MODEL
-    classifier_model: Optional[str] = None
-    rubric_version: Optional[str] = None
+    classifier_model: str | None = None
+    rubric_version: str | None = None
     latency_ms: int = 0
 
 
@@ -78,8 +87,8 @@ class RouteDecision(BaseModel):
     classification: ClassificationResult
     fallback_used: bool = False
     escalated: bool = False
-    escalated_from: Optional[Level] = None
-    estimated_cost_usd: Optional[float] = None
+    escalated_from: Level | None = None
+    estimated_cost_usd: float | None = None
 
 
 class SessionStatus(str, Enum):
@@ -92,7 +101,7 @@ class SessionStatus(str, Enum):
 class EscalationState(BaseModel):
     score: int = 0
     count: int = 0
-    original_level: Optional[Level] = None
+    original_level: Level | None = None
     last_escalated_turn: int = 0
     last_trigger: list[str] = Field(default_factory=list)
     cooldown_until_turn: int = 0
@@ -105,24 +114,23 @@ class SessionPin(BaseModel):
     model: str
     params: dict[str, Any] = Field(default_factory=dict)
     status: SessionStatus = SessionStatus.PINNED
-    classification: Optional[ClassificationResult] = None
+    classification: ClassificationResult | None = None
     turn_count: int = 0
     escalation: EscalationState = Field(default_factory=EscalationState)
-    pinned_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    last_seen_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    expires_at: Optional[str] = None
+    pinned_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    last_seen_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    expires_at: str | None = None
     cost_usd_total: float = 0.0
     provisional_turns: int = 0
 
     def touch(self, idle_ttl: int, max_ttl: int | None = None) -> None:
         """Update last_seen and expiry timestamps."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self.last_seen_at = now.isoformat()
         new_expiry = now + timedelta(seconds=idle_ttl)
         if max_ttl:
             absolute = datetime.fromisoformat(self.pinned_at) + timedelta(seconds=max_ttl)
-            if absolute < new_expiry:
-                new_expiry = absolute
+            new_expiry = min(new_expiry, absolute)
         self.expires_at = new_expiry.isoformat()
 
     def is_expired(self) -> bool:
@@ -131,7 +139,7 @@ class SessionPin(BaseModel):
         try:
             exp = datetime.fromisoformat(self.expires_at)
             if exp.tzinfo is None:
-                exp = exp.replace(tzinfo=timezone.utc)
-            return datetime.now(timezone.utc) > exp
+                exp = exp.replace(tzinfo=UTC)
+            return datetime.now(UTC) > exp
         except Exception:
             return False
