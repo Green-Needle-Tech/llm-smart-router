@@ -1,7 +1,7 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.9.1 (P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection + Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection + comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching + v2.9.1 code review fixes — streaming spleak masking, Redis TTL, type safety, lint cleanup)
+**Version:** 2.10.0 (P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection + Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection + comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching + v2.9.1 code review fixes — streaming spleak masking, Redis TTL, type safety, lint cleanup + v2.10.0 tier lineup realignment — L1–L3 route to z-ai/glm-5.3-flash)
 **Date:** 2026-08-26
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
@@ -51,9 +51,9 @@ flowchart TD
 
     C -->|"classify once → pin session"| R
 
-    R -->|"L1"| M1["GPT-5.6 Luna<br/>OpenRouter"]
-    R -->|"L2"| M2["GLM 5.2<br/>OpenRouter"]
-    R -->|"L3"| M3["Gemini 3.7 Flash<br/>OpenRouter"]
+    R -->|"L1"| M1["GLM 5.3 Flash<br/>OpenRouter"]
+    R -->|"L2"| M2["GLM 5.3 Flash<br/>OpenRouter"]
+    R -->|"L3"| M3["GLM 5.3 Flash<br/>OpenRouter"]
     R -->|"L4"| M4["GLM 5.3<br/>OpenRouter"]
     R -->|"L5"| M5["Opus 5<br/>Claude API"]
 
@@ -1950,7 +1950,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 
 `scripts/bench_router.py` replays a captured Hermes trace three ways — all-L4 baseline, per-turn classification, and session-pinned — and reports total spend, spend by tier, tier distribution, **classifier calls per session**, mean turns per session, and added latency. **Targets: ≥ 50% cost reduction vs. baseline, classifier calls ≤ 1.1 per session, and no measurable task-success regression on the trace's assertions.** The per-turn column exists to quantify what pinning saves and what, if any, quality it costs.
 
-### 11.4 Test results (2026-08-27, v2.9.1)
+### 11.4 Test results (2026-08-27, v2.9.1 / v2.10.0 config change)
 
 | Suite | Tests | Result |
 |-------|-------|--------|
@@ -1997,6 +1997,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M8 — Phase 1 Guardrail Enhancements (v2.8.0)** | Invisible text detection (§9.3.5), PII masking (§9.3.6), malicious URL detection (§9.3.7), configurable banned substrings (§9.3.8), refusal detection (§9.3.9). Inspired by protectai/llm-guard analysis. | 360 unit tests (304 existing + 56 Phase 1) pass; container rebuilt and live; 18 dangerous command substrings pre-loaded; all new features hot-reloadable. |
 | **M9 — P0 Guardrail Architecture (v2.9.0)** | Validator abstraction layer (§9.3.10), error spans on all findings (§9.3.11), system prompt leak detection (§9.3.12). Inspired by guardrails-ai/guardrails evaluation. | 409 unit tests (360 existing + 49 P0) pass; container rebuilt and live; 43 validators auto-registered; system prompt leak detection opt-in via config; all new features hot-reloadable. |
 | **M10 — Code Review & Security Hardening (v2.9.1)** | Streaming system-prompt-leak masking (parity with non-streaming), Redis session TTL fix (`ex=ttl`), LSP-safe `Level` comparisons, `__all__` exports, 179 ruff fixes across 37 files. | 409 unit tests pass; mypy 0 errors (60 files); bandit 0 high-severity; live L4 verification — secret masking + injection detection confirmed on streaming and non-streaming paths. |
+| **M11 — Tier Lineup Realignment (v2.10.0)** | L1–L3 primary models switched to `z-ai/glm-5.3-flash` (from gpt-5.6-luna / glm-5.2 / gemini-3.7-flash). Fallback chains, temperatures, cost caps unchanged. | Container restarted healthy; live probes on L1/L2/L3 routed to the new model; docs updated (README tier diagram, spec §routing example unchanged as sample config). |
 
 ---
 

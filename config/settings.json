@@ -159,7 +159,7 @@
     "global_min_level": "L1",
     "L1": {
       "label": "trivial",
-      "model": "openai/gpt-5.6-luna",
+      "model": "z-ai/glm-5.3-flash",
       "fallbacks": [
         "deepseek/deepseek-v4-flash",
         "google/gemini-2.5-flash"
@@ -173,7 +173,7 @@
     },
     "L2": {
       "label": "routine",
-      "model": "z-ai/glm-5.2",
+      "model": "z-ai/glm-5.3-flash",
       "fallbacks": [
         "openai/gpt-5.6-luna",
         "deepseek/deepseek-v4-flash"
@@ -186,7 +186,7 @@
     },
     "L3": {
       "label": "intermediate",
-      "model": "google/gemini-3.7-flash",
+      "model": "z-ai/glm-5.3-flash",
       "fallbacks": [
         "z-ai/glm-5.2",
         "openai/gpt-5.6-luna"
