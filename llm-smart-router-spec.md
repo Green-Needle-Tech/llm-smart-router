@@ -1,7 +1,7 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.9 (P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection + Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection + comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching)
+**Version:** 2.9.1 (P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection + Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection + comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching + v2.9.1 code review fixes — streaming spleak masking, Redis TTL, type safety, lint cleanup)
 **Date:** 2026-08-26
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
@@ -1950,16 +1950,17 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 
 `scripts/bench_router.py` replays a captured Hermes trace three ways — all-L4 baseline, per-turn classification, and session-pinned — and reports total spend, spend by tier, tier distribution, **classifier calls per session**, mean turns per session, and added latency. **Targets: ≥ 50% cost reduction vs. baseline, classifier calls ≤ 1.1 per session, and no measurable task-success regression on the trace's assertions.** The per-turn column exists to quantify what pinning saves and what, if any, quality it costs.
 
-### 11.4 Test results (2026-08-26, v2.9.0)
+### 11.4 Test results (2026-08-27, v2.9.1)
 
 | Suite | Tests | Result |
 |-------|-------|--------|
 | Unit (`pytest tests/ -q`) | 409 | ✅ All passed |
-| Live full guardrails (`test_guardrails_full.py`) | 30 | ✅ All passed |
-| Live e2e block + streaming (`test_guardrails_e2e_block_stream.py`) | 22 | ✅ All passed |
-| Live differential (`test_guardrails.py`) | 3 | ✅ All passed |
+| Type check (`mypy app/ --ignore-missing-imports`) | 60 files | ✅ 0 errors |
+| Security scan (`bandit -r app/`) | 5,784 LOC | ✅ 0 high-severity |
+| Lint (`ruff check app/`) | 37 files | ✅ 179 auto-fixes applied |
+| Live L4 verification (streaming + non-streaming) | 7 probes | ✅ All passed |
 
-**e2e coverage:** block-mode enforcement (4 injection payloads → HTTP 400 `router_guardrail_blocked`, 2 benign → 200, 2 severity-gate MEDIUM/LOW → 200), streaming secret masking (11 provider types + split-carry one-char-per-line), streaming IP redaction round-trip (IP returned, no placeholder leak).
+**Live L4 verification (2026-08-27):** non-streaming + streaming responses with postfix `[smart-router/L4]` before `[DONE]`; OpenRouter key masked to `***REDACTED***` in both paths (streaming spleak fix confirmed); injection rules firing (`injection-ignore-previous` CRITICAL, `exfil-system-prompt` HIGH, `banned-substring` HIGH); metrics `router_guardrail_secret_masks_total{rule_id="openrouter-key"}=2.0`.
 
 ---
 
@@ -1995,6 +1996,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M7 — Streaming secret-leak hardening (v2.1.0)** | Telegram split-token leak, tail-leak on long secrets, whitespace-interleaved evasion, [DONE] carry flush, pipeline reorder. | 224 unit tests + 30 live full + 22 live e2e pass; zero secret leaks across all chunk patterns. |
 | **M8 — Phase 1 Guardrail Enhancements (v2.8.0)** | Invisible text detection (§9.3.5), PII masking (§9.3.6), malicious URL detection (§9.3.7), configurable banned substrings (§9.3.8), refusal detection (§9.3.9). Inspired by protectai/llm-guard analysis. | 360 unit tests (304 existing + 56 Phase 1) pass; container rebuilt and live; 18 dangerous command substrings pre-loaded; all new features hot-reloadable. |
 | **M9 — P0 Guardrail Architecture (v2.9.0)** | Validator abstraction layer (§9.3.10), error spans on all findings (§9.3.11), system prompt leak detection (§9.3.12). Inspired by guardrails-ai/guardrails evaluation. | 409 unit tests (360 existing + 49 P0) pass; container rebuilt and live; 43 validators auto-registered; system prompt leak detection opt-in via config; all new features hot-reloadable. |
+| **M10 — Code Review & Security Hardening (v2.9.1)** | Streaming system-prompt-leak masking (parity with non-streaming), Redis session TTL fix (`ex=ttl`), LSP-safe `Level` comparisons, `__all__` exports, 179 ruff fixes across 37 files. | 409 unit tests pass; mypy 0 errors (60 files); bandit 0 high-severity; live L4 verification — secret masking + injection detection confirmed on streaming and non-streaming paths. |
 
 ---
 

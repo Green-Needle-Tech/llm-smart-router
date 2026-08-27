@@ -59,6 +59,22 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.9.1
+
+### 🔒 Code Review & Security Hardening
+
+Fixes from a full code + security review (ruff, mypy, bandit + manual audit), live-verified on the L4 tier:
+
+**1. Streaming system-prompt-leak masking** — `mask_system_prompt_leak()` is now wired into the streaming pipeline (`_rehydrate_chunk()` and the `[DONE]` carry flush), closing a streaming/non-streaming divergence: non-streaming responses masked leaks, streaming responses did not.
+
+**2. Redis session TTL fix** — `RedisSessionStore.put()` now passes `ex=ttl` to `redis.set()`. Previously session pins written to Redis never expired, leaking memory and violating the idle/max TTL policy.
+
+**3. Type safety (LSP)** — `Level` comparison dunders (`__lt__`/`__le__`/`__gt__`/`__ge__`) now accept `object` and return `NotImplemented` for non-`Level` operands, fixing mypy override errors.
+
+**4. Lint cleanup** — 179 ruff auto-fixes across 37 files (import ordering, `Optional` → `X | None`, unused imports/variables), explicit `__all__` re-exports in `app/guardrails/__init__.py`, and dead-variable removal. mypy now reports 0 errors across 60 files.
+
+**Verified**: 409/409 tests pass; mypy clean; bandit 0 high-severity; live L4 streaming + non-streaming secret masking and injection detection confirmed against the rebuilt container.
+
 ## What's New in v2.9.0
 
 ### 🏗️ P0 Guardrail Architecture Improvements
