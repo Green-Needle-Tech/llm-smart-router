@@ -9,9 +9,21 @@ from pathlib import Path
 import httpx
 
 
-async def evaluate(labeled_path: str, router_url: str, router_key: str):
+def resolve_safe_path(path_str: str | Path, base_dir: Path | None = None) -> Path:
+    """Resolve and validate that a file path exists and is a regular file."""
+    base = (base_dir or Path.cwd()).resolve()
+    resolved = (base / path_str if not Path(path_str).is_absolute() else Path(path_str)).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"File not found: {resolved}")
+    if not resolved.is_file():
+        raise ValueError(f"Path is not a regular file: {resolved}")
+    return resolved
+
+
+async def evaluate(labeled_path: str | Path, router_url: str, router_key: str):
     """Score classifier against labeled session openers."""
-    samples = [json.loads(line) for line in Path(labeled_path).read_text().strip().split("\n")]
+    target_path = resolve_safe_path(labeled_path)
+    samples = [json.loads(line) for line in target_path.read_text().strip().split("\n")]
 
     results = []
     async with httpx.AsyncClient(timeout=30) as client:
@@ -103,7 +115,7 @@ def main():
     parser.add_argument("--router-key", default="test-key")
     args = parser.parse_args()
 
-    results = asyncio.run(evaluate(args.labeled, args.router_url, args.router_key))
+    results = asyncio.run(evaluate(resolve_safe_path(args.labeled), args.router_url, args.router_key))
     report(results)
 
 

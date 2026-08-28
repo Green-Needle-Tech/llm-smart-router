@@ -1,16 +1,32 @@
 #!/usr/bin/env python3
 """Probe the raw classifier model output for vague prompts."""
-import json, urllib.request
+import json
+import urllib.request
+from pathlib import Path
 
 KEY = None
 OR_KEY = None
-for line in open("/root/llm-smart-router/.env"):
-    if line.startswith("ROUTER_API_KEY="):
-        KEY = line.split("=", 1)[1].strip()
-    if line.startswith("OPENROUTER_API_KEY="):
-        OR_KEY = line.split("=", 1)[1].strip()
+env_file = Path("/root/llm-smart-router/.env")
+if env_file.exists():
+    with open(env_file, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("ROUTER_API_KEY="):
+                KEY = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if line.startswith("OPENROUTER_API_KEY="):
+                OR_KEY = line.split("=", 1)[1].strip().strip('"').strip("'")
 
-TEMPLATE = open("/tmp/classifier.txt").read()
+def get_template() -> str:
+    prompt_paths = [
+        Path("/root/llm-smart-router/config/prompts/classifier.txt"),
+        Path("config/prompts/classifier.txt"),
+    ]
+    for p in prompt_paths:
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    raise FileNotFoundError("Could not locate config/prompts/classifier.txt")
+
+
+TEMPLATE = get_template()
 
 def raw_classify(prompt):
     digest = f"<<<UNTRUSTED_INPUT_BEGIN>>>\n[conversation: 1 messages, ~{max(1,len(prompt)//4)} task tokens]\n{prompt}\n<<<UNTRUSTED_INPUT_END>>>"

@@ -17,6 +17,21 @@ ROUTER_DEFAULT_URL = "http://localhost:8080/v1"
 ROUTER_DEFAULT_MODEL = "smart-router"
 
 
+def resolve_safe_output_path(path_str: str | Path, base_dir: Path | None = None) -> Path:
+    """Resolve and validate an output file path before writing to the file system."""
+    base = (base_dir or Path.cwd()).resolve()
+    resolved = (base / path_str if not Path(path_str).is_absolute() else Path(path_str)).resolve()
+    # Check parent directory exists and is a directory
+    parent = resolved.parent
+    if not parent.exists():
+        raise FileNotFoundError(f"Destination directory not found: {parent}")
+    if not parent.is_dir():
+        raise NotADirectoryError(f"Destination parent is not a directory: {parent}")
+    if resolved.exists() and not resolved.is_file():
+        raise ValueError(f"Destination path exists and is not a regular file: {resolved}")
+    return resolved
+
+
 def get_router_key() -> str:
     # Check current directory .env, then parent
     for env_path in [Path(".env"), Path("/root/llm-smart-router/.env"), Path("../.env")]:
@@ -195,8 +210,9 @@ def main():
         final_text = TEMPLATES[args.agent](args.url, key, args.model)
 
     if args.out:
-        args.out.write_text(final_text, encoding="utf-8")
-        print(f"Successfully written configuration to {args.out}")
+        out_path = resolve_safe_output_path(args.out)
+        out_path.write_text(final_text, encoding="utf-8")
+        print(f"Successfully written configuration to {out_path}")
     else:
         print(final_text)
 

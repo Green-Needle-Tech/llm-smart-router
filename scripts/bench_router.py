@@ -3,15 +3,26 @@
 import argparse
 import asyncio
 import json
-import time
 from pathlib import Path
 
 import httpx
 
 
-async def replay_trace(trace_path: str, router_url: str, router_key: str, mode: str):
+def resolve_safe_path(path_str: str | Path, base_dir: Path | None = None) -> Path:
+    """Resolve and validate that a file path exists and is a regular file."""
+    base = (base_dir or Path.cwd()).resolve()
+    resolved = (base / path_str if not Path(path_str).is_absolute() else Path(path_str)).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"File not found: {resolved}")
+    if not resolved.is_file():
+        raise ValueError(f"Path is not a regular file: {resolved}")
+    return resolved
+
+
+async def replay_trace(trace_path: str | Path, router_url: str, router_key: str, mode: str):
     """Replay a captured trace through the router."""
-    trace = [json.loads(line) for line in Path(trace_path).read_text().strip().split("\n")]
+    target_path = resolve_safe_path(trace_path)
+    trace = [json.loads(line) for line in target_path.read_text().strip().split("\n")]
     total_cost = 0.0
     results = []
 
@@ -58,7 +69,7 @@ def main():
     args = parser.parse_args()
 
     cost, results = asyncio.run(replay_trace(
-        args.trace, args.router_url, args.router_key, args.mode
+        resolve_safe_path(args.trace), args.router_url, args.router_key, args.mode
     ))
 
     print(f"\n{'='*60}")
