@@ -59,6 +59,20 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.11.1
+
+### 🛡️ SonarQube Python Rules Remediation & Code Smell Fixes
+
+Comprehensive codebase audit and refactoring aligned with the 398 rules of the SonarQube Python "Sonar way" profile (Bugs, Security Vulnerabilities, and Code Smells):
+
+- **Dead Stores & Unused Variables (`S1481` / `S4487`)**: Removed dead local assignments (`config` in request handlers and auth middleware), prefixed unused unpacked variables (`_digest_info`, `_model_used`), and added explicit `strict=False` on `zip()` iterations (`B905`).
+- **Exception Context & Chaining (`S112` / `B904` / `S5868`)**: Added explicit exception chaining (`raise HTTPException(...) from e` / `from None`) and replaced silent `try... except: pass` blocks with `contextlib.suppress(...)` across all subsystems.
+- **Complexity & Condition Simplification (`S1066` / `SIM102`, `SIM103`, `SIM110`, `SIM300`)**: Converted imperative search loops to `any(...)` generators, flattened nested conditional pyramids, simplified boolean return statements, and removed Yoda comparisons.
+- **Async Lifespan & Import Hygiene (`E402` / `RUF006`)**: Reorganized top-level imports in API routers, and explicitly tracked background task handles in the FastAPI lifespan to ensure clean task cancellation during shutdown.
+- **Encoding Normalization (`RUF002` / `RUF003`)**: Standardized ASCII hyphens across docstrings and config schemas.
+
+**Verification**: 412/412 unit & integration tests pass, ruff clean (0 errors), mypy 0 errors across 60 source files, bandit 0 high/critical issues.
+
 ## What's New in v2.10.1
 
 ### ⚡ Tier L3 Update — Gemini 3.7 Flash

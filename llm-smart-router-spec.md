@@ -1,8 +1,8 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.10.0 (P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection + Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection + comprehensive temporal awareness with typo/grammar tolerance + full pattern coverage + system role + multimodal + RoutingEngine hot-reload fix + per-tier custom provider support + streaming secret-leak hardening + guardrails + privacy + prompt caching + v2.9.1 code review fixes — streaming spleak masking, Redis TTL, type safety, lint cleanup + v2.10.0 tier lineup realignment — L1–L3 route to z-ai/glm-5.3-flash)
-**Date:** 2026-08-26
+**Version:** 2.11.1 (SonarQube Python Sonar Way profile remediation — 398 rules audited, dead store / unused variable removal, exception context chaining, contextlib.suppress refactoring, condition simplification, async lifespan task tracking + mid-stream error handling and accurate 504/502 metrics + P0 guardrail architecture improvements + comprehensive temporal awareness)
+**Date:** 2026-08-28
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
@@ -1999,6 +1999,8 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M10 — Code Review & Security Hardening (v2.9.1)** | Streaming system-prompt-leak masking (parity with non-streaming), Redis session TTL fix (`ex=ttl`), LSP-safe `Level` comparisons, `__all__` exports, 179 ruff fixes across 37 files. | 409 unit tests pass; mypy 0 errors (60 files); bandit 0 high-severity; live L4 verification — secret masking + injection detection confirmed on streaming and non-streaming paths. |
 | **M11 — Tier Lineup Realignment (v2.10.0)** | L1–L3 primary models switched to `z-ai/glm-5.3-flash` (from gpt-5.6-luna / glm-5.2 / gemini-3.7-flash). Fallback chains, temperatures, cost caps unchanged. | Container restarted healthy; live probes on L1/L2/L3 routed to the new model; docs updated (README tier diagram, spec §routing example unchanged as sample config). |
 | **M12 — Tier L3 Update (v2.10.1)** | L3 intermediate tier primary model switched to `google/gemini-3.7-flash` via OpenRouter. | Container restarted healthy; live probe on `smart-router/L3` returned HTTP 200 PONG; README and spec diagrams updated. |
+| **M13 — Stream Error Handling & 504/502 Metrics (v2.11.0)** | Coded error events (`router_upstream_timeout`, `router_stream_interrupted`) + accurate 504/502 metrics for mid-stream failures, `provider.timeout_seconds` raised to 300s. | Integration stream error test suite added; 412 unit + integration tests pass. |
+| **M14 — SonarQube Python Remediation (v2.11.1)** | Full audit against 398 Sonar Way Python rules (Bugs, Vulnerabilities, Code Smells): dead store & unused variable removal, exception context chaining, contextlib.suppress, condition simplification, async task tracking. | 412 unit tests pass; ruff 0 errors; mypy 0 errors (60 files); bandit 0 high/critical issues. |
 
 ---
 
