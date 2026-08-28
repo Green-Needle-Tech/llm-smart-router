@@ -85,9 +85,8 @@ def evaluate_heuristics(
                     floor_level = level
 
     # Deep keywords as a floor
-    if deep_kw_pattern.search(digest):
-        if floor_level is None or Level.L4 > floor_level:
-            floor_level = Level.L4
+    if deep_kw_pattern.search(digest) and (floor_level is None or floor_level < Level.L4):
+        floor_level = Level.L4
 
     if floor_level is not None:
         return (floor_level, False, "floor")

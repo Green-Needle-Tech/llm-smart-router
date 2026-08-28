@@ -1,6 +1,7 @@
 """OpenRouter provider adapter: request translation, streaming, retries."""
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import httpx
@@ -93,10 +94,8 @@ class OpenRouterAdapter(ProviderAdapter):
                 top = m.get("top_provider", {})
                 mct = top.get("max_completion_tokens")
                 if mct is not None:
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         self._max_tokens[mid] = int(mct)
-                    except (TypeError, ValueError):
-                        pass
             return models
         except Exception:
             return []

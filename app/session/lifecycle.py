@@ -1,6 +1,7 @@
 """Session lifecycle: expiry checks, turn caps, config-change policy."""
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 
 from app.schemas.router import SessionPin, SessionStatus
@@ -11,24 +12,20 @@ def check_expiry(pin: SessionPin) -> str | None:
     if pin.is_expired():
         # Determine reason
         now = datetime.now(UTC)
-        try:
+        with contextlib.suppress(Exception):
             pinned = datetime.fromisoformat(pin.pinned_at)
             if pinned.tzinfo is None:
                 pinned = pinned.replace(tzinfo=UTC)
             max_ttl_delta = timedelta(seconds=86400)  # default
             if now > pinned + max_ttl_delta:
                 return "absolute"
-        except Exception:
-            pass
         return "idle"
     return None
 
 
 def check_turn_cap(pin: SessionPin, max_turns: int | None) -> bool:
     """Check if the pin has exceeded the turn cap. Returns True if capped."""
-    if max_turns is not None and pin.turn_count >= max_turns:
-        return True
-    return False
+    return max_turns is not None and pin.turn_count >= max_turns
 
 
 def should_reclassify_on_turn(

@@ -1,6 +1,7 @@
 """Classifier service: calls the cheap model to classify the opening prompt."""
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 
@@ -251,10 +252,8 @@ class ClassifierService:
         }
 
         # Use JSON mode if supported
-        try:
+        with contextlib.suppress(Exception):
             payload["response_format"] = {"type": "json_object"}
-        except Exception:
-            pass
 
         base_url = self._classifier_base_url
         resp = await self._http.post(

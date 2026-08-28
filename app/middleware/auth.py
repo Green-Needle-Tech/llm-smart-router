@@ -26,8 +26,6 @@ def _constant_time_compare(a: str, b: str) -> bool:
 
 async def auth_middleware(request: Request, call_next):
     """Authenticate requests based on config."""
-    from app.config.loader import ConfigManager
-    config = ConfigManager.__new__(ConfigManager)  # lightweight check
     # We'll use the global config instance instead
     return await call_next(request)
 
@@ -46,10 +44,7 @@ def check_router_auth(auth_header: str | None, config) -> bool:
 
     # Extract bearer token
     token = auth_header.replace("Bearer ", "").replace("bearer ", "").strip()
-    for key in keys:
-        if _constant_time_compare(token, key):
-            return True
-    return False
+    return any(_constant_time_compare(token, key) for key in keys)
 
 
 def check_admin_auth(auth_header: str | None, config) -> bool:

@@ -58,7 +58,7 @@ async def reload_settings(request: Request):
         settings = cm.reload()
         return {"status": "ok", "version": settings.version}
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Config validation failed: {e!s}")
+        raise HTTPException(status_code=422, detail=f"Config validation failed: {e!s}") from e
 
 
 @router.get("/stats")

@@ -161,11 +161,14 @@ class IPRedactionEngine:
                     changed = True
             elif isinstance(content, list):
                 for block in content:
-                    if isinstance(block, dict) and isinstance(block.get("text"), str):
-                        if await self._redact_text_inplace(
+                    if (
+                        isinstance(block, dict)
+                        and isinstance(block.get("text"), str)
+                        and await self._redact_text_inplace(
                             block, "text", block["text"], session_id
-                        ):
-                            changed = True
+                        )
+                    ):
+                        changed = True
         return changed
 
     async def _redact_text_inplace(

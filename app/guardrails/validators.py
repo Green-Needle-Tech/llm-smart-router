@@ -17,7 +17,7 @@ Detection methods:
 Config:
   - system_prompt_fragments: list[str] — fragments of the system prompt
     to check against (set via config, hot-reloadable).
-  - fuzzy_threshold: float (0.0–1.0) — minimum similarity ratio to flag
+  - fuzzy_threshold: float (0.0-1.0) - minimum similarity ratio to flag
     (default 0.85; higher = stricter, fewer false positives).
   - min_fragment_len: int — minimum fragment length to check (default 20;
     shorter fragments produce too many false positives).
@@ -50,7 +50,7 @@ def _normalize(text: str) -> str:
 
 
 def _fuzzy_ratio(a: str, b: str) -> float:
-    """Compute similarity ratio between two strings (0.0–1.0)."""
+    """Compute similarity ratio between two strings (0.0-1.0)."""
     if not a or not b:
         return 0.0
     return SequenceMatcher(None, a, b).ratio()

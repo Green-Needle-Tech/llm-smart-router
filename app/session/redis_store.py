@@ -57,9 +57,8 @@ class RedisSessionStore(SessionStore):
             raw = await self._redis.get(k)
             if raw:
                 pin = SessionPin.model_validate_json(raw)
-                if not pin.is_expired():
-                    if level is None or pin.level.value == level:
-                        pins.append(pin)
+                if not pin.is_expired() and (level is None or pin.level.value == level):
+                    pins.append(pin)
         return pins[offset:offset + limit]
 
     async def count(self) -> int:

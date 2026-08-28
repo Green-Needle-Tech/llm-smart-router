@@ -39,7 +39,7 @@ async def set_session(session_id: str, body: SetPinRequest, request: Request):
     try:
         level = Level.from_str(body.level)
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid level: {body.level}")
+        raise HTTPException(status_code=400, detail=f"Invalid level: {body.level}") from None
 
     model = config.routing.get_model(level.value)
     params = config.routing.get_params(level.value)
@@ -102,19 +102,21 @@ async def signal_session(session_id: str, body: SignalRequest, request: Request)
     from_level = pin.level
 
     # Check threshold
-    if pin.escalation.score >= esc_cfg.threshold:
-        if pin.escalation.count < esc_cfg.max_escalations_per_session:
-            if pin.turn_count >= pin.escalation.cooldown_until_turn:
-                new_level = Level.from_numeric(pin.level.numeric + 1)
-                if new_level <= Level.from_str(config.routing.global_max_level):
-                    pin.level = new_level
-                    pin.model = config.routing.get_model(new_level.value)
-                    pin.params = config.routing.get_params(new_level.value)
-                    pin.escalation.count += 1
-                    pin.escalation.last_escalated_turn = pin.turn_count
-                    pin.escalation.cooldown_until_turn = pin.turn_count + esc_cfg.cooldown_turns
-                    pin.escalation.original_level = pin.escalation.original_level or from_level
-                    escalated = True
+    if (
+        pin.escalation.score >= esc_cfg.threshold
+        and pin.escalation.count < esc_cfg.max_escalations_per_session
+        and pin.turn_count >= pin.escalation.cooldown_until_turn
+    ):
+        new_level = Level.from_numeric(pin.level.numeric + 1)
+        if new_level <= Level.from_str(config.routing.global_max_level):
+            pin.level = new_level
+            pin.model = config.routing.get_model(new_level.value)
+            pin.params = config.routing.get_params(new_level.value)
+            pin.escalation.count += 1
+            pin.escalation.last_escalated_turn = pin.turn_count
+            pin.escalation.cooldown_until_turn = pin.turn_count + esc_cfg.cooldown_turns
+            pin.escalation.original_level = pin.escalation.original_level or from_level
+            escalated = True
 
     await store.put(pin)
     return {

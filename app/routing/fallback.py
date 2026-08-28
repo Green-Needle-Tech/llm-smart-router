@@ -29,7 +29,7 @@ class FallbackExecutor:
 
         For streaming, returns (None, response, model_used, fallback_used, error).
         """
-        models_to_try = [primary_model] + list(fallback_models)
+        models_to_try = [primary_model, *list(fallback_models)]
         last_error: str | None = None
         effective_base_url = (base_url or self.config.provider.base_url).rstrip("/")
 

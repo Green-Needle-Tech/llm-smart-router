@@ -110,7 +110,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning("router.pricing.refresh_failed", error=str(e))
 
-    asyncio.create_task(_refresh_models_loop())
+    refresh_task = asyncio.create_task(_refresh_models_loop())
 
     cm.start_watcher(interval=5.0)
     router_info.info({"version": str(settings.version), "provider": settings.provider.name})
@@ -157,6 +157,8 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     logger.info("router.shutdown")
+    if refresh_task:
+        refresh_task.cancel()
     if purge_task:
         purge_task.cancel()
     if getattr(app.state, "ip_redaction", None) is not None:

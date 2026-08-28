@@ -1,6 +1,7 @@
 """Conversation fingerprint derivation for session-id fallback."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
 from typing import Any
@@ -25,10 +26,8 @@ def _extract_text(content: Any) -> str:
 def _strip_patterns(text: str, patterns: list[str]) -> str:
     """Apply regex strip patterns to remove volatile content."""
     for pattern in patterns:
-        try:
+        with contextlib.suppress(re.error):
             text = re.sub(pattern, "", text)
-        except re.error:
-            pass
     return text
 
 

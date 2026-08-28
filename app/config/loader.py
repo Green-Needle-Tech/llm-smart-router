@@ -1,6 +1,7 @@
 """Config loader: load, validate, deep-merge with defaults, hot-reload."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
@@ -63,10 +64,8 @@ class ConfigManager:
                 with open(self.settings_path, "r") as f:
                     file_cfg = json.load(f)
                 cfg = _deep_merge(cfg, file_cfg)
-                try:
+                with contextlib.suppress(OSError):
                     self._last_mtime = os.path.getmtime(self.settings_path)
-                except OSError:
-                    pass
 
             cfg = _apply_env_overrides(cfg)
             self._settings = Settings.model_validate(cfg)
@@ -100,20 +99,16 @@ class ConfigManager:
 
     def _notify_callbacks(self):
         for cb in self._reload_callbacks:
-            try:
+            with contextlib.suppress(Exception):
                 cb(self._settings)
-            except Exception:
-                pass
 
     def start_watcher(self, interval: float = 5.0):
         """Start a background thread polling for config changes."""
         def _watch():
             while True:
                 time.sleep(interval)
-                try:
+                with contextlib.suppress(Exception):
                     self.check_and_reload()
-                except Exception:
-                    pass
 
         t = threading.Thread(target=_watch, daemon=True, name="config-watcher")
         t.start()

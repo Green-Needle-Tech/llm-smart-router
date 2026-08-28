@@ -1,6 +1,7 @@
 """POST /v1/chat/completions — the primary endpoint."""
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -28,8 +29,6 @@ from app.schemas.router import (
 from app.session.lifecycle import check_expiry, check_turn_cap
 from app.session.locks import acquire_or_wait
 from app.session.resolver import resolve_session_id
-
-_SEV_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
     router_active_requests,
@@ -49,12 +48,14 @@ from app.telemetry.metrics import (
     router_requests_total,
     router_session_lookups_total,
     router_sessions_active,
-    router_stream_errors_total,
     router_sessions_created_total,
+    router_stream_errors_total,
     router_tokens_total,
     router_upstream_duration_seconds,
 )
 from app.temporal_awareness.engine import TemporalAwarenessEngine
+
+_SEV_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
 router = APIRouter()
 logger = get_logger("chat")
@@ -107,10 +108,8 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     # Check header overrides
     header_level = request.headers.get("X-Router-Level")
     if header_level:
-        try:
+        with contextlib.suppress(ValueError):
             forced_level = Level.from_str(header_level)
-        except ValueError:
-            pass
     header_model = request.headers.get("X-Router-Model")
     if header_model:
         forced_model = header_model
@@ -334,7 +333,7 @@ async def _redact_incoming(request, body) -> str | None:
     messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
     await engine.redact_messages(messages, key)
     # Write redacted content back onto the pydantic messages.
-    for orig, dumped in zip(body.messages, messages):
+    for orig, dumped in zip(body.messages, messages, strict=False):
         if orig.content != dumped.get("content"):
             orig.content = dumped.get("content")
     router_privacy_redactions_total.inc()
@@ -350,7 +349,7 @@ def _process_temporal_awareness(request, body) -> None:
         return
     messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
     processed = engine.process_messages(messages)
-    for orig, proc in zip(body.messages, processed):
+    for orig, proc in zip(body.messages, processed, strict=False):
         content = proc.get("content")
         if isinstance(content, str) and orig.content != content:
             orig.content = content
@@ -840,7 +839,6 @@ async def _handle_non_stream(
 ):
     """Handle non-streaming request."""
     provider = request.app.state.provider
-    config = request.app.state.config.get()
 
     upstream_start = time.monotonic()
     json_resp, _, model_used, fallback_used, error = await provider.chat_completion(
@@ -931,7 +929,6 @@ async def _handle_stream(
 ):
     """Handle streaming request — pass through SSE chunks."""
     provider = request.app.state.provider
-    config = request.app.state.config.get()
 
     upstream_start = time.monotonic()
     _, stream_resp, model_used, fallback_used, error = await provider.chat_completion(
@@ -1201,7 +1198,7 @@ def _strip_model_postfix_from_messages(messages: list[dict[str, Any]]) -> None:
 async def _classify_only(request, body, task_text, router_opts):
     """Return classification result only, no downstream call."""
     classifier = request.app.state.classifier
-    result, digest_info = await classifier.classify(
+    result, _digest_info = await classifier.classify(
         body.messages, body.tools, body.response_format,
         task_text=task_text,
     )
@@ -1224,7 +1221,7 @@ async def _passthrough(request, body, model, redaction_key=None):
     apply_prompt_cache_features(payload, None, config)
 
     if body.stream:
-        _, stream_resp, model_used, _, error = await provider.chat_completion(payload, stream=True)
+        _, stream_resp, _model_used, _, error = await provider.chat_completion(payload, stream=True)
         if error:
             return JSONResponse(status_code=502, content={"error": {"message": error, "type": "upstream_error"}})
 
@@ -1237,7 +1234,7 @@ async def _passthrough(request, body, model, redaction_key=None):
 
         return StreamingResponse(gen(), media_type="text/event-stream")
     else:
-        json_resp, _, model_used, _, error = await provider.chat_completion(payload)
+        json_resp, _, _model_used, _, error = await provider.chat_completion(payload)
         if error and json_resp is None:
             return JSONResponse(status_code=502, content={"error": {"message": error, "type": "upstream_error"}})
         _rehydrate_response_content(
@@ -1253,7 +1250,7 @@ async def _stateless_classify_and_forward(
     """Classify in isolation, no session pinning."""
     classifier = request.app.state.classifier
 
-    classification, digest_info = await classifier.classify(
+    classification, _digest_info = await classifier.classify(
         body.messages, body.tools, body.response_format,
         task_text=task_text, bypass_cache=bypass_cache,
     )

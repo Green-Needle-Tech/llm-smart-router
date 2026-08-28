@@ -19,7 +19,4 @@ _COMPILED = [re.compile(p) for p in GUARD_PATTERNS]
 
 def check_injection(text: str) -> bool:
     """Return True if any guard phrase is found in the text."""
-    for pattern in _COMPILED:
-        if pattern.search(text):
-            return True
-    return False
+    return any(pattern.search(text) for pattern in _COMPILED)
