@@ -15,6 +15,12 @@ router_active_requests = Gauge(
     "Currently in-flight requests",
 )
 
+router_stream_errors_total = Counter(
+    "router_stream_errors_total",
+    "Upstream stream failures after response headers were sent",
+    ["level", "model", "kind"],
+)
+
 # Session metrics
 router_sessions_active = Gauge(
     "router_sessions_active",

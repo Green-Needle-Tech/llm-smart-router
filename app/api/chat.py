@@ -7,6 +7,7 @@ import time
 import uuid
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -48,6 +49,7 @@ from app.telemetry.metrics import (
     router_requests_total,
     router_session_lookups_total,
     router_sessions_active,
+    router_stream_errors_total,
     router_sessions_created_total,
     router_tokens_total,
     router_upstream_duration_seconds,
@@ -1093,18 +1095,45 @@ async def _handle_stream(
                 line, carry = await _rehydrate_line(line, carry)
                 yield f"{line}\n"
         except Exception as e:
-            # Stream broke — emit error event
-            error_data = {"error": {"message": f"stream interrupted: {e!s}", "type": "upstream_error"}}
+            # Stream broke mid-flight (e.g. provider timeout on long-context
+            # calls). Log it, count it accurately, and emit a coded error
+            # event so clients can distinguish timeout from other breaks.
+            upstream_ms = int((time.monotonic() - upstream_start) * 1000)
+            is_timeout = isinstance(e, (httpx.TimeoutException, TimeoutError))
+            error_kind = "upstream_timeout" if is_timeout else "stream_interrupted"
+            logger.error(
+                "router.stream.error",
+                level=route.level.value,
+                model=model_used,
+                session_id=session_id,
+                error_kind=error_kind,
+                error=str(e),
+                elapsed_s=round(upstream_ms / 1000, 1),
+            )
+            router_stream_errors_total.labels(
+                level=route.level.value, model=model_used, kind=error_kind,
+            ).inc()
+            router_requests_total.labels(
+                level=route.level.value, model=model_used,
+                source=route.classification.source.value,
+                status=504 if is_timeout else 502,
+            ).inc()
+            error_data = {"error": {
+                "message": f"stream interrupted: {e!s}",
+                "type": "upstream_error",
+                "code": f"router_{error_kind}",
+            }}
             yield f"data: {json.dumps(error_data)}\n\n"
+        else:
+            router_requests_total.labels(
+                level=route.level.value, model=model_used,
+                source=route.classification.source.value, status=200,
+            ).inc()
         finally:
             await stream_resp.aclose()
 
             # Update metrics
             upstream_ms = int((time.monotonic() - upstream_start) * 1000)
-            router_requests_total.labels(
-                level=route.level.value, model=model_used,
-                source=route.classification.source.value, status=200,
-            ).inc()
             router_upstream_duration_seconds.labels(level=route.level.value, model=model_used).observe(upstream_ms / 1000)
             if fallback_used:
                 router_fallbacks_total.labels(
