@@ -59,6 +59,18 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.11.2
+
+### 🔒 Script File System Restrictions & Path Validation Hardening
+
+Security refactoring across helper scripts to prevent potential file system restriction escapes when driven by LLMs or CLI arguments with arbitrary paths:
+
+- **Path Resolution & Validation (`scripts/bench_router.py`, `scripts/eval_classifier.py`)**: Added `resolve_safe_path()` to validate and resolve input trace and labeled dataset paths, verifying file existence and ensuring target paths are regular files before reading.
+- **Output Destination Validation (`scripts/generate_agent_config.py`)**: Added `resolve_safe_output_path()` to validate destination file paths, checking that parent directories exist and are valid directories before writing.
+- **Secure Template Loading (`scripts/probe_raw_classifier.py`)**: Replaced insecure `/tmp` template reads (`B108` / CWE-377) with safe discovery and resolution from repository prompt directories (`config/prompts/classifier.txt`).
+
+**Verification**: 412/412 unit & integration tests pass, mypy 0 errors, bandit 0 high/critical issues.
+
 ## What's New in v2.11.1
 
 ### 🛡️ SonarQube Python Rules Remediation & Code Smell Fixes
