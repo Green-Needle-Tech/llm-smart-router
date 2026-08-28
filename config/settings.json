@@ -15,7 +15,7 @@
   "provider": {
     "name": "openrouter",
     "base_url": "https://openrouter.ai/api/v1",
-    "timeout_seconds": 120,
+    "timeout_seconds": 300,
     "connect_timeout_seconds": 10,
     "max_retries": 2,
     "retry_backoff_seconds": 1.5,
