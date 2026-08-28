@@ -77,7 +77,7 @@ COMPILED_INJECTION = [
 # Provider-prefixed, high-precision credential patterns (low FP by design).
 SECRET_RULES = [
     ("openrouter-key", re.compile(r"sk-or-v1-[A-Za-z0-9]{16,}")),
-    ("anthropic-key", re.compile(r"sk-ant-(api[0-9]*-)?[A-Za-z0-9_-]{16,}")),
+    ("anthropic-key", re.compile(r"sk-ant-(?:api[0-9]*-)?[A-Za-z0-9_-]{16,}")),
     ("openai-key", re.compile(r"sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}")),
     ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}")),
     ("aws-access-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
