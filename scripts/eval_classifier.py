@@ -3,21 +3,18 @@
 import argparse
 import asyncio
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 
+# Add repo root to sys.path if running as standalone script
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 import httpx
 
-
-def resolve_safe_path(path_str: str | Path, base_dir: Path | None = None) -> Path:
-    """Resolve and validate that a file path exists and is a regular file."""
-    base = (base_dir or Path.cwd()).resolve()
-    resolved = (base / path_str if not Path(path_str).is_absolute() else Path(path_str)).resolve()
-    if not resolved.exists():
-        raise FileNotFoundError(f"File not found: {resolved}")
-    if not resolved.is_file():
-        raise ValueError(f"Path is not a regular file: {resolved}")
-    return resolved
+from scripts.script_utils import resolve_safe_path
 
 
 async def evaluate(labeled_path: str | Path, router_url: str, router_key: str):

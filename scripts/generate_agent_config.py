@@ -13,23 +13,15 @@ import os
 import sys
 from pathlib import Path
 
+# Add repo root to sys.path if running as standalone script
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from scripts.script_utils import resolve_safe_output_path
+
 ROUTER_DEFAULT_URL = "http://localhost:8080/v1"
 ROUTER_DEFAULT_MODEL = "smart-router"
-
-
-def resolve_safe_output_path(path_str: str | Path, base_dir: Path | None = None) -> Path:
-    """Resolve and validate an output file path before writing to the file system."""
-    base = (base_dir or Path.cwd()).resolve()
-    resolved = (base / path_str if not Path(path_str).is_absolute() else Path(path_str)).resolve()
-    # Check parent directory exists and is a directory
-    parent = resolved.parent
-    if not parent.exists():
-        raise FileNotFoundError(f"Destination directory not found: {parent}")
-    if not parent.is_dir():
-        raise NotADirectoryError(f"Destination parent is not a directory: {parent}")
-    if resolved.exists() and not resolved.is_file():
-        raise ValueError(f"Destination path exists and is not a regular file: {resolved}")
-    return resolved
 
 
 def get_router_key() -> str:
