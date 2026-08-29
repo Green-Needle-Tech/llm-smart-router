@@ -72,6 +72,19 @@ Optimized upstream LLM classifier workload across session lifecycle, caching, an
 
 **Verification**: 413/413 unit & integration tests pass, all 5 forced tiers + session pinning live-verified, 30/30 guardrail live tests pass, ruff 0 errors, mypy 0 errors (60 files), bandit 0 high/critical issues.
 
+## What's New in v2.12.0
+
+### 🛡️ Enhanced Input Guardrails & Obfuscation Defense (DOC-RES-SMARTROUTER-2026-0829-01)
+
+Implementation of the low-latency, zero-dependency Tier-0 input safety features specified in technical research document `DOC-RES-SMARTROUTER-2026-0829-01`:
+
+- **Homoglyph & Bidi Lookalike Normalization (`app/guardrails/rules.py`)**: Added `normalize_homoglyphs()` to map Cyrillic, Greek, and Full-Width lookalikes (e.g. `іgnоrе`) into Latin ASCII before regex scanning, neutralizing character substitution evasion attacks.
+- **Shannon Entropy & Obfuscated Payload Scanner (`app/guardrails/rules.py`)**: Added `calculate_shannon_entropy()` alongside Base64, Hex, and URL-encoding payload detection with automated safe decoding probes and span mapping.
+- **Secondary & Recursive Agent Jailbreak Rules (`app/guardrails/rules.py`)**: Expanded compiled injection rules to 26 patterns with detection for recursive JSON injection (`injection-recursive-json`), subagent privilege escalation (`injection-agent-handoff`), and XML system prompt smuggling (`injection-xml-system-smuggle`).
+- **Config & Telemetry Wiring (`app/config/schema.py`, `app/api/chat.py`)**: Added `homoglyph_normalization`, `obfuscation_detection`, and `entropy_threshold` to `GuardrailsConfig` with Prometheus metrics tracking on `router_guardrail_findings_total`.
+
+**Verification**: 424/424 unit & integration tests pass, mypy 0 errors (60 files), bandit 0 high/critical issues.
+
 ## What's New in v2.11.2
 
 ### 🔒 Script File System Restrictions & Path Validation Hardening
