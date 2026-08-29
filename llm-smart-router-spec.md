@@ -1,8 +1,8 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.11.2 (Script path validation & file system restriction security hardening + SonarQube Python Sonar Way remediation + mid-stream error handling and accurate 504/502 metrics + P0 guardrail architecture improvements + comprehensive temporal awareness)
-**Date:** 2026-08-28
+**Version:** 2.11.3 (Classifier API call optimization & 24h cache TTL + script path validation + SonarQube Python Sonar Way remediation + mid-stream error handling and accurate 504/502 metrics + P0 guardrail architecture improvements + comprehensive temporal awareness)
+**Date:** 2026-08-29
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
@@ -2002,6 +2002,8 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M13 — Stream Error Handling & 504/502 Metrics (v2.11.0)** | Coded error events (`router_upstream_timeout`, `router_stream_interrupted`) + accurate 504/502 metrics for mid-stream failures, `provider.timeout_seconds` raised to 300s. | Integration stream error test suite added; 412 unit + integration tests pass. |
 | **M14 — SonarQube Python Remediation (v2.11.1)** | Full audit against 398 Sonar Way Python rules (Bugs, Vulnerabilities, Code Smells): dead store & unused variable removal, exception context chaining, contextlib.suppress, condition simplification, async task tracking. | 412 unit tests pass; ruff 0 errors; mypy 0 errors (60 files); bandit 0 high/critical issues. |
 | **M15 — Script Path Validation & Security Hardening (v2.11.2)** | Path resolution and validation before file system operations across scripts (`bench_router.py`, `eval_classifier.py`, `generate_agent_config.py`); secure template loading in `probe_raw_classifier.py` eliminating `/tmp` references. | 412 unit tests pass; mypy 0 errors; bandit 0 high/critical issues. |
+| **M16 — Classifier API Call Optimization (v2.11.3)** | Extended classification cache TTL to 24h, expanded `tiny_prompt` heuristic threshold (`task_chars < 80`), disabled background multi-turn shadow/reclassification calls, and ensured single-call digest evaluation on cache misses. | 413 unit & integration tests pass; all 5 forced tiers live-verified; 30/30 guardrails pass; mypy/ruff/bandit clean. |
+
 
 ---
 
