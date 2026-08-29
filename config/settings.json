@@ -274,7 +274,10 @@
         "rm -rf /"
       ],
       "refusal_detection": true,
-      "malicious_url_detection": true
+      "malicious_url_detection": true,
+      "homoglyph_normalization": true,
+      "obfuscation_detection": true,
+      "entropy_threshold": 4.5
     },
     "temporal_awareness": {
       "enabled": true,

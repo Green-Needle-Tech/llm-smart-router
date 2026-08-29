@@ -172,6 +172,9 @@ def _guardrail_scan_input(request, body):
         system_prompt_leak_detection=getattr(cfg, "system_prompt_leak_detection", False),
         system_prompt_fragments=getattr(cfg, "system_prompt_fragments", []),
         system_prompt_leak_threshold=getattr(cfg, "system_prompt_leak_threshold", 0.85),
+        homoglyph_normalization=getattr(cfg, "homoglyph_normalization", True),
+        obfuscation_detection=getattr(cfg, "obfuscation_detection", True),
+        entropy_threshold=getattr(cfg, "entropy_threshold", 4.5),
     )
     messages = [
         (m.model_dump() if hasattr(m, "model_dump") else m) for m in body.messages
@@ -229,6 +232,28 @@ def _guardrail_scan_input(request, body):
                 rule=f.rule_id, severity=f.severity, action=cfg.input_action,
             )
 
+    # Obfuscation and high-entropy detection (Base64, Hex, URL-encoded)
+    obfuscation_findings: list = []
+    if getattr(cfg, "obfuscation_detection", True):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                obfuscation_findings.extend(engine.scan_obfuscation(content))
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        obfuscation_findings.extend(engine.scan_obfuscation(block["text"]))
+        for f in obfuscation_findings:
+            router_guardrail_findings_total.labels(
+                rule_id=f.rule_id, severity=f.severity, direction="input",
+            ).inc()
+            logger.warning(
+                "router.guardrail.obfuscation",
+                rule=f.rule_id, severity=f.severity, action=cfg.input_action,
+            )
+
     # Standard injection scan
     result = engine.scan_messages(messages)
     for f in result.findings:
@@ -241,7 +266,7 @@ def _guardrail_scan_input(request, body):
         )
 
     # Combine all findings for block decision
-    all_findings = result.findings + banned_findings
+    all_findings = result.findings + banned_findings + obfuscation_findings
     blocked = False
     if cfg.input_action == "block" and all_findings:
         threshold = _SEV_ORDER.get(cfg.block_on_severity, 2)

@@ -59,6 +59,12 @@ class GuardrailsConfig(BaseModel):
     system_prompt_fragments: list[str] = Field(default_factory=list)
     # Fuzzy similarity threshold (0.0-1.0; higher = fewer false positives)
     system_prompt_leak_threshold: float = 0.85
+    # Homoglyph normalization (input) — normalize Cyrillic/Greek lookalikes before scan
+    homoglyph_normalization: bool = True
+    # Obfuscation and high-entropy detection (input) — Base64, Hex, URL-encoding
+    obfuscation_detection: bool = True
+    # Shannon entropy threshold for payload token detection
+    entropy_threshold: float = 4.5
 
 
 class PrivacyConfig(BaseModel):

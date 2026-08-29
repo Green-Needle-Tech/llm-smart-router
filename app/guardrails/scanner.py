@@ -31,6 +31,8 @@ from app.guardrails.rules import (
     _is_likely_credit_card,
     detect_invisible_text,
     find_interleaved_secrets,
+    normalize_homoglyphs,
+    scan_obfuscated_payloads,
 )
 from app.guardrails.validators import SystemPromptLeakValidator
 
@@ -112,6 +114,12 @@ class GuardrailConfig:
     system_prompt_fragments: list[str] = field(default_factory=list)
     # Fuzzy similarity threshold (0.0-1.0; higher = fewer false positives)
     system_prompt_leak_threshold: float = 0.85
+    # Homoglyph normalization (input) — normalize Cyrillic/Greek lookalikes before scan
+    homoglyph_normalization: bool = True
+    # Obfuscation and high-entropy detection (input) — Base64, Hex, URL-encoding
+    obfuscation_detection: bool = True
+    # Shannon entropy threshold for payload token detection
+    entropy_threshold: float = 4.5
 
 
 @dataclass
@@ -163,11 +171,16 @@ class GuardrailEngine:
         """Run injection rules over a single text. Skips code-block-heavy text.
 
         Returns findings with error spans (start, end) from regex matches.
+        Applies homoglyph normalization if enabled.
         """
         if not text:
             return []
         if _in_code_block_heavy_text(text):
             return []
+        
+        # Homoglyph normalization pass
+        eval_text = normalize_homoglyphs(text) if self.config.homoglyph_normalization else text
+
         findings = []
         # Use registry's input validators (injection rules)
         # Match all non-secret, non-PII, non-URL, non-refusal input validators
@@ -177,7 +190,7 @@ class GuardrailEngine:
                           "refusal-")
         for v in self.registry.input_validators:
             if not v.rule_id.startswith(_skip_prefixes):
-                findings.extend(v.scan(text))
+                findings.extend(v.scan(eval_text))
         return findings
 
     def scan_messages(self, messages: list) -> InputScanResult:
@@ -258,6 +271,32 @@ class GuardrailEngine:
                     metadata={"banned_term": banned},
                 ))
                 start = idx + len(banned_lower)
+        return findings
+
+    # --- Obfuscation & Entropy detection (input) -----------------------------
+
+    def scan_obfuscation(self, text: str) -> list[GuardrailFinding]:
+        """Scan text for high-entropy tokens and obfuscated/encoded payloads (Base64, Hex, URL).
+
+        Returns findings with HIGH/MEDIUM severity and error spans.
+        """
+        if not text or not self.config.obfuscation_detection:
+            return []
+        findings: list[GuardrailFinding] = []
+        payloads = scan_obfuscated_payloads(
+            text,
+            entropy_threshold=self.config.entropy_threshold,
+        )
+        for scan_type, snippet, start, end in payloads:
+            findings.append(GuardrailFinding(
+                rule_id=scan_type,
+                severity="HIGH" if scan_type == "obfuscation-base64" else "MEDIUM",
+                snippet=snippet[:60],
+                start=start,
+                end=end,
+                direction="input",
+                metadata={"type": scan_type, "preview": snippet},
+            ))
         return findings
 
     # --- Output path -----------------------------------------------------------

@@ -9,7 +9,11 @@ Refusal patterns detect model refusals for monitoring.
 """
 from __future__ import annotations
 
+import base64
+import contextlib
+import math
 import re
+import urllib.parse
 
 INJECTION_RULES = [
     # --- 1. Direct instruction override ---
@@ -61,11 +65,18 @@ INJECTION_RULES = [
      r"(hex|hexadecimal|0x)\s+(decode|encoded)\s*:?\s*([0-9a-fA-F]{2}\s*){10,}"),
     ("encoded-unicode", "MEDIUM",
      r"(\\u[0-9a-fA-F]{4}){5,}"),
-    # --- 8. Multi-turn manipulation ---
+# --- 8. Multi-turn manipulation ---
     ("multiturn-ratchet", "MEDIUM",
      r"(remember (that|this)|keep in mind|for the rest of (this|the) (conversation|session))\s*[:,]?\s*(you (are|can|will|must)|feel free|it('?s| is) (allowed|ok|okay|fine))"),
     ("multiturn-boiling", "LOW",
      r"(step[- ]?by[- ]?step|one step at a time|gradually|little by little).*(bypass|circumvent|around).*(rule|restriction|filter|guardrail|safety)"),
+    # --- 9. Secondary & recursive agent jailbreaks (v2.12.0) ---
+    ("injection-recursive-json", "HIGH",
+     r"(\{\s*\"(instruction|override|system_prompt|jailbreak|role|command)\"\s*:\s*\"(ignore|bypass|override|you are now|pretend)\b)"),
+    ("injection-agent-handoff", "HIGH",
+     r"(subagent|child agent|worker agent|delegated task)\s+(override|bypass|ignore rules|elevate privileges|disable safety)"),
+    ("injection-xml-system-smuggle", "HIGH",
+     r"(<system>|<sys_prompt>|<agent_override>|<admin_command>)\s*(ignore|bypass|override|disable safety)"),
 ]
 
 # Compiled once at import.
@@ -175,6 +186,136 @@ def strip_invisible_text(text: str) -> str:
     if not text:
         return text
     return INVISIBLE_CHARS_RE.sub("", text)
+
+
+# --- Homoglyph & Obfuscation Normalization (v2.12.0) ------------------------
+# Normalizes common Cyrillic/Greek homoglyphs and unicode lookalikes to Latin ASCII
+# so prompt injection rules cannot be bypassed by character substitution.
+HOMOGLYPH_MAP: dict[str, str] = {
+    # Cyrillic small lookalikes
+    "а": "a", "с": "c", "е": "e", "о": "o", "р": "p", "ѕ": "s", "х": "x", "у": "y",
+    "і": "i", "ј": "j", "ԁ": "d", "ԛ": "q", "ԝ": "w", "ѵ": "v",
+    # Cyrillic capital lookalikes
+    "А": "A", "В": "B", "С": "C", "Е": "E", "Н": "H", "І": "I", "Ј": "J", "К": "K",
+    "М": "M", "О": "O", "Р": "P", "Ѕ": "S", "Т": "T", "Х": "X", "Ү": "Y", "Ԝ": "W",
+    # Greek lookalikes
+    "α": "a", "ο": "o", "ν": "v", "ρ": "p", "τ": "t", "υ": "u", "χ": "x",
+    "Α": "A", "Β": "B", "Ε": "E", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M",
+    "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X", "Ζ": "Z",
+    # Full-width Latin
+    "ａ": "a", "ｂ": "b", "ｃ": "c", "ｄ": "d", "ｅ": "e", "ｆ": "f", "ｇ": "g",
+    "ｈ": "h", "ｉ": "i", "ｊ": "j", "ｋ": "k", "ｌ": "l", "ｍ": "m", "ｎ": "n",
+    "ｏ": "o", "ｐ": "p", "ｑ": "q", "ｒ": "r", "ｓ": "s", "ｔ": "t", "ｕ": "u",
+    "ｖ": "v", "ｗ": "w", "ｘ": "x", "ｙ": "y", "ｚ": "z",
+    "Ａ": "A", "Ｂ": "B", "Ｃ": "C", "Ｄ": "D", "Ｅ": "E", "Ｆ": "F", "Ｇ": "G",
+    "Ｈ": "H", "Ｉ": "I", "Ｊ": "J", "Ｋ": "K", "Ｌ": "L", "Ｍ": "M", "Ｎ": "N",
+    "Ｏ": "O", "Ｐ": "P", "Ｑ": "Q", "Ｒ": "R", "Ｓ": "S", "Ｔ": "T", "Ｕ": "U",
+    "Ｖ": "V", "Ｗ": "W", "Ｘ": "X", "Ｙ": "Y", "Ｚ": "Z",
+}
+
+_HOMOGLYPH_TRANS = str.maketrans(HOMOGLYPH_MAP)
+
+
+def normalize_homoglyphs(text: str) -> str:
+    """Normalize known Cyrillic/Greek/Full-width homoglyphs to ASCII Latin."""
+    if not text:
+        return text
+    return text.translate(_HOMOGLYPH_TRANS)
+
+
+# --- Shannon Entropy & Obfuscation Detection (v2.12.0) ----------------------
+
+def calculate_shannon_entropy(data: str) -> float:
+    """Compute Shannon entropy in bits per character for a string."""
+    if not data:
+        return 0.0
+    entropy = 0.0
+    length = len(data)
+    counts: dict[str, int] = {}
+    for ch in data:
+        counts[ch] = counts.get(ch, 0) + 1
+    for count in counts.values():
+        p = count / length
+        entropy -= p * math.log2(p)
+    return entropy
+
+
+_B64_TOKEN_RE = re.compile(r"\b[A-Za-z0-9+/]{24,}={0,2}\b")
+_HEX_TOKEN_RE = re.compile(r"\b(?:0x)?[0-9a-fA-F]{32,}\b")
+_URL_ENCODED_TOKEN_RE = re.compile(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_.-]){10,}")
+
+
+def scan_obfuscated_payloads(
+    text: str,
+    entropy_threshold: float = 4.5,
+    min_length: int = 20,
+) -> list[tuple[str, str, int, int]]:
+    """Scan for high-entropy tokens and obfuscated/encoded payloads (Base64, Hex, URL).
+
+    Returns a list of tuples: (scan_type, decoded_preview_or_snippet, start, end).
+    """
+    if not text or len(text) < min_length:
+        return []
+    findings: list[tuple[str, str, int, int]] = []
+
+    # 1. Base64 payload detection + decoded probe
+    for m in _B64_TOKEN_RE.finditer(text):
+        token = m.group(0)
+        ent = calculate_shannon_entropy(token)
+        if ent >= entropy_threshold or len(token) >= 40:
+            decoded_snippet = ""
+            with contextlib.suppress(Exception):
+                # Ensure padding
+                pad = len(token) % 4
+                padded = token + ("=" * (4 - pad) if pad else "")
+                raw_bytes = base64.b64decode(padded)
+                decoded_str = raw_bytes.decode("utf-8", errors="ignore")
+                if len(decoded_str) >= 8 and any(ch.isalpha() for ch in decoded_str):
+                    decoded_snippet = decoded_str[:60]
+            findings.append((
+                "obfuscation-base64",
+                decoded_snippet or token[:40],
+                m.start(),
+                m.end(),
+            ))
+
+    # 2. Hex token detection
+    for m in _HEX_TOKEN_RE.finditer(text):
+        token = m.group(0)
+        clean_hex = token.removeprefix("0x")
+        if len(clean_hex) % 2 == 0:
+            decoded_snippet = ""
+            with contextlib.suppress(Exception):
+                raw_bytes = bytes.fromhex(clean_hex)
+                decoded_str = raw_bytes.decode("utf-8", errors="ignore")
+                if len(decoded_str) >= 8 and any(ch.isalpha() for ch in decoded_str):
+                    decoded_snippet = decoded_str[:60]
+            findings.append((
+                "obfuscation-hex",
+                decoded_snippet or token[:40],
+                m.start(),
+                m.end(),
+            ))
+
+    # 3. URL-encoded payload detection (%-escapes with >=3 escapes or >=15 chars)
+    if "%" in text:
+        for m in re.finditer(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_+.-]){12,}", text):
+            token = m.group(0)
+            if token.count("%") >= 2:
+                decoded_snippet = ""
+                with contextlib.suppress(Exception):
+                    decoded_str = urllib.parse.unquote_plus(token)
+                    if decoded_str != token and any(ch.isalpha() for ch in decoded_str):
+                        decoded_snippet = decoded_str[:60]
+                if decoded_snippet:
+                    findings.append((
+                        "obfuscation-url-encoded",
+                        decoded_snippet,
+                        m.start(),
+                        m.end(),
+                    ))
+
+    return findings
 
 
 # --- PII patterns (email, phone, SSN, credit card) ----------------------------

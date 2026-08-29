@@ -147,7 +147,7 @@ class TestValidatorAbstraction:
                  "telegram-", "private-key-", "pii-", "malicious-", "refusal-")
         injection_ids = {v.rule_id for v in e.registry.input_validators
                          if not v.rule_id.startswith(_skip)}
-        assert len(injection_ids) == 23  # 23 injection rules
+        assert len(injection_ids) == 26  # 26 injection rules (including secondary/recursive agent rules)
 
     def test_engine_registry_has_secret_validators(self):
         """All 11 secret patterns are registered as output validators."""
