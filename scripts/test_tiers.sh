@@ -1,10 +1,14 @@
 #!/bin/bash
 # LLM Smart Router — Full Tier Test Suite (no set -e so we get all results)
+# Localhost/Loopback test harness: HTTP cleartext is safe over local Unix socket / loopback interface
 
-BIND_IP=$(ss -tlnp | grep ':8080 ' | awk '{print $4}' | sed 's/:8080//' | head -1)
-BASE="http://${BIND_IP}:8080"
-ROUTER_KEY=$(grep '^ROUTER_API_KEY=' /root/llm-smart-router/.env | cut -d= -f2)
-ADMIN_KEY=$(grep '^ADMIN_API_KEY=' /root/llm-smart-router/.env | cut -d= -f2)
+BIND_IP=$(ss -tlnp 2>/dev/null | grep ':8080 ' | awk '{print $4}' | sed 's/:8080//' | head -1)
+[ -z "$BIND_IP" ] && BIND_IP="127.0.0.1"
+PROTOCOL="http"
+[ "$ROUTER_USE_TLS" = "true" ] || [ "$ROUTER_USE_HTTPS" = "true" ] && PROTOCOL="https"
+BASE="${ROUTER_BASE_URL:-${PROTOCOL}://${BIND_IP}:8080}"
+ROUTER_KEY=$(grep '^ROUTER_API_KEY=' /root/llm-smart-router/.env 2>/dev/null | cut -d= -f2)
+ADMIN_KEY=$(grep '^ADMIN_API_KEY=' /root/llm-smart-router/.env 2>/dev/null | cut -d= -f2)
 TS=$(date +%s)
 ALL_PASS=1
 

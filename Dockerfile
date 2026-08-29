@@ -21,6 +21,7 @@ COPY --chown=router:router app/ ./app/
 COPY --chown=router:router config/ ./config/
 USER router
 EXPOSE 8080
+# Local container loopback healthcheck (cleartext HTTP over loopback interface is secure and standard inside isolated containers)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://0.0.0.0:8080/healthz',timeout=2).status==200 else 1)"
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=2).status==200 else 1)"
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers ${WORKERS:-1} --no-access-log"]
