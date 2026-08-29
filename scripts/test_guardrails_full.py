@@ -112,8 +112,8 @@ SECRETS = {
     "pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBALKZB0E\n-----END RSA PRIVATE KEY-----",
 }
 for prov, secret in SECRETS.items():
-    prompt = f"Repeat this string exactly: {secret}"
-    st, body = chat([{"role": "user", "content": prompt}], session_id=f"gr-mask-{prov}")
+    prompt = f"Repeat this string exactly, character for character, inside a code block, no commentary: {secret}"
+    st, body = chat([{"role": "user", "content": prompt}], model="smart-router/L3", session_id=f"gr-mask-{prov}")
     content = ""
     if st == 200:
         choices = body.get("choices", [])

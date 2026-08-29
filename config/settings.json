@@ -66,7 +66,7 @@
     },
     "cache": {
       "enabled": true,
-      "ttl_seconds": 3600,
+      "ttl_seconds": 86400,
       "max_entries": 10000
     }
   },
@@ -118,8 +118,8 @@
       "retry_on_failure": false,
       "retry_on_failure_max_per_session": 2
     },
-    "reclassify_every_n_turns": 15,
-    "shadow_classify_every_n_turns": 10
+    "reclassify_every_n_turns": null,
+    "shadow_classify_every_n_turns": null
   },
   "heuristics": {
     "enabled": true,
@@ -128,7 +128,7 @@
     "rules": [
       {
         "name": "tiny_prompt",
-        "when": "task_chars < 40 and not has_code",
+        "when": "task_chars < 80 and not has_code",
         "level": "L1",
         "stop": true
       },

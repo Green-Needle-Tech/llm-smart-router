@@ -535,10 +535,12 @@ async def _session_pinned_route(
         cache_key = None
         cached = None
         if not bypass_cache and config.classification.cache.enabled:
-            # Build a quick digest for cache key
-            _, digest_info = await classifier.classify(
-                body.messages, body.tools, body.response_format,
-                task_text=task_text, bypass_cache=True,
+            # Build digest for cache key (digest build only, no LLM call)
+            digest_info = classifier.digest_builder.build(
+                messages=body.messages,
+                tools=body.tools,
+                response_format=body.response_format,
+                task_text=task_text,
             )
             cache_key = classifier.digest_builder.digest_hash(
                 digest_info["digest"],
