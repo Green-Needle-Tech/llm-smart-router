@@ -12,14 +12,15 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import httpx
+import httpx  # noqa: E402
 
-from scripts.script_utils import resolve_safe_path
+from scripts.script_utils import resolve_safe_path, validate_safe_http_url  # noqa: E402
 
 
 async def evaluate(labeled_path: str | Path, router_url: str, router_key: str):
     """Score classifier against labeled session openers."""
     target_path = resolve_safe_path(labeled_path)
+    safe_router_url = validate_safe_http_url(router_url).rstrip("/")
     samples = [json.loads(line) for line in target_path.read_text().strip().split("\n")]
 
     results = []
@@ -36,7 +37,7 @@ async def evaluate(labeled_path: str | Path, router_url: str, router_key: str):
             }
 
             resp = await client.post(
-                f"{router_url}/v1/chat/completions",
+                f"{safe_router_url}/v1/chat/completions",
                 json=payload,
                 headers=headers,
             )
@@ -80,13 +81,13 @@ def report(results):
     )
 
     print(f"\n{'='*60}")
-    print(f"Classifier Evaluation Report")
+    print("Classifier Evaluation Report")
     print(f"{'='*60}")
     print(f"Total samples: {total}")
     print(f"Exact accuracy: {correct}/{total} = {accuracy:.1%}")
     print(f"Within-one-level accuracy: {within_one}/{total} = {within_one/total:.1%}")
     print(f"Severe under-classification: {severe_under}/{total} = {severe_under/total:.1%}")
-    print(f"\nPer-level precision/recall:")
+    print("\nPer-level precision/recall:")
     for level in ["L1", "L2", "L3", "L4"]:
         stats = per_level[level]
         tp = stats["tp"]
@@ -95,7 +96,7 @@ def report(results):
         print(f"  {level}: P={precision:.2f} R={recall:.2f} (tp={tp} fp={stats['fp']} fn={stats['fn']})")
 
     # Confusion matrix
-    print(f"\nConfusion matrix (rows=expected, cols=predicted):")
+    print("\nConfusion matrix (rows=expected, cols=predicted):")
     levels = ["L1", "L2", "L3", "L4"]
     header = "       " + "  ".join(f"{l:>3}" for l in levels)
     print(header)
@@ -112,7 +113,13 @@ def main():
     parser.add_argument("--router-key", default="test-key")
     args = parser.parse_args()
 
-    results = asyncio.run(evaluate(resolve_safe_path(args.labeled), args.router_url, args.router_key))
+    try:
+        validated_url = validate_safe_http_url(args.router_url)
+    except ValueError as err:
+        print(f"[-] ERROR: Invalid --router-url argument: {err}")
+        sys.exit(1)
+
+    results = asyncio.run(evaluate(resolve_safe_path(args.labeled), validated_url, args.router_key))
     report(results)
 
 

@@ -11,14 +11,15 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import httpx
+import httpx  # noqa: E402
 
-from scripts.script_utils import resolve_safe_path
+from scripts.script_utils import resolve_safe_path, validate_safe_http_url  # noqa: E402
 
 
 async def replay_trace(trace_path: str | Path, router_url: str, router_key: str, mode: str):
     """Replay a captured trace through the router."""
     target_path = resolve_safe_path(trace_path)
+    safe_router_url = validate_safe_http_url(router_url).rstrip("/")
     trace = [json.loads(line) for line in target_path.read_text().strip().split("\n")]
     total_cost = 0.0
     results = []
@@ -38,11 +39,10 @@ async def replay_trace(trace_path: str | Path, router_url: str, router_key: str,
             }
 
             resp = await client.post(
-                f"{router_url}/v1/chat/completions",
+                f"{safe_router_url}/v1/chat/completions",
                 json=payload,
                 headers=headers,
             )
-            data = resp.json()
             cost = float(resp.headers.get("X-Router-Estimated-Cost-Usd", 0))
             total_cost += cost
             results.append({
@@ -65,8 +65,14 @@ def main():
     parser.add_argument("--mode", choices=["pinned", "baseline"], default="pinned")
     args = parser.parse_args()
 
+    try:
+        validated_url = validate_safe_http_url(args.router_url)
+    except ValueError as err:
+        print(f"[-] ERROR: Invalid --router-url argument: {err}")
+        sys.exit(1)
+
     cost, results = asyncio.run(replay_trace(
-        resolve_safe_path(args.trace), args.router_url, args.router_key, args.mode
+        resolve_safe_path(args.trace), validated_url, args.router_key, args.mode
     ))
 
     print(f"\n{'='*60}")
@@ -75,7 +81,7 @@ def main():
     print(f"Total cost: ${cost:.4f}")
     print(f"Classifier calls: {sum(1 for r in results if r['source'] != 'session')}")
     print(f"Session hits: {sum(1 for r in results if r['source'] == 'session')}")
-    print(f"Level distribution:")
+    print("Level distribution:")
     for level in ["L1", "L2", "L3", "L4"]:
         count = sum(1 for r in results if r["level"] == level)
         print(f"  {level}: {count}")

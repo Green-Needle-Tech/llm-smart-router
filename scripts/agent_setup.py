@@ -15,6 +15,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# Add repo root to sys.path if running as standalone script
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from scripts.script_utils import validate_safe_http_url  # noqa: E402
+
 DEFAULT_URL = "http://localhost:8080/v1"
 
 
@@ -31,21 +38,22 @@ def get_default_key() -> str:
 
 def check_router_health(base_url: str, api_key: str) -> tuple[bool, str, list[str]]:
     """Verify router connectivity and list available models."""
-    root_url = base_url.rstrip("/")
+    safe_base = validate_safe_http_url(base_url)
+    root_url = safe_base.rstrip("/")
     if root_url.endswith("/v1"):
-        health_url = root_url[:-3] + "/healthz"
-        models_url = root_url + "/models"
+        health_url = validate_safe_http_url(root_url[:-3] + "/healthz")
+        models_url = validate_safe_http_url(root_url + "/models")
     else:
-        health_url = root_url + "/healthz"
-        models_url = root_url + "/v1/models"
+        health_url = validate_safe_http_url(root_url + "/healthz")
+        models_url = validate_safe_http_url(root_url + "/v1/models")
 
     # 1. Health check
     try:
         req = urllib.request.Request(health_url)
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
             if resp.status != 200:
                 return False, f"Healthcheck failed with HTTP status {resp.status}", []
-    except Exception as e:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         return False, f"Could not connect to {health_url}: {e}", []
 
     # 2. Models check
@@ -55,11 +63,11 @@ def check_router_health(base_url: str, api_key: str) -> tuple[bool, str, list[st
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         req = urllib.request.Request(models_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
                 models = [m.get("id") for m in data.get("data", []) if "id" in m]
-    except Exception as e:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as e:
         return True, f"Router is UP at {health_url}, but /models check failed: {e}", []
 
     return True, f"Router is healthy at {health_url}", models
@@ -78,8 +86,14 @@ def main():
     )
     args = parser.parse_args()
 
+    try:
+        validated_url = validate_safe_http_url(args.url)
+    except ValueError as err:
+        print(f"[-] ERROR: Invalid --url argument: {err}")
+        sys.exit(1)
+
     api_key = args.key or get_default_key()
-    url = args.url.rstrip("/")
+    url = validated_url.rstrip("/")
 
     print("=" * 65)
     print(" 🚀 LLM Smart Router — Agent Onboarding & Connection Setup")
@@ -123,12 +137,12 @@ def main():
     print("-" * 65)
     print(" 💻 CLI ONE-LINERS FOR HERMES AGENT")
     print("-" * 65)
-    print(f'hermes config set model.provider custom')
-    print(f'hermes config set model.default smart-router')
+    print('hermes config set model.provider custom')
+    print('hermes config set model.default smart-router')
     print(f'hermes config set model.base_url "{url}"')
-    print(f'hermes config set model.api_mode chat_completions')
+    print('hermes config set model.api_mode chat_completions')
     print(f'hermes config set model.api_key "{api_key if api_key else "YOUR_ROUTER_API_KEY"}"')
-    print(f'hermes config set model.context_length 1000000')
+    print('hermes config set model.context_length 1000000')
 
     print("\n" + "-" * 65)
     print(" 🐍 PYTHON OPENAI / GENERIC AGENT CLIENT")
