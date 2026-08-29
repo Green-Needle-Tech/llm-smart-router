@@ -59,19 +59,6 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
-## What's New in v2.11.3
-
-### ⚡ Classifier API Call Optimization & Cache TTL Extension
-
-Optimized upstream LLM classifier workload across session lifecycle, caching, and heuristics:
-
-- **Classification Cache TTL Extended (`classification.cache.ttl_seconds: 86400`)**: Increased TTL from 1 hour to 24 hours, allowing recurring scheduled tasks and similar prompt templates to hit the classification cache rather than invoking upstream LLM models.
-- **Fast-Path Heuristics Expansion (`heuristics.rules.tiny_prompt`)**: Expanded character threshold from `task_chars < 40` to `task_chars < 80 and not has_code` (`stop: true`), routing short prompts directly to L1 without invoking the classifier model.
-- **Multi-Turn Classifier Call Reductions**: Set `session.reclassify_every_n_turns: null` and `session.shadow_classify_every_n_turns: null` to eliminate background reclassifications during long agent sessions.
-- **Cache Lookup Efficiency**: Streamlined cache check to build prompt digests for hash keys without duplicate LLM classifier invocations on cache misses.
-
-**Verification**: 413/413 unit & integration tests pass, all 5 forced tiers + session pinning live-verified, 30/30 guardrail live tests pass, ruff 0 errors, mypy 0 errors (60 files), bandit 0 high/critical issues.
-
 ## What's New in v2.12.0
 
 ### 🛡️ Enhanced Input Guardrails & Obfuscation Defense (DOC-RES-SMARTROUTER-2026-0829-01)
@@ -84,6 +71,19 @@ Implementation of the low-latency, zero-dependency Tier-0 input safety features 
 - **Config & Telemetry Wiring (`app/config/schema.py`, `app/api/chat.py`)**: Added `homoglyph_normalization`, `obfuscation_detection`, and `entropy_threshold` to `GuardrailsConfig` with Prometheus metrics tracking on `router_guardrail_findings_total`.
 
 **Verification**: 424/424 unit & integration tests pass, mypy 0 errors (60 files), bandit 0 high/critical issues.
+
+## What's New in v2.11.3
+
+### ⚡ Classifier API Call Optimization & Cache TTL Extension
+
+Optimized upstream LLM classifier workload across session lifecycle, caching, and heuristics:
+
+- **Classification Cache TTL Extended (`classification.cache.ttl_seconds: 86400`)**: Increased TTL from 1 hour to 24 hours, allowing recurring scheduled tasks and similar prompt templates to hit the classification cache rather than invoking upstream LLM models.
+- **Fast-Path Heuristics Expansion (`heuristics.rules.tiny_prompt`)**: Expanded character threshold from `task_chars < 40` to `task_chars < 80 and not has_code` (`stop: true`), routing short prompts directly to L1 without invoking the classifier model.
+- **Multi-Turn Classifier Call Reductions**: Set `session.reclassify_every_n_turns: null` and `session.shadow_classify_every_n_turns: null` to eliminate background reclassifications during long agent sessions.
+- **Cache Lookup Efficiency**: Streamlined cache check to build prompt digests for hash keys without duplicate LLM classifier invocations on cache misses.
+
+**Verification**: 413/413 unit & integration tests pass, all 5 forced tiers + session pinning live-verified, 30/30 guardrail live tests pass, ruff 0 errors, mypy 0 errors (60 files), bandit 0 high/critical issues.
 
 ## What's New in v2.11.2
 
