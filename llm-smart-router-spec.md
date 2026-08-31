@@ -1,13 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.14.1 (Postfix format fix — remove duplicate tier label)
+**Version:** 2.15.0 (Input-side PII & secret masking — all PII types + provider credentials)
 **Date:** 2026-08-31
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
-**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta + v2.8.0 + v2.9.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection (§9.3.5–§9.3.9); P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection (§9.3.10–§9.3.12); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; 409 unit tests, 7 temporal awareness e2e.
+**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta + v2.8.0 + v2.9.0 + v2.15.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection (§9.3.5–§9.3.9); P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection (§9.3.10–§9.3.12); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; input-side PII & secret masking — all PII types (email, phone, SSN, CC, IBAN, passport, driver's license) + 11 provider credential types masked in input before forwarding upstream (§9.3.13); 474 unit & integration tests, 7 temporal awareness e2e.
 
 ---
 
@@ -41,7 +41,7 @@ Classification is **session-scoped, not request-scoped**. The **first** prompt o
 flowchart TD
     A[AI Agent] -->|"OpenAI-format request + X-Session-Id"| B["LLM-Smart-Router<br/>Docker :8080"]
     B -->|"OpenAI-format response<br/>+ X-Router-* headers"| A
-    B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/ log"]
+    B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/log<br/>+ PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
     G --> P["IP REDACTION<br/>raw IPs → placeholders"]
     P --> P2T["TEMPORAL AWARENESS\ntoday → 2026-08-26\nnow → 2026-08-26T08:35+08:00\n104 patterns / 91 tags\ntypo + grammar tolerant"]
     P2T --> S["Session Store<br/>session_id → level, model, turn, expires"]
@@ -1570,12 +1570,31 @@ Masks common PII patterns in model output responses with `[REDACTED-PII]` before
 | `pii-ssn` | `\b(?!000\|666\|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b` | US SSN (area ≠ 000/666/9xx, group ≠ 00, serial ≠ 0000) |
 | `pii-email` | `\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b` | Email addresses |
 | `pii-phone` | `(?:\+1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b` | US phone numbers |
+| `pii-iban` | `\b[A-Z]{2}\d{2}[A-Z0-9]{11,31}\b` | IBAN (international bank account number) |
+| `pii-passport` | `(?:passport(?:\s*(?:no\|number\|#))?[:\s]*)?\b\d{9}\b` | US passport number (context-gated) |
+| `pii-drivers-license` | `(?:driver'?s?\s*licen[sc]e\|DL)[:\s]*\b[A-Z]?\d{5,11}\b` | US driver's license (context-gated) |
 
-**Rule ordering:** Credit card runs first (longest pattern), then SSN, email, phone — preventing the phone regex from matching credit card digit substrings.
+**Rule ordering:** Credit card runs first (longest pattern), then SSN, email, IBAN, phone — preventing the phone regex from matching credit card or IBAN digit substrings. IBAN is ordered before phone for the same overlap reason.
 
-**False-positive guard:** Credit card matches are filtered through `_is_likely_credit_card()` — requires separators (spaces/dashes) or exactly 16 contiguous digits. Pure 13–19 digit numbers without separators (timestamps, IDs) are not masked.
+**False-positive guard:** Credit card matches are filtered through `_is_likely_credit_card()` — requires separators (spaces/dashes) or exactly 16 contiguous digits. Pure 13–19 digit numbers without separators (timestamps, IDs) are not masked. Passport matches require the "passport" keyword within 50 chars of the match to avoid masking arbitrary 9-digit numbers.
 
-**Config:** `telemetry.guardrails.pii_masking_enabled` (default: `true`, hot-reloadable).
+**Config:** `telemetry.guardrails.pii_masking_enabled` (default: `true`, hot-reloadable) controls output PII masking. `telemetry.guardrails.input_pii_masking_enabled` (default: `true`, hot-reloadable) controls input PII masking.
+
+#### 9.3.13 Input-Side PII & Secret Masking (v2.15.0)
+
+Masks all sensitive information in input messages (user and system) **before** forwarding to upstream providers. This prevents upstream provider guardrails (e.g. OpenRouter) from detecting and flagging sensitive data in input content.
+
+**Method:** `GuardrailEngine.mask_input_sensitive()` — two-pass:
+1. **PII pass** (gated by `input_pii_masking_enabled`): masks all PII types from `PII_RULES` (email, phone, SSN, credit card, IBAN, passport, driver's license) with `[REDACTED-PII]`
+2. **Secret pass** (always runs): masks all 11 provider credential patterns from `SECRET_RULES` with `***REDACTED***`
+
+Secrets are always masked regardless of the PII toggle — credential leakage in input is never acceptable.
+
+**Wiring:** Called from `_guardrail_scan_input()` in `chat.py` after invisible text stripping, before banned substrings scan. Masked content is written back to `body.messages` so the masked version is what gets forwarded upstream.
+
+**Metrics:** `router_guardrail_findings_total{direction="input",rule_id="pii-*"}` and `router_guardrail_findings_total{direction="input",rule_id="<secret-type>"}`.
+
+**Config:** `telemetry.guardrails.input_pii_masking_enabled` (default: `true`, hot-reloadable).
 
 #### 9.3.7 Malicious URL Detection (v2.8.0)
 
@@ -1922,7 +1941,7 @@ Toggle `telemetry.temporal_awareness.enabled` in `settings.json` and `POST /admi
 - **Guardrail streaming** — secret masking across chunked SSE: 11 provider types (OpenRouter, Anthropic, OpenAI, GitHub, AWS, Google, Slack, GitLab, Stripe, Telegram, PEM), split-secret carry (one-char-per-line), whitespace-interleaved evasion, tail-leak on long secrets, [DONE] carry flush masking. 7 regression tests in `tests/unit/test_guardrails_streaming.py`.
 - **Guardrail live e2e** — `scripts/test_guardrails_e2e_block_stream.py` (22 checks): block-mode enforcement (4 injection → HTTP 400, 2 benign → 200, 2 severity-gate → 200), streaming secret masking (11 types + split-carry), streaming IP redaction round-trip.
 - **Guardrail live full** — `scripts/test_guardrails_full.py` (30 checks): injection categories, benign pass-through, 11 secret types masked, IP round-trip, Prometheus metrics, session pinning.
-- **Guardrail Phase 1** (v2.8.0) — `tests/unit/test_guardrails_phase1.py` (56 tests): invisible text detection (12 tests), PII masking (14 tests), malicious URL detection (8 tests), banned substrings (9 tests including dangerous command detection + benign FP guard), refusal detection (8 tests), integration with `process_response_content` (6 tests).
+- **Guardrail Phase 1** (v2.8.0) — `tests/unit/test_guardrails_phase1.py` (71 tests): invisible text detection (12 tests), PII masking (14 tests), malicious URL detection (8 tests), banned substrings (9 tests including dangerous command detection + benign FP guard), refusal detection (8 tests), integration with `process_response_content` (6 tests), input-side PII & secret masking (16 tests covering email, phone, SSN, CC, IBAN, passport, driver's license, API keys, mixed PII+secrets, disabled state, empty text).
 - **Guardrail P0** (v2.9.0) — `tests/unit/test_guardrails_p0.py` (49 tests): validator abstraction (15 tests — BaseValidator, RegexValidator, ValidatorRegistry, engine integration, custom validator registration), error spans (12 tests — injection, secret, PII, URL, refusal, banned, invisible, direction field, multiple findings, overlapping rules), system prompt leak detection (22 tests — exact match, fuzzy match, no-match, empty text, short fragment filter, threshold, masking, multiple fragments, hot-reload, error spans, engine integration, structured content, disabled mode).
 
 ### 11.2 Classifier evaluation
@@ -2007,6 +2026,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M18 — Configurable Context Window (v2.13.0)** | Added `provider.context_window` setting (default: 1,000,000 tokens) to `ProviderConfig` schema, replacing hardcoded `1000000` in `generate_agent_config.py` and `agent_setup.py`. Both scripts now read from `settings.json` via `get_router_context_window()` with fallback to default. Hot-reloadable. | 426 unit & integration tests pass; mypy 0 errors; ruff 0 new issues. |
 | **M19 — Per-Session Token Usage Tracking & Postfix Summary (v2.14.0)** | Added `token_tracker.py` engine module with `extract_tokens()`, `accumulate()`, `render_postfix()`, and `build_postfix()` functions. New `token_usage` field on `SessionPin` persists per-tier cumulative input/output token totals across turns. New `TokenTrackingConfig` under `telemetry.token_tracking` (`enabled`, `show_in_postfix`). Non-streaming path extracts usage from response JSON; streaming path injects `stream_options.include_usage` and parses usage from the final SSE chunk. Postfix format: `[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]`. Postfix regex updated to strip new format from assistant history. | 459 unit & integration tests pass (33 new); mypy 0 errors; ruff 0 new issues; live-verified on streaming + non-streaming + multi-tier accumulation. |
 | **M20 — Postfix Format Fix (v2.14.1)** | Removed duplicate tier label from token-tracking postfix. `build_postfix()` was prepending the level to the base string while `render_postfix()` also included it per tier part, producing `[smart-router/L2/L2-In:76161|Out:1259]`. Fixed to `[smart-router/L2-In:76161|Out:1259]`. | 459 unit & integration tests pass; live-verified on L1 non-streaming. |
+| **M21 — Input-Side PII & Secret Masking (v2.15.0)** | Comprehensive input-side masking via `mask_input_sensitive()` — masks all PII types (email, phone, SSN, credit card, IBAN, passport, driver's license) + all 11 provider credential types in input messages before forwarding upstream. New `input_pii_masking_enabled` config field. 3 new PII patterns (IBAN, passport, DL) added to `PII_RULES`. Prevents upstream provider guardrails (e.g. OpenRouter) from flagging sensitive data in input. | 474 unit & integration tests pass (15 new input masking tests); container rebuilt and live-verified; all PII types and secrets confirmed masked in model input. |
 
 
 ---

@@ -59,6 +59,30 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.15.0
+
+### Input-Side PII & Secret Masking
+
+Added comprehensive input-side masking that redacts all sensitive information in user/system messages **before** forwarding to upstream providers. This prevents upstream provider guardrails (e.g. OpenRouter) from detecting and flagging emails, phone numbers, SSNs, credit cards, API keys, and other sensitive data in input content.
+
+**PII types masked** (config: `input_pii_masking_enabled`, default: `true`):
+- Email addresses
+- Phone numbers (US format)
+- SSN (US format)
+- Credit card numbers (13–19 digits with separators, Luhn-grouped)
+- IBAN (international bank account numbers)
+- US passport numbers (context-gated — requires "passport" keyword)
+- US driver's license (context-gated — requires "license"/"DL" keyword)
+
+**Secrets always masked** (regardless of PII toggle):
+- All 11 provider credential patterns: OpenRouter, OpenAI, Anthropic, GitHub, AWS, Google, Slack, GitLab, Stripe, Telegram, PEM private keys
+
+- **Engine** (`app/guardrails/scanner.py`): New `mask_input_sensitive()` method (renamed from `mask_input_pii()`) — two-pass: PII rules first, then secret rules
+- **Rules** (`app/guardrails/rules.py`): 3 new PII patterns added to `PII_RULES` (IBAN, passport, driver's license); IBAN ordered before phone to prevent overlap
+- **Config** (`app/config/schema.py`): New `input_pii_masking_enabled` field on `GuardrailsConfig` (default: `true`, hot-reloadable)
+- **Metrics**: `router_guardrail_findings_total{direction="input",rule_id="pii-*"}` tracks all input PII masking events
+- **Tests**: 16 unit tests for input masking (email, phone, SSN, CC, IBAN, passport, DL, API keys, mixed, disabled, empty); 474 total tests pass
+
 ## What's New in v2.14.1
 
 ### Postfix Format Fix
@@ -262,6 +286,7 @@ These complement the existing `tool-bash-abuse` and `tool-filesystem-abuse` inje
       "output_action": "mask",
       "invisible_text_detection": true,
       "pii_masking_enabled": true,
+      "input_pii_masking_enabled": true,
       "banned_substrings": ["passwd", "chpasswd", "useradd", ...],
       "refusal_detection": true,
       "malicious_url_detection": true,
@@ -273,7 +298,7 @@ These complement the existing `tool-bash-abuse` and `tool-filesystem-abuse` inje
 }
 ```
 
-**Tests**: 360 total (304 existing + 56 new Phase 1 tests). All passing.
+**Tests**: 474 total (459 existing + 15 new input masking tests). All passing.
 
 ## What's New in v2.6.0-beta
 
@@ -564,7 +589,7 @@ flowchart TD
     B --> C[LLM-Smart-Router]
 
     subgraph Router [Request Pipeline]
-        C --> P1["🛡️ Guardrails Input<br/>Injection detection (log/block)<br/>+ Invisible text stripping<br/>+ Banned substrings scan"]
+        C --> P1["🛡️ Guardrails Input<br/>Injection detection (log/block)<br/>+ Invisible text stripping<br/>+ Banned substrings scan<br/>+ PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
         P1 --> P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
         P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags<br/>typo + grammar tolerant"]
         P2T --> D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
@@ -582,7 +607,7 @@ flowchart TD
     F3 --> C
     H --> C
 
-    C -->|"🔒 Secrets masked<br/>🔒 PII masked<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Refusal logged"| B
+    C -->|"🔒 Input PII & secrets masked<br/>🔒 Secrets masked<br/>🔒 PII masked<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Refusal logged"| B
     B --> A
 ```
 
