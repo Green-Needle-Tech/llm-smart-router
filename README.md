@@ -59,6 +59,15 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.14.1
+
+### Postfix Format Fix
+
+Removed the duplicate tier label from the token-tracking postfix. Previously `build_postfix()` prepended the tier to the base string and `render_postfix()` also included it per tier part, producing `[smart-router/L2/L2-In:76161|Out:1259]`. Now the tier appears only once: `[smart-router/L2-In:76161|Out:1259]`.
+
+- **Fix** (`app/telemetry/token_tracker.py`): `build_postfix()` no longer prepends the level when token data is present; uses `[smart-router/{token_part}]` directly
+- **Tests**: 459 pass; live-verified on L1 non-streaming
+
 ## What's New in v2.14.0
 
 ### Token Usage Tracking & Postfix Summary

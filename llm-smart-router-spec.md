@@ -1,7 +1,7 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.14.0 (Per-session cumulative token usage tracking & postfix summary)
+**Version:** 2.14.1 (Postfix format fix — remove duplicate tier label)
 **Date:** 2026-08-31
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
@@ -2006,6 +2006,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M17 — Enhanced Input Guardrails & Obfuscation Defense (v2.12.0)** | Implemented zero-dependency Tier-0 input safety features from technical research document DOC-RES-SMARTROUTER-2026-0829-01: homoglyph lookalike normalization (Cyrillic, Greek, Full-Width), Shannon entropy scoring and obfuscated payload detection (Base64, Hex, URL-encoding), and secondary/recursive agent jailbreak detection rules (recursive JSON, agent handoff, XML system prompt smuggling). | 424 unit & integration tests pass; mypy 0 errors (60 files); bandit 0 high/critical issues. |
 | **M18 — Configurable Context Window (v2.13.0)** | Added `provider.context_window` setting (default: 1,000,000 tokens) to `ProviderConfig` schema, replacing hardcoded `1000000` in `generate_agent_config.py` and `agent_setup.py`. Both scripts now read from `settings.json` via `get_router_context_window()` with fallback to default. Hot-reloadable. | 426 unit & integration tests pass; mypy 0 errors; ruff 0 new issues. |
 | **M19 — Per-Session Token Usage Tracking & Postfix Summary (v2.14.0)** | Added `token_tracker.py` engine module with `extract_tokens()`, `accumulate()`, `render_postfix()`, and `build_postfix()` functions. New `token_usage` field on `SessionPin` persists per-tier cumulative input/output token totals across turns. New `TokenTrackingConfig` under `telemetry.token_tracking` (`enabled`, `show_in_postfix`). Non-streaming path extracts usage from response JSON; streaming path injects `stream_options.include_usage` and parses usage from the final SSE chunk. Postfix format: `[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]`. Postfix regex updated to strip new format from assistant history. | 459 unit & integration tests pass (33 new); mypy 0 errors; ruff 0 new issues; live-verified on streaming + non-streaming + multi-tier accumulation. |
+| **M20 — Postfix Format Fix (v2.14.1)** | Removed duplicate tier label from token-tracking postfix. `build_postfix()` was prepending the level to the base string while `render_postfix()` also included it per tier part, producing `[smart-router/L2/L2-In:76161|Out:1259]`. Fixed to `[smart-router/L2-In:76161|Out:1259]`. | 459 unit & integration tests pass; live-verified on L1 non-streaming. |
 
 
 ---
