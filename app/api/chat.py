@@ -1150,6 +1150,7 @@ async def _handle_stream(
         _tt_enabled = _tt_cfg is not None and getattr(_tt_cfg, "enabled", True)
         _tt_show = _tt_cfg is not None and getattr(_tt_cfg, "show_in_postfix", True)
         _stream_usage: dict[str, Any] | None = None
+        _stream_had_tool_calls = False  # suppress postfix on tool-call turns
 
         try:
             carry = ""
@@ -1205,17 +1206,27 @@ async def _handle_stream(
                     # Postfix must precede [DONE]: OpenAI-compatible clients
                     # stop reading the stream at [DONE] and silently discard
                     # any event emitted after it.
-                    postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
-                    yield f"data: {json.dumps(postfix_event)}\n\n"
+                    # Skip postfix on tool-call turns — it's a visibility marker
+                    # for final text answers, not intermediate tool calls.
+                    if not _stream_had_tool_calls:
+                        postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
+                        yield f"data: {json.dumps(postfix_event)}\n\n"
                     yield f"{line}\n"
                     break
                 # Capture usage from the final data chunk (the one that
                 # carries the usage object when include_usage is set).
-                if _tt_enabled and line.startswith("data: "):
+                # Also detect tool-call turns to suppress the postfix.
+                if line.startswith("data: "):
                     try:
                         _chunk = json.loads(line[6:])
-                        if isinstance(_chunk, dict) and _chunk.get("usage"):
-                            _stream_usage = _chunk["usage"]
+                        if isinstance(_chunk, dict):
+                            if _chunk.get("usage"):
+                                _stream_usage = _chunk["usage"]
+                            # Detect tool_calls in any delta or finish_reason
+                            for _ch in _chunk.get("choices", []):
+                                _delta = _ch.get("delta") or {}
+                                if _delta.get("tool_calls") or _ch.get("finish_reason") == "tool_calls":
+                                    _stream_had_tool_calls = True
                     except (ValueError, TypeError):
                         pass
                 line, carry = await _rehydrate_line(line, carry)
@@ -1313,8 +1324,19 @@ def _add_model_postfix(
     """
     marker = build_token_postfix(route.level.value, token_usage, show_tokens)
     for choice in json_resp.get("choices", []):
+        # Skip tool-call responses: the postfix is a user-facing visibility
+        # marker for final text answers, not for intermediate tool-call
+        # turns.  Appending it here injects [smart-router/Ln-In:…|Out:…]
+        # into the content of a tool-call response, which the gateway then
+        # surfaces to the user mid-task.
+        if choice.get("finish_reason") == "tool_calls":
+            continue
         message = choice.get("message")
         if not isinstance(message, dict) or "content" not in message:
+            continue
+        # Also skip when the message carries tool_calls (some providers set
+        # finish_reason to "stop" even when tool_calls are present).
+        if message.get("tool_calls"):
             continue
         content = message.get("content")
         if content is None or content == "":

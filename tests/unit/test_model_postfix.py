@@ -49,6 +49,41 @@ def test_add_model_postfix_does_not_mutate_non_assistant_choices():
     assert body == {"choices": [{"delta": {"content": "Hello"}}]}
 
 
+def test_add_model_postfix_skips_tool_call_finish_reason():
+    """Postfix must not appear on tool-call responses (finish_reason=tool_calls)."""
+    body = {"choices": [{"message": {"role": "assistant", "content": None}, "finish_reason": "tool_calls"}]}
+
+    _add_model_postfix(body, "z-ai/glm-5.2", _route())
+
+    assert body["choices"][0]["message"]["content"] is None
+
+
+def test_add_model_postfix_skips_message_with_tool_calls():
+    """Postfix must not appear when message has tool_calls (even if finish_reason=stop)."""
+    body = {"choices": [{"message": {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}],
+    }, "finish_reason": "stop"}]}
+
+    _add_model_postfix(body, "z-ai/glm-5.2", _route())
+
+    assert body["choices"][0]["message"]["content"] is None
+
+
+def test_add_model_postfix_appends_to_text_response_with_tool_calls_in_other_choices():
+    """If one choice is text and another is tool_calls, only the text choice gets postfix."""
+    body = {"choices": [
+        {"message": {"role": "assistant", "content": "Here is the answer"}, "finish_reason": "stop"},
+        {"message": {"role": "assistant", "content": None, "tool_calls": []}, "finish_reason": "tool_calls"},
+    ]}
+
+    _add_model_postfix(body, "z-ai/glm-5.2", _route())
+
+    assert body["choices"][0]["message"]["content"] == "Here is the answer\n\n[smart-router/L1]"
+    assert body["choices"][1]["message"]["content"] is None
+
+
 def test_strip_model_postfix_removes_new_format_before_forwarding():
     messages = [
         {"role": "user", "content": "First question"},
