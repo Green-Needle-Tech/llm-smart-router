@@ -88,9 +88,8 @@ def build_postfix(
 
         [smart-router/L1]
     """
-    base = f"[smart-router/{level}"
     if show_in_postfix:
         token_part = render_postfix(token_usage)
         if token_part:
-            return f"{base}/{token_part}]"
-    return f"{base}]"
+            return f"[smart-router/{token_part}]"
+    return f"[smart-router/{level}]"
