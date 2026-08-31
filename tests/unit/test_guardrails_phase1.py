@@ -6,7 +6,7 @@ import pytest
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 from app.guardrails.rules import (
     detect_invisible_text, strip_invisible_text,
-    INVISIBLE_CHARS_RE, PII_MASK, MALICIOUS_URL_RE,
+    INVISIBLE_CHARS_RE, PII_MASK, MALICIOUS_URL_RE, SECRET_MASK,
 )
 
 
@@ -236,7 +236,7 @@ class TestInputPIIMasking:
     def test_email_masked_in_input(self):
         e = _engine(input_pii_masking_enabled=True)
         addr = _email()
-        text, fs = e.mask_input_pii(f"send it to {addr} please")
+        text, fs = e.mask_input_sensitive(f"send it to {addr} please")
         assert PII_MASK in text
         assert addr not in text
         assert any(f.rule_id == "pii-email" for f in fs)
@@ -246,44 +246,127 @@ class TestInputPIIMasking:
         e = _engine(input_pii_masking_enabled=True)
         a1 = "alice" + "@" + "test.org"
         a2 = "bob" + "@" + "mail.net"
-        text, fs = e.mask_input_pii(f"cc {a1} and {a2}")
+        text, fs = e.mask_input_sensitive(f"cc {a1} and {a2}")
         assert a1 not in text
         assert a2 not in text
         assert text.count(PII_MASK) == 2
         assert len(fs) == 2
 
-    def test_phone_not_masked_in_input(self):
-        """Input PII masking only targets emails, not phone numbers."""
+    def test_phone_masked_in_input(self):
+        """Input masking now covers phone numbers too."""
         e = _engine(input_pii_masking_enabled=True)
         num = _phone()
-        text, fs = e.mask_input_pii(f"call me at {num}")
-        assert num in text  # phone should pass through unmasked
-        assert fs == []
+        text, fs = e.mask_input_sensitive(f"call me at {num}")
+        assert PII_MASK in text
+        assert num not in text
+        assert any(f.rule_id == "pii-phone" for f in fs)
 
-    def test_ssn_not_masked_in_input(self):
-        """Input PII masking only targets emails, not SSNs."""
+    def test_ssn_masked_in_input(self):
+        """Input masking now covers SSNs too."""
         e = _engine(input_pii_masking_enabled=True)
         ssn = "123" + "-" + "45" + "-" + "6789"
-        text, fs = e.mask_input_pii(f"SSN: {ssn}")
-        assert ssn in text
-        assert fs == []
+        text, fs = e.mask_input_sensitive(f"SSN: {ssn}")
+        assert PII_MASK in text
+        assert ssn not in text
+        assert any(f.rule_id == "pii-ssn" for f in fs)
 
-    def test_no_email_passes_through(self):
+    def test_credit_card_masked_in_input(self):
+        """Input masking now covers credit cards too."""
         e = _engine(input_pii_masking_enabled=True)
-        text, fs = e.mask_input_pii("no PII here at all")
-        assert text == "no PII here at all"
+        cc = "4532" + "-" + "1234" + "-" + "5678" + "-" + "9012"
+        text, fs = e.mask_input_sensitive(f"card: {cc}")
+        assert PII_MASK in text
+        assert cc not in text
+        assert any(f.rule_id == "pii-credit-card" for f in fs)
+
+    def test_iban_masked_in_input(self):
+        """Input masking covers IBAN numbers."""
+        e = _engine(input_pii_masking_enabled=True)
+        iban = "GB82WEST12345698765432"
+        text, fs = e.mask_input_sensitive(f"my IBAN is {iban}")
+        assert PII_MASK in text
+        assert iban not in text
+        assert any(f.rule_id == "pii-iban" for f in fs)
+
+    def test_passport_masked_in_input(self):
+        """Input masking covers passport numbers with context keyword."""
+        e = _engine(input_pii_masking_enabled=True)
+        text, fs = e.mask_input_sensitive("passport number: 123456789")
+        assert PII_MASK in text
+        assert "123456789" not in text
+        assert any(f.rule_id == "pii-passport" for f in fs)
+
+    def test_passport_without_context_not_masked(self):
+        """9-digit number without passport context should not be masked."""
+        e = _engine(input_pii_masking_enabled=True)
+        text, fs = e.mask_input_sensitive("order number 123456789")
+        # Should not be masked as passport (may be masked by other rules, but not passport)
+        passport_fs = [f for f in fs if f.rule_id == "pii-passport"]
+        assert len(passport_fs) == 0
+
+    def test_drivers_license_masked_in_input(self):
+        """Input masking covers driver's license numbers with context."""
+        e = _engine(input_pii_masking_enabled=True)
+        text, fs = e.mask_input_sensitive("driver's license: D12345678")
+        assert PII_MASK in text
+        assert "D12345678" not in text
+        assert any(f.rule_id == "pii-drivers-license" for f in fs)
+
+    def test_api_key_masked_in_input(self):
+        """Input masking covers provider API keys (secrets)."""
+        e = _engine(input_pii_masking_enabled=True)
+        key = "sk-or-v1-" + "a1B2c3D4e5F6g7H8i9J0kLmNoP"
+        text, fs = e.mask_input_sensitive(f"my key is {key}")
+        assert "***REDACTED***" in text
+        assert key not in text
+        assert any(f.rule_id == "openrouter-key" for f in fs)
+
+    def test_github_token_masked_in_input(self):
+        """Input masking covers GitHub tokens."""
+        e = _engine(input_pii_masking_enabled=True)
+        token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0kLmNoPqRsT"
+        text, fs = e.mask_input_sensitive(f"token: {token}")
+        assert "***REDACTED***" in text
+        assert token not in text
+        assert any(f.rule_id == "github-token" for f in fs)
+
+    def test_mixed_pii_and_secret_masked(self):
+        """Multiple PII types and secrets in one message are all masked."""
+        e = _engine(input_pii_masking_enabled=True)
+        addr = _email()
+        key = "sk-or-v1-" + "a1B2c3D4e5F6g7H8i9J0kL"
+        text, fs = e.mask_input_sensitive(f"email: {addr}, key: {key}")
+        assert addr not in text
+        assert key not in text
+        assert PII_MASK in text
+        assert "***REDACTED***" in text
+        rule_ids = {f.rule_id for f in fs}
+        assert "pii-email" in rule_ids
+        assert "openrouter-key" in rule_ids
+
+    def test_no_sensitive_info_passes_through(self):
+        e = _engine(input_pii_masking_enabled=True)
+        text, fs = e.mask_input_sensitive("no sensitive info here at all")
+        assert text == "no sensitive info here at all"
         assert fs == []
 
-    def test_disabled(self):
+    def test_pii_disabled_but_secrets_still_masked(self):
+        """When PII masking is disabled, secrets are still masked."""
         e = _engine(input_pii_masking_enabled=False)
         addr = _email()
-        text, fs = e.mask_input_pii(f"email: {addr}")
+        key = "sk-or-v1-" + "a1B2c3D4e5F6g7H8i9J0kL"
+        text, fs = e.mask_input_sensitive(f"email: {addr}, key: {key}")
+        # Email should pass through
         assert addr in text
-        assert fs == []
+        # But secret should still be masked
+        assert key not in text
+        assert "***REDACTED***" in text
+        assert any(f.rule_id == "openrouter-key" for f in fs)
+        assert not any(f.rule_id == "pii-email" for f in fs)
 
     def test_empty_text(self):
         e = _engine(input_pii_masking_enabled=True)
-        text, fs = e.mask_input_pii("")
+        text, fs = e.mask_input_sensitive("")
         assert text == ""
         assert fs == []
 

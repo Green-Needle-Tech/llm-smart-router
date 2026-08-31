@@ -376,32 +376,53 @@ class GuardrailEngine:
             text = pattern.sub(_sub, text)
         return text, findings
 
-    # --- PII masking (input) --------------------------------------------------
+    # --- PII + secret masking (input) -----------------------------------------
 
-    def mask_input_pii(self, text: str) -> tuple[str, list[GuardrailFinding]]:
-        """Mask emails in input text before forwarding upstream.
+    def mask_input_sensitive(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Mask all PII and secrets in input text before forwarding upstream.
 
-        Only masks emails (not phone/SSN/CC) to minimize false positives on
-        input while preventing upstream provider guardrails from flagging
-        email addresses in user messages.
-        Returns (text, findings).
+        Masks: emails, phone numbers, SSNs, credit cards, IBANs, passport
+        numbers, driver's license numbers, and provider API keys/secrets.
+        This prevents upstream provider guardrails (e.g. OpenRouter) from
+        detecting and flagging sensitive information in user messages.
+
+        Returns (masked_text, findings).
         """
-        if not text or not self.config.input_pii_masking_enabled:
+        if not text:
             return text, []
         findings: list[GuardrailFinding] = []
-        # Find the pii-email pattern from PII_RULES
-        for pid, pattern in PII_RULES:
-            if pid != "pii-email":
-                continue
-            def _sub(m: re.Match) -> str:
+
+        # Pass 1: PII rules (email, phone, SSN, CC, IBAN, passport, DL)
+        if self.config.input_pii_masking_enabled:
+            for pid, pattern in PII_RULES:
+                def _pii_sub(m: re.Match, _pid=pid) -> str:
+                    match_text = m.group(0)
+                    if _pid == "pii-credit-card" and not _is_likely_credit_card(match_text):
+                        return match_text  # don't mask non-CC digit runs
+                    if _pid == "pii-passport":
+                        # Avoid false positive: require context keyword or
+                        # that the 9-digit run is not part of a longer number
+                        if not re.search(r"passport", text[:m.start() + 50], re.IGNORECASE):
+                            return match_text
+                    findings.append(GuardrailFinding(
+                        rule_id=_pid, severity="HIGH",
+                        snippet=match_text[:20] + "\u2026",
+                        start=m.start(), end=m.end(), direction="input",
+                    ))
+                    return PII_MASK
+                text = pattern.sub(_pii_sub, text)
+
+        # Pass 2: Secret rules (API keys, tokens, PEM keys)
+        for pid, pattern in SECRET_RULES:
+            def _secret_sub(m: re.Match, _pid=pid) -> str:
                 findings.append(GuardrailFinding(
-                    rule_id="pii-email", severity="HIGH",
-                    snippet=m.group(0)[:20] + "…",
+                    rule_id=_pid, severity="CRITICAL",
+                    snippet=m.group(0)[:12] + "\u2026",
                     start=m.start(), end=m.end(), direction="input",
                 ))
-                return PII_MASK
-            text = pattern.sub(_sub, text)
-            break
+                return SECRET_MASK
+            text = pattern.sub(_secret_sub, text)
+
         return text, findings
 
     # --- Malicious URL detection (output) -------------------------------------

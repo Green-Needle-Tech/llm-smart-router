@@ -318,8 +318,9 @@ def scan_obfuscated_payloads(
     return findings
 
 
-# --- PII patterns (email, phone, SSN, credit card) ----------------------------
+# --- PII patterns (email, phone, SSN, credit card, IBAN, passport, DL) -------
 # High-precision regexes for common PII. Designed for low false positives.
+# Ordering: longest/most-specific first to avoid overlap (CC before phone).
 PII_RULES = [
     # Credit card numbers — 13-19 digit groups separated by spaces/dashes
     # MUST run before phone to avoid phone regex matching CC substrings.
@@ -336,9 +337,24 @@ PII_RULES = [
     ("pii-email", re.compile(
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
     )),
+    # IBAN — international bank account number (15-34 chars, starts with 2 letters + 2 check digits)
+    # MUST run before phone to avoid phone regex matching IBAN digit substrings.
+    ("pii-iban", re.compile(
+        r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,31}\b"
+    )),
     # US phone numbers — (XXX) XXX-XXXX, XXX-XXX-XXXX, XXX.XXX.XXXX, +1 XXX-XXX-XXXX
     ("pii-phone", re.compile(
         r"(?:\+1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b"
+    )),
+    # US passport number — 9 digits, optionally prefixed with "passport" or "passport no"
+    ("pii-passport", re.compile(
+        r"(?:passport(?:\s*(?:no|number|#))?[:\s]*)?\b\d{9}\b"
+    )),
+    # US driver's license — varies by state; common formats: 1 letter + 7-11 digits, or 5-9 digits
+    # Kept conservative to reduce FP; requires "license" or "DL" context keyword
+    ("pii-drivers-license", re.compile(
+        r"(?:driver'?s?\s*licen[sc]e|DL)[:\s]*\b[A-Z]?\d{5,11}\b",
+        re.IGNORECASE,
     )),
 ]
 

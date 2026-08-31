@@ -216,8 +216,10 @@ def _guardrail_scan_input(request, body):
                 rule=f.rule_id, severity=f.severity,
             )
 
-    # Input PII masking — mask emails in input before forwarding upstream
-    # to prevent upstream provider guardrails (e.g. OpenRouter) from flagging
+    # Input PII + secret masking — mask all sensitive info in input before
+    # forwarding upstream to prevent upstream provider guardrails (e.g.
+    # OpenRouter) from flagging emails, phone numbers, SSNs, credit cards,
+    # IBANs, passport numbers, driver's licenses, and API keys.
     input_pii_findings: list = []
     if getattr(cfg, "input_pii_masking_enabled", True):
         for msg in messages:
@@ -225,14 +227,14 @@ def _guardrail_scan_input(request, body):
                 continue
             content = msg.get("content")
             if isinstance(content, str) and content:
-                masked, pii_fs = engine.mask_input_pii(content)
+                masked, pii_fs = engine.mask_input_sensitive(content)
                 if masked != content:
                     msg["content"] = masked
                     input_pii_findings.extend(pii_fs)
             elif isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and isinstance(block.get("text"), str):
-                        masked, pii_fs = engine.mask_input_pii(block["text"])
+                        masked, pii_fs = engine.mask_input_sensitive(block["text"])
                         if masked != block["text"]:
                             block["text"] = masked
                             input_pii_findings.extend(pii_fs)
@@ -241,7 +243,7 @@ def _guardrail_scan_input(request, body):
                 rule_id=f.rule_id, severity=f.severity, direction="input",
             ).inc()
             logger.info(
-                "router.guardrail.input_pii_masked", rule=f.rule_id,
+                "router.guardrail.input_sensitive_masked", rule=f.rule_id,
             )
 
     # Write masked content back onto the original pydantic body.messages
