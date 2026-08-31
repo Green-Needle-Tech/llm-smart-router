@@ -30,6 +30,11 @@ from app.session.lifecycle import check_expiry, check_turn_cap
 from app.session.locks import acquire_or_wait
 from app.session.resolver import resolve_session_id
 from app.telemetry.logging import get_logger
+from app.telemetry.token_tracker import (
+    accumulate as accumulate_tokens,
+    build_postfix as build_token_postfix,
+    extract_tokens,
+)
 from app.telemetry.metrics import (
     router_active_requests,
     router_cache_events_total,
@@ -843,6 +848,12 @@ async def _forward_to_provider(
     # Resolve per-tier provider overrides (base_url, api_key)
     tier_base_url, tier_api_key = _resolve_tier_provider(config, route.level.value)
 
+    # For streaming: request usage stats in the final SSE chunk so we can
+    # track per-tier token consumption. OpenRouter honours the OpenAI
+    # stream_options.include_usage extension.
+    if body.stream:
+        payload.setdefault("stream_options", {})["include_usage"] = True
+
     router_active_requests.inc()
 
     try:
@@ -888,7 +899,23 @@ async def _handle_non_stream(
 
     # Update response model to router tier label (hide actual upstream model)
     json_resp["model"] = f"smart-router/{route.level.value}"
-    _add_model_postfix(json_resp, model_used, route)
+
+    # Token tracking: extract usage and accumulate per-tier totals
+    config = request.app.state.config.get()
+    tt_cfg = getattr(getattr(config, "telemetry", None), "token_tracking", None)
+    tt_enabled = tt_cfg is not None and getattr(tt_cfg, "enabled", True)
+    tt_show = tt_cfg is not None and getattr(tt_cfg, "show_in_postfix", True)
+    usage = json_resp.get("usage", {})
+    prompt_tokens, completion_tokens = extract_tokens(usage)
+    if tt_enabled:
+        if pin is not None:
+            accumulate_tokens(pin.token_usage, route.level.value, prompt_tokens, completion_tokens)
+        token_usage_for_postfix = pin.token_usage if pin is not None else {
+            route.level.value: {"prompt": prompt_tokens, "completion": completion_tokens}
+        }
+        _add_model_postfix(json_resp, model_used, route, token_usage_for_postfix, tt_show)
+    else:
+        _add_model_postfix(json_resp, model_used, route)
 
     # Privacy middleware: re-hydrate IP placeholders in the LLM output.
     _rehydrate_response_content(
@@ -903,16 +930,13 @@ async def _handle_non_stream(
     if cached_tokens or cache_written:
         router_prompt_cached_tokens_total.labels(level=route.level.value, model=model_used).inc(cached_tokens)
         router_prompt_cache_writes_total.labels(level=route.level.value, model=model_used).inc(cache_written)
-        prompt_tokens = (json_resp.get("usage") or {}).get("prompt_tokens") or 0
-        if prompt_tokens:
-            ratio = cached_tokens / prompt_tokens
+        prompt_tokens_cache = (json_resp.get("usage") or {}).get("prompt_tokens") or 0
+        if prompt_tokens_cache:
+            ratio = cached_tokens / prompt_tokens_cache
             router_prompt_cache_hit_ratio.labels(level=route.level.value, model=model_used).set(ratio)
 
     # Update pin cost
     if pin:
-        usage = json_resp.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
         cost = provider.estimate_cost(model_used, prompt_tokens, completion_tokens)
         if cost is not None:
             pin.cost_usd_total += cost
@@ -1081,6 +1105,13 @@ async def _handle_stream(
                 return line, carry
             return f"data: {json.dumps(data)}", carry
 
+        # Token tracking config (read once for the whole stream)
+        _config = request.app.state.config.get()
+        _tt_cfg = getattr(getattr(_config, "telemetry", None), "token_tracking", None)
+        _tt_enabled = _tt_cfg is not None and getattr(_tt_cfg, "enabled", True)
+        _tt_show = _tt_cfg is not None and getattr(_tt_cfg, "show_in_postfix", True)
+        _stream_usage: dict[str, Any] | None = None
+
         try:
             carry = ""
             async for line in stream_resp.aiter_lines():
@@ -1109,13 +1140,45 @@ async def _handle_stream(
                         flush_event = {"choices": [{"delta": {"content": carry}}]}
                         yield f"data: {json.dumps(flush_event)}\n\n"
                         carry = ""
+
+                    # Token tracking: accumulate usage from the final stream
+                    # chunk (OpenRouter sends usage in the last data event
+                    # before [DONE] when stream_options.include_usage is set).
+                    if _tt_enabled and _stream_usage is not None:
+                        s_prompt, s_completion = extract_tokens(_stream_usage)
+                        if pin is not None:
+                            accumulate_tokens(pin.token_usage, route.level.value, s_prompt, s_completion)
+                            # Also update cost/metrics like non-stream path
+                            cost = provider.estimate_cost(model_used, s_prompt, s_completion)
+                            if cost is not None:
+                                pin.cost_usd_total += cost
+                                router_cost_usd_total.labels(level=route.level.value, model=model_used).inc(cost)
+                            router_tokens_total.labels(level=route.level.value, model=model_used, kind="prompt").inc(s_prompt)
+                            router_tokens_total.labels(level=route.level.value, model=model_used, kind="completion").inc(s_completion)
+                            await request.app.state.session_store.put(pin)
+                        token_usage_for_postfix = pin.token_usage if pin is not None else {
+                            route.level.value: {"prompt": s_prompt, "completion": s_completion}
+                        }
+                        postfix_text = build_token_postfix(route.level.value, token_usage_for_postfix, _tt_show)
+                    else:
+                        postfix_text = f"[smart-router/{route.level.value}]"
+
                     # Postfix must precede [DONE]: OpenAI-compatible clients
                     # stop reading the stream at [DONE] and silently discard
                     # any event emitted after it.
-                    postfix_event = {"choices": [{"delta": {"content": f"\n\n[smart-router/{route.level.value}]"}}]}
+                    postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
                     yield f"data: {json.dumps(postfix_event)}\n\n"
                     yield f"{line}\n"
                     break
+                # Capture usage from the final data chunk (the one that
+                # carries the usage object when include_usage is set).
+                if _tt_enabled and line.startswith("data: "):
+                    try:
+                        _chunk = json.loads(line[6:])
+                        if isinstance(_chunk, dict) and _chunk.get("usage"):
+                            _stream_usage = _chunk["usage"]
+                    except (ValueError, TypeError):
+                        pass
                 line, carry = await _rehydrate_line(line, carry)
                 yield f"{line}\n"
         except Exception as e:
@@ -1191,9 +1254,25 @@ def _add_router_headers(response, route, session_id, session_source, pin, total_
             response.headers["X-Router-Escalated-From"] = route.escalated_from.value
 
 
-def _add_model_postfix(json_resp: dict[str, Any], model_used: str, route: RouteDecision) -> None:
-    """Append a compact model marker to assistant content for user visibility."""
-    marker = f"[smart-router/{route.level.value}]"
+def _add_model_postfix(
+    json_resp: dict[str, Any],
+    model_used: str,
+    route: RouteDecision,
+    token_usage: dict[str, dict[str, int]] | None = None,
+    show_tokens: bool = True,
+) -> None:
+    """Append a compact model marker to assistant content for user visibility.
+
+    When ``show_tokens`` is True and ``token_usage`` contains data, the
+    marker includes cumulative per-tier token usage::
+
+        [smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]
+
+    Otherwise falls back to the classic format::
+
+        [smart-router/L1]
+    """
+    marker = build_token_postfix(route.level.value, token_usage, show_tokens)
     for choice in json_resp.get("choices", []):
         message = choice.get("message")
         if not isinstance(message, dict) or "content" not in message:
@@ -1205,7 +1284,12 @@ def _add_model_postfix(json_resp: dict[str, Any], model_used: str, route: RouteD
             message["content"] = f"{content.rstrip()}\n\n{marker}"
 
 
-_MODEL_POSTFIX_RE = re.compile(r"(?:\r?\n){1,2}\[(?:LLM: )?[^\]\r\n]+\]\s*\Z")
+# Matches both the classic format [smart-router/L1] and the token-tracking
+# format [smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054].
+# Also matches legacy [LLM: model/name] markers.
+_MODEL_POSTFIX_RE = re.compile(
+    r"(?:\r?\n){1,2}\[(?:LLM: )?[^\]\r\n]+\]\s*\Z"
+)
 
 
 def _strip_model_postfix_from_messages(messages: list[dict[str, Any]]) -> None:

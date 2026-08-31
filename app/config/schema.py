@@ -265,6 +265,16 @@ class TemporalAwarenessConfig(BaseModel):
     strategy: str = "replace"  # "replace" or "context_block"
 
 
+class TokenTrackingConfig(BaseModel):
+    """Per-session cumulative token usage tracking and postfix display."""
+    # When enabled, accumulates input/output tokens per tier across a session
+    # and appends a summary to the response postfix.
+    enabled: bool = True
+    # Include the token summary in the response postfix.
+    # When false, tokens are still accumulated on the pin but not displayed.
+    show_in_postfix: bool = True
+
+
 class TelemetryConfig(BaseModel):
     log_level: str = "INFO"
     log_format: str = "json"
@@ -275,6 +285,7 @@ class TelemetryConfig(BaseModel):
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     temporal_awareness: TemporalAwarenessConfig = Field(default_factory=TemporalAwarenessConfig)
+    token_tracking: TokenTrackingConfig = Field(default_factory=TokenTrackingConfig)
 
 
 class Settings(BaseModel):

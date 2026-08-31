@@ -122,6 +122,8 @@ class SessionPin(BaseModel):
     expires_at: str | None = None
     cost_usd_total: float = 0.0
     provisional_turns: int = 0
+    # Per-tier cumulative token usage: {"L1": {"prompt": N, "completion": N}, ...}
+    token_usage: dict[str, dict[str, int]] = Field(default_factory=dict)
 
     def touch(self, idle_ttl: int, max_ttl: int | None = None) -> None:
         """Update last_seen and expiry timestamps."""

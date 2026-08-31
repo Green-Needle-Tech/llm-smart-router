@@ -285,6 +285,11 @@
       "default_timezone": "Asia/Singapore",
       "strategy": "replace",
       "_doc": "Dynamic temporal expression normalization and preprocessing"
+    },
+    "token_tracking": {
+      "enabled": true,
+      "show_in_postfix": true,
+      "_doc": "Per-session cumulative token usage tracking and postfix display"
     }
   }
 }

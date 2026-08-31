@@ -160,5 +160,9 @@ DEFAULTS = {
             "default_timezone": "UTC",
             "strategy": "replace",
         },
+        "token_tracking": {
+            "enabled": True,
+            "show_in_postfix": True,
+        },
     },
 }
