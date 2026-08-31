@@ -47,6 +47,9 @@ class GuardrailsConfig(BaseModel):
     invisible_text_detection: bool = True
     # PII masking (output) — mask email, phone, SSN, credit card
     pii_masking_enabled: bool = True
+    # PII masking (input) — mask emails in input before forwarding upstream
+    # prevents upstream provider guardrails (e.g. OpenRouter) from flagging emails
+    input_pii_masking_enabled: bool = True
     # Banned substrings (input) — configurable list, case-insensitive
     banned_substrings: list[str] = Field(default_factory=list)
     # Refusal detection (output) — log-only monitoring, never blocks

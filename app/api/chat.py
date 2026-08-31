@@ -171,6 +171,7 @@ def _guardrail_scan_input(request, body):
         output_action=cfg.output_action,
         invisible_text_detection=cfg.invisible_text_detection,
         pii_masking_enabled=cfg.pii_masking_enabled,
+        input_pii_masking_enabled=getattr(cfg, "input_pii_masking_enabled", True),
         banned_substrings=cfg.banned_substrings,
         refusal_detection=cfg.refusal_detection,
         malicious_url_detection=cfg.malicious_url_detection,
@@ -214,6 +215,42 @@ def _guardrail_scan_input(request, body):
                 "router.guardrail.invisible_text",
                 rule=f.rule_id, severity=f.severity,
             )
+
+    # Input PII masking — mask emails in input before forwarding upstream
+    # to prevent upstream provider guardrails (e.g. OpenRouter) from flagging
+    input_pii_findings: list = []
+    if getattr(cfg, "input_pii_masking_enabled", True):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and content:
+                masked, pii_fs = engine.mask_input_pii(content)
+                if masked != content:
+                    msg["content"] = masked
+                    input_pii_findings.extend(pii_fs)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        masked, pii_fs = engine.mask_input_pii(block["text"])
+                        if masked != block["text"]:
+                            block["text"] = masked
+                            input_pii_findings.extend(pii_fs)
+        for f in input_pii_findings:
+            router_guardrail_findings_total.labels(
+                rule_id=f.rule_id, severity=f.severity, direction="input",
+            ).inc()
+            logger.info(
+                "router.guardrail.input_pii_masked", rule=f.rule_id,
+            )
+
+    # Write masked content back onto the original pydantic body.messages
+    # so the masked version is what gets forwarded upstream.
+    if input_pii_findings:
+        for orig, dumped in zip(body.messages, messages, strict=False):
+            new_content = dumped.get("content")
+            if orig.content != new_content:
+                orig.content = new_content
 
     # Banned substrings detection
     banned_findings: list = []

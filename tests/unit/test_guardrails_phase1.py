@@ -229,6 +229,66 @@ class TestPIIMasking:
 
 
 # ---------------------------------------------------------------------------
+# 2b. Input PII masking (email-only, input direction)
+# ---------------------------------------------------------------------------
+
+class TestInputPIIMasking:
+    def test_email_masked_in_input(self):
+        e = _engine(input_pii_masking_enabled=True)
+        addr = _email()
+        text, fs = e.mask_input_pii(f"send it to {addr} please")
+        assert PII_MASK in text
+        assert addr not in text
+        assert any(f.rule_id == "pii-email" for f in fs)
+        assert all(f.direction == "input" for f in fs)
+
+    def test_multiple_emails_masked(self):
+        e = _engine(input_pii_masking_enabled=True)
+        a1 = "alice" + "@" + "test.org"
+        a2 = "bob" + "@" + "mail.net"
+        text, fs = e.mask_input_pii(f"cc {a1} and {a2}")
+        assert a1 not in text
+        assert a2 not in text
+        assert text.count(PII_MASK) == 2
+        assert len(fs) == 2
+
+    def test_phone_not_masked_in_input(self):
+        """Input PII masking only targets emails, not phone numbers."""
+        e = _engine(input_pii_masking_enabled=True)
+        num = _phone()
+        text, fs = e.mask_input_pii(f"call me at {num}")
+        assert num in text  # phone should pass through unmasked
+        assert fs == []
+
+    def test_ssn_not_masked_in_input(self):
+        """Input PII masking only targets emails, not SSNs."""
+        e = _engine(input_pii_masking_enabled=True)
+        ssn = "123" + "-" + "45" + "-" + "6789"
+        text, fs = e.mask_input_pii(f"SSN: {ssn}")
+        assert ssn in text
+        assert fs == []
+
+    def test_no_email_passes_through(self):
+        e = _engine(input_pii_masking_enabled=True)
+        text, fs = e.mask_input_pii("no PII here at all")
+        assert text == "no PII here at all"
+        assert fs == []
+
+    def test_disabled(self):
+        e = _engine(input_pii_masking_enabled=False)
+        addr = _email()
+        text, fs = e.mask_input_pii(f"email: {addr}")
+        assert addr in text
+        assert fs == []
+
+    def test_empty_text(self):
+        e = _engine(input_pii_masking_enabled=True)
+        text, fs = e.mask_input_pii("")
+        assert text == ""
+        assert fs == []
+
+
+# ---------------------------------------------------------------------------
 # 3. Malicious URL detection
 # ---------------------------------------------------------------------------
 

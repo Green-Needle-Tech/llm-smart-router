@@ -102,6 +102,8 @@ class GuardrailConfig:
     invisible_text_detection: bool = True
     # PII masking (output) — mask email, phone, SSN, credit card
     pii_masking_enabled: bool = True
+    # PII masking (input) — mask emails in input before forwarding upstream
+    input_pii_masking_enabled: bool = True
     # Banned substrings (input) — configurable list, blocks or logs
     banned_substrings: list[str] = field(default_factory=list)
     # Refusal detection (output) — log-only monitoring
@@ -372,6 +374,34 @@ class GuardrailEngine:
                 ))
                 return PII_MASK
             text = pattern.sub(_sub, text)
+        return text, findings
+
+    # --- PII masking (input) --------------------------------------------------
+
+    def mask_input_pii(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Mask emails in input text before forwarding upstream.
+
+        Only masks emails (not phone/SSN/CC) to minimize false positives on
+        input while preventing upstream provider guardrails from flagging
+        email addresses in user messages.
+        Returns (text, findings).
+        """
+        if not text or not self.config.input_pii_masking_enabled:
+            return text, []
+        findings: list[GuardrailFinding] = []
+        # Find the pii-email pattern from PII_RULES
+        for pid, pattern in PII_RULES:
+            if pid != "pii-email":
+                continue
+            def _sub(m: re.Match) -> str:
+                findings.append(GuardrailFinding(
+                    rule_id="pii-email", severity="HIGH",
+                    snippet=m.group(0)[:20] + "…",
+                    start=m.start(), end=m.end(), direction="input",
+                ))
+                return PII_MASK
+            text = pattern.sub(_sub, text)
+            break
         return text, findings
 
     # --- Malicious URL detection (output) -------------------------------------
