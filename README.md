@@ -59,6 +59,17 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.15.1
+
+### Postfix Suppression on Tool-Call Responses
+
+Fixed the router appending `[smart-router/Ln-In:...|Out:...]` to intermediate tool-call responses, which caused the postfix to appear mid-task on Telegram before the final answer was ready. The postfix now appears only on final text responses.
+
+- **Non-streaming path** (`_add_model_postfix`): skips choices where `finish_reason == "tool_calls"` or `message.tool_calls` is present
+- **Streaming path**: tracks `tool_calls` across stream chunks and suppresses the postfix delta event before `[DONE]` when the turn is a tool call
+- Token tracking still accumulates on tool-call turns — only the user-facing postfix display is suppressed
+- **Tests**: 4 new tests (tool-call finish_reason skip, tool_calls in message skip, mixed choices, existing text response); 477 total tests pass
+
 ## What's New in v2.15.0
 
 ### Input-Side PII & Secret Masking

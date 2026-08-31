@@ -1,7 +1,7 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.15.0 (Input-side PII & secret masking — all PII types + provider credentials)
+**Version:** 2.15.1 (Postfix suppression on tool-call responses)
 **Date:** 2026-08-31
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
@@ -2027,6 +2027,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M19 — Per-Session Token Usage Tracking & Postfix Summary (v2.14.0)** | Added `token_tracker.py` engine module with `extract_tokens()`, `accumulate()`, `render_postfix()`, and `build_postfix()` functions. New `token_usage` field on `SessionPin` persists per-tier cumulative input/output token totals across turns. New `TokenTrackingConfig` under `telemetry.token_tracking` (`enabled`, `show_in_postfix`). Non-streaming path extracts usage from response JSON; streaming path injects `stream_options.include_usage` and parses usage from the final SSE chunk. Postfix format: `[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]`. Postfix regex updated to strip new format from assistant history. | 459 unit & integration tests pass (33 new); mypy 0 errors; ruff 0 new issues; live-verified on streaming + non-streaming + multi-tier accumulation. |
 | **M20 — Postfix Format Fix (v2.14.1)** | Removed duplicate tier label from token-tracking postfix. `build_postfix()` was prepending the level to the base string while `render_postfix()` also included it per tier part, producing `[smart-router/L2/L2-In:76161|Out:1259]`. Fixed to `[smart-router/L2-In:76161|Out:1259]`. | 459 unit & integration tests pass; live-verified on L1 non-streaming. |
 | **M21 — Input-Side PII & Secret Masking (v2.15.0)** | Comprehensive input-side masking via `mask_input_sensitive()` — masks all PII types (email, phone, SSN, credit card, IBAN, passport, driver's license) + all 11 provider credential types in input messages before forwarding upstream. New `input_pii_masking_enabled` config field. 3 new PII patterns (IBAN, passport, DL) added to `PII_RULES`. Prevents upstream provider guardrails (e.g. OpenRouter) from flagging sensitive data in input. | 474 unit & integration tests pass (15 new input masking tests); container rebuilt and live-verified; all PII types and secrets confirmed masked in model input. |
+| **M22 — Postfix Suppression on Tool-Call Responses (v2.15.1)** | Fixed postfix `[smart-router/Ln-In:...|Out:...]` appearing on intermediate tool-call responses, causing it to surface mid-task on Telegram. Non-streaming path skips choices with `finish_reason == "tool_calls"` or `message.tool_calls` present. Streaming path tracks tool_calls across chunks and suppresses the postfix delta before `[DONE]`. Token tracking still accumulates on tool-call turns. | 477 unit & integration tests pass (4 new postfix suppression tests); container rebuilt and live-verified — tool-call response has no postfix, text response retains postfix. |
 
 
 ---
