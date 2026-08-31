@@ -59,6 +59,22 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.14.0
+
+### Token Usage Tracking & Postfix Summary
+
+Added per-session cumulative token usage tracking that accumulates input (prompt) and output (completion) tokens for each tier across all turns of a session. The totals are displayed in the response postfix so users can see total LLM token consumption at a glance:
+
+    [smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]
+
+- **Engine** (`app/telemetry/token_tracker.py`): Pure-logic module with `extract_tokens()`, `accumulate()`, `render_postfix()`, and `build_postfix()` functions
+- **SessionPin** (`app/schemas/router.py`): New `token_usage: dict[str, dict[str, int]]` field persists per-tier cumulative totals across turns
+- **Config** (`app/config/schema.py`): New `TokenTrackingConfig` under `telemetry.token_tracking` with `enabled` (default: true) and `show_in_postfix` (default: true) — hot-reloadable
+- **Non-streaming** (`app/api/chat.py`): Extracts usage from response, accumulates into pin, renders token-aware postfix
+- **Streaming** (`app/api/chat.py`): Injects `stream_options.include_usage` to receive usage in the final SSE chunk; parses, accumulates, and renders token-aware postfix before `[DONE]`
+- **Postfix regex**: Updated to strip the new token-tracking format from assistant message history before forwarding upstream
+- **Verification**: 459 tests pass (33 new); mypy 0 errors; ruff 0 new issues
+
 ## What's New in v2.13.0
 
 ### ⚙️ Configurable Context Window
