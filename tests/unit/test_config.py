@@ -64,3 +64,26 @@ def test_memory_workers_guard():
     with pytest.raises(RuntimeError, match="memory.*WORKERS"):
         cm.validate_startup()
     del os.environ["WORKERS"]
+
+
+def test_context_window_default():
+    """ProviderConfig defaults context_window to 1M tokens."""
+    cm = ConfigManager(settings_path="/nonexistent")
+    settings = cm.load()
+    assert settings.provider.context_window == 1_000_000
+
+
+def test_context_window_custom():
+    """context_window can be overridden via settings.json."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump({
+            "version": 1,
+            "provider": {"context_window": 200_000},
+        }, f)
+        f.flush()
+
+        cm = ConfigManager(settings_path=f.name)
+        settings = cm.load()
+        assert settings.provider.context_window == 200_000
+
+    os.unlink(f.name)

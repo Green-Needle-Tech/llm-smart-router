@@ -23,6 +23,24 @@ if str(ROOT_DIR) not in sys.path:
 from scripts.script_utils import validate_safe_http_url  # noqa: E402
 
 DEFAULT_URL = "http://localhost:8080/v1"
+DEFAULT_CONTEXT_WINDOW = 1_000_000
+
+
+def get_router_context_window() -> int:
+    """Read context_window from settings.json, fall back to default."""
+    for settings_path in [
+        Path("/root/llm-smart-router/config/settings.json"),
+        Path("config/settings.json"),
+        Path("../config/settings.json"),
+    ]:
+        if settings_path.exists():
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                return int(cfg.get("provider", {}).get("context_window", DEFAULT_CONTEXT_WINDOW))
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                pass
+    return DEFAULT_CONTEXT_WINDOW
 
 
 def get_default_key() -> str:
@@ -94,6 +112,7 @@ def main():
 
     api_key = args.key or get_default_key()
     url = validated_url.rstrip("/")
+    ctx_window = get_router_context_window()
 
     print("=" * 65)
     print(" 🚀 LLM Smart Router — Agent Onboarding & Connection Setup")
@@ -122,7 +141,7 @@ def main():
   default: smart-router
   base_url: {url}
   api_mode: chat_completions
-  context_length: 1000000
+  context_length: {ctx_window}
   api_key: "{api_key if api_key else 'YOUR_ROUTER_API_KEY'}"
 """
     print(hermes_yaml)
@@ -142,7 +161,7 @@ def main():
     print(f'hermes config set model.base_url "{url}"')
     print('hermes config set model.api_mode chat_completions')
     print(f'hermes config set model.api_key "{api_key if api_key else "YOUR_ROUTER_API_KEY"}"')
-    print('hermes config set model.context_length 1000000')
+    print(f'hermes config set model.context_length {ctx_window}')
 
     print("\n" + "-" * 65)
     print(" 🐍 PYTHON OPENAI / GENERIC AGENT CLIENT")

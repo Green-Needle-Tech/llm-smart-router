@@ -22,6 +22,24 @@ from scripts.script_utils import resolve_safe_output_path
 
 ROUTER_DEFAULT_URL = "http://localhost:8080/v1"
 ROUTER_DEFAULT_MODEL = "smart-router"
+ROUTER_DEFAULT_CONTEXT_WINDOW = 1_000_000
+
+
+def get_router_context_window() -> int:
+    """Read context_window from settings.json, fall back to default."""
+    for settings_path in [
+        Path("/root/llm-smart-router/config/settings.json"),
+        Path("config/settings.json"),
+        Path("../config/settings.json"),
+    ]:
+        if settings_path.exists():
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                return int(cfg.get("provider", {}).get("context_window", ROUTER_DEFAULT_CONTEXT_WINDOW))
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                pass
+    return ROUTER_DEFAULT_CONTEXT_WINDOW
 
 
 def get_router_key() -> str:
@@ -36,7 +54,7 @@ def get_router_key() -> str:
     return os.environ.get("ROUTER_API_KEY", "your-router-api-key")
 
 
-def generate_hermes_config(url: str, key: str, model: str) -> str:
+def generate_hermes_config(url: str, key: str, model: str, context_window: int) -> str:
     return f"""# Hermes Agent configuration for LLM Smart Router (~/.hermes/config.yaml)
 # Merge or replace the 'model' block in your ~/.hermes/config.yaml:
 
@@ -45,7 +63,7 @@ model:
   default: {model}
   base_url: {url}
   api_mode: chat_completions
-  context_length: 1000000
+  context_length: {context_window}
   api_key: "{key}"
 
 # Optional: define fallback if the router is unreachable
@@ -55,18 +73,18 @@ fallback_providers:
 """
 
 
-def generate_hermes_cli_commands(url: str, key: str, model: str) -> str:
+def generate_hermes_cli_commands(url: str, key: str, model: str, context_window: int) -> str:
     return f"""# Hermes CLI configuration commands:
 hermes config set model.provider custom
 hermes config set model.default {model}
 hermes config set model.base_url {url}
 hermes config set model.api_mode chat_completions
 hermes config set model.api_key "{key}"
-hermes config set model.context_length 1000000
+hermes config set model.context_length {context_window}
 """
 
 
-def generate_openai_python(url: str, key: str, model: str) -> str:
+def generate_openai_python(url: str, key: str, model: str, context_window: int = 1_000_000) -> str:
     return f"""# OpenAI Python SDK Integration
 from openai import OpenAI
 
@@ -91,7 +109,7 @@ print(response.choices[0].message.content)
 """
 
 
-def generate_langchain_python(url: str, key: str, model: str) -> str:
+def generate_langchain_python(url: str, key: str, model: str, context_window: int = 1_000_000) -> str:
     return f"""# LangChain Integration
 from langchain_openai import ChatOpenAI
 
@@ -107,7 +125,7 @@ print(response.content)
 """
 
 
-def generate_llamaindex_python(url: str, key: str, model: str) -> str:
+def generate_llamaindex_python(url: str, key: str, model: str, context_window: int = 1_000_000) -> str:
     return f"""# LlamaIndex Integration
 from llama_index.llms.openai_like import OpenAILike
 
@@ -124,7 +142,7 @@ print(response.text)
 """
 
 
-def generate_env_vars(url: str, key: str, model: str) -> str:
+def generate_env_vars(url: str, key: str, model: str, context_window: int = 1_000_000) -> str:
     return f"""# Standard OpenAI-Compatible Environment Variables
 OPENAI_BASE_URL={url}
 OPENAI_API_BASE={url}
@@ -133,7 +151,7 @@ OPENAI_MODEL_NAME={model}
 """
 
 
-def generate_claude_cursor_json(url: str, key: str, model: str) -> str:
+def generate_claude_cursor_json(url: str, key: str, model: str, context_window: int = 1_000_000) -> str:
     cfg = {
         "openai.baseUrl": url,
         "openai.apiKey": key,
@@ -192,14 +210,15 @@ def main():
 
     args = parser.parse_args()
     key = args.key or get_router_key()
+    ctx_window = get_router_context_window()
 
     outputs = []
     if args.agent == "all":
         for name, fn in TEMPLATES.items():
-            outputs.append(f"{'='*60}\n# Target: {name.upper()}\n{'='*60}\n" + fn(args.url, key, args.model))
+            outputs.append(f"{'='*60}\n# Target: {name.upper()}\n{'='*60}\n" + fn(args.url, key, args.model, ctx_window))
         final_text = "\n\n".join(outputs)
     else:
-        final_text = TEMPLATES[args.agent](args.url, key, args.model)
+        final_text = TEMPLATES[args.agent](args.url, key, args.model, ctx_window)
 
     if args.out:
         out_path = resolve_safe_output_path(args.out)

@@ -89,6 +89,10 @@ class ProviderConfig(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     pricing_refresh_seconds: int = 21600
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
+    # Context window (in tokens) advertised to connected agents.
+    # Used by agent onboarding/config scripts to set client-side context_length.
+    # Default: 1,000,000 (1M tokens — matches OpenRouter long-context models).
+    context_window: int = 1_000_000
 
 
 class DigestConfig(BaseModel):

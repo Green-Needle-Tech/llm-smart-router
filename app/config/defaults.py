@@ -25,6 +25,7 @@ DEFAULTS = {
             "HTTP-Referer": "http://localhost:8080",
             "X-Title": "Hermes Smart Router",
         },
+        "context_window": 1000000,
     },
     "classification": {
         "enabled": True,
