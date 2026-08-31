@@ -59,6 +59,16 @@ print(r.model)  # actual model used
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
 
+## What's New in v2.13.0
+
+### ⚙️ Configurable Context Window
+
+Added `provider.context_window` setting (default: 1,000,000 tokens) to replace hardcoded `1000000` across agent onboarding scripts. The context window value is advertised to connected agents via `generate_agent_config.py` and `agent_setup.py` to set client-side `context_length`. Hot-reloadable via `POST /admin/settings/reload`.
+
+- **Schema** (`app/config/schema.py`): New `context_window: int = 1_000_000` field on `ProviderConfig`
+- **Scripts**: `generate_agent_config.py` and `agent_setup.py` now read from `settings.json` via `get_router_context_window()` with fallback to default
+- **Verification**: 426 tests pass; mypy 0 errors; ruff 0 new issues
+
 ## What's New in v2.12.0
 
 ### 🛡️ Enhanced Input Guardrails & Obfuscation Defense (DOC-RES-SMARTROUTER-2026-0829-01)
@@ -519,6 +529,7 @@ Edit `config/settings.json` (hot-reloadable) to change:
 - Classifier model and prompt
 - Session TTL, escalation thresholds
 - Heuristic rules
+- `provider.context_window` — context window (tokens) advertised to connected agents (default: 1,000,000)
 
 ## Architecture
 

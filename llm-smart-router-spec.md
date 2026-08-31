@@ -1,8 +1,8 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-**Version:** 2.12.0 (Enhanced input guardrails: homoglyph normalization, Shannon entropy & obfuscation scanning, secondary/recursive jailbreak rules + classifier API call optimization & 24h cache TTL)
-**Date:** 2026-08-29
+**Version:** 2.13.0 (Configurable context window setting)
+**Date:** 2026-08-31
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
@@ -2004,6 +2004,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M15 — Script Path Validation & Security Hardening (v2.11.2)** | Path resolution and validation before file system operations across scripts (`bench_router.py`, `eval_classifier.py`, `generate_agent_config.py`); secure template loading in `probe_raw_classifier.py` eliminating `/tmp` references. | 412 unit tests pass; mypy 0 errors; bandit 0 high/critical issues. |
 | **M16 — Classifier API Call Optimization (v2.11.3)** | Extended classification cache TTL to 24h, expanded `tiny_prompt` heuristic threshold (`task_chars < 80`), disabled background multi-turn shadow/reclassification calls, and ensured single-call digest evaluation on cache misses. | 413 unit & integration tests pass; all 5 forced tiers live-verified; 30/30 guardrails pass; mypy/ruff/bandit clean. |
 | **M17 — Enhanced Input Guardrails & Obfuscation Defense (v2.12.0)** | Implemented zero-dependency Tier-0 input safety features from technical research document DOC-RES-SMARTROUTER-2026-0829-01: homoglyph lookalike normalization (Cyrillic, Greek, Full-Width), Shannon entropy scoring and obfuscated payload detection (Base64, Hex, URL-encoding), and secondary/recursive agent jailbreak detection rules (recursive JSON, agent handoff, XML system prompt smuggling). | 424 unit & integration tests pass; mypy 0 errors (60 files); bandit 0 high/critical issues. |
+| **M18 — Configurable Context Window (v2.13.0)** | Added `provider.context_window` setting (default: 1,000,000 tokens) to `ProviderConfig` schema, replacing hardcoded `1000000` in `generate_agent_config.py` and `agent_setup.py`. Both scripts now read from `settings.json` via `get_router_context_window()` with fallback to default. Hot-reloadable. | 426 unit & integration tests pass; mypy 0 errors; ruff 0 new issues. |
 
 
 ---
