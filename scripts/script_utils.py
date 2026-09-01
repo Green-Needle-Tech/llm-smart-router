@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 _ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
 _ALLOWED_HOST_PATTERN = re.compile(
-    r"^(?:localhost|127(?:\.\d+){1,3}|\[::1\]|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}|[a-zA-Z0-9-]+)$"
+    r"^(?:localhost|127(?:\.\d+){1,3}|\[::1\]|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$"
 )
 
 

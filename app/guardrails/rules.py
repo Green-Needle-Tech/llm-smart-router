@@ -245,6 +245,72 @@ _HEX_TOKEN_RE = re.compile(r"\b(?:0x)?[0-9a-fA-F]{32,}\b")
 _URL_ENCODED_TOKEN_RE = re.compile(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_.-]){10,}")
 
 
+def _try_decode(token: str, decoder) -> str:
+    """Attempt to decode a token and return a preview if it looks like text."""
+    decoded_snippet = ""
+    with contextlib.suppress(Exception):
+        raw_bytes = decoder(token)
+        decoded_str = raw_bytes.decode("utf-8", errors="ignore")
+        if len(decoded_str) >= 8 and any(ch.isalpha() for ch in decoded_str):
+            decoded_snippet = decoded_str[:60]
+    return decoded_snippet
+
+
+def _scan_base64_payloads(
+    text: str, entropy_threshold: float,
+) -> list[tuple[str, str, int, int]]:
+    """Detect high-entropy Base64 tokens and attempt decoded preview."""
+    findings: list[tuple[str, str, int, int]] = []
+    for m in _B64_TOKEN_RE.finditer(text):
+        token = m.group(0)
+        ent = calculate_shannon_entropy(token)
+        if ent < entropy_threshold and len(token) < 40:
+            continue
+        def _b64_decode(t: str, _token: str = token) -> bytes:
+            pad = len(_token) % 4
+            padded = _token + ("=" * (4 - pad) if pad else "")
+            return base64.b64decode(padded)
+        decoded = _try_decode(token, _b64_decode)
+        findings.append(("obfuscation-base64", decoded or token[:40], m.start(), m.end()))
+    return findings
+
+
+def _scan_hex_payloads(text: str) -> list[tuple[str, str, int, int]]:
+    """Detect hex-encoded tokens and attempt decoded preview."""
+    findings: list[tuple[str, str, int, int]] = []
+    for m in _HEX_TOKEN_RE.finditer(text):
+        token = m.group(0)
+        clean_hex = token.removeprefix("0x")
+        if len(clean_hex) % 2 != 0:
+            continue
+        def _hex_decode(t: str, _hex: str = clean_hex) -> bytes:
+            return bytes.fromhex(_hex)
+        decoded = _try_decode(token, _hex_decode)
+        findings.append(("obfuscation-hex", decoded or token[:40], m.start(), m.end()))
+    return findings
+
+
+def _scan_url_encoded_payloads(text: str) -> list[tuple[str, str, int, int]]:
+    """Detect URL-encoded payloads with %-escapes."""
+    if "%" not in text:
+        return []
+    findings: list[tuple[str, str, int, int]] = []
+    for m in re.finditer(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_+.-]){12,}", text):
+        token = m.group(0)
+        if token.count("%") < 2:
+            continue
+        def _url_decode(t: str, _token: str = token) -> bytes:
+            return urllib.parse.unquote_plus(_token).encode("utf-8", errors="ignore")
+        decoded_str = ""
+        with contextlib.suppress(Exception):
+            result = urllib.parse.unquote_plus(token)
+            if result != token and any(ch.isalpha() for ch in result):
+                decoded_str = result[:60]
+        if decoded_str:
+            findings.append(("obfuscation-url-encoded", decoded_str, m.start(), m.end()))
+    return findings
+
+
 def scan_obfuscated_payloads(
     text: str,
     entropy_threshold: float = 4.5,
@@ -257,64 +323,9 @@ def scan_obfuscated_payloads(
     if not text or len(text) < min_length:
         return []
     findings: list[tuple[str, str, int, int]] = []
-
-    # 1. Base64 payload detection + decoded probe
-    for m in _B64_TOKEN_RE.finditer(text):
-        token = m.group(0)
-        ent = calculate_shannon_entropy(token)
-        if ent >= entropy_threshold or len(token) >= 40:
-            decoded_snippet = ""
-            with contextlib.suppress(Exception):
-                # Ensure padding
-                pad = len(token) % 4
-                padded = token + ("=" * (4 - pad) if pad else "")
-                raw_bytes = base64.b64decode(padded)
-                decoded_str = raw_bytes.decode("utf-8", errors="ignore")
-                if len(decoded_str) >= 8 and any(ch.isalpha() for ch in decoded_str):
-                    decoded_snippet = decoded_str[:60]
-            findings.append((
-                "obfuscation-base64",
-                decoded_snippet or token[:40],
-                m.start(),
-                m.end(),
-            ))
-
-    # 2. Hex token detection
-    for m in _HEX_TOKEN_RE.finditer(text):
-        token = m.group(0)
-        clean_hex = token.removeprefix("0x")
-        if len(clean_hex) % 2 == 0:
-            decoded_snippet = ""
-            with contextlib.suppress(Exception):
-                raw_bytes = bytes.fromhex(clean_hex)
-                decoded_str = raw_bytes.decode("utf-8", errors="ignore")
-                if len(decoded_str) >= 8 and any(ch.isalpha() for ch in decoded_str):
-                    decoded_snippet = decoded_str[:60]
-            findings.append((
-                "obfuscation-hex",
-                decoded_snippet or token[:40],
-                m.start(),
-                m.end(),
-            ))
-
-    # 3. URL-encoded payload detection (%-escapes with >=3 escapes or >=15 chars)
-    if "%" in text:
-        for m in re.finditer(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_+.-]){12,}", text):
-            token = m.group(0)
-            if token.count("%") >= 2:
-                decoded_snippet = ""
-                with contextlib.suppress(Exception):
-                    decoded_str = urllib.parse.unquote_plus(token)
-                    if decoded_str != token and any(ch.isalpha() for ch in decoded_str):
-                        decoded_snippet = decoded_str[:60]
-                if decoded_snippet:
-                    findings.append((
-                        "obfuscation-url-encoded",
-                        decoded_snippet,
-                        m.start(),
-                        m.end(),
-                    ))
-
+    findings.extend(_scan_base64_payloads(text, entropy_threshold))
+    findings.extend(_scan_hex_payloads(text))
+    findings.extend(_scan_url_encoded_payloads(text))
     return findings
 
 

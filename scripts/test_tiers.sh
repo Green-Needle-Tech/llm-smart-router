@@ -3,9 +3,9 @@
 # Localhost/Loopback test harness: HTTP cleartext is safe over local Unix socket / loopback interface
 
 BIND_IP=$(ss -tlnp 2>/dev/null | grep ':8080 ' | awk '{print $4}' | sed 's/:8080//' | head -1)
-[ -z "$BIND_IP" ] && BIND_IP="127.0.0.1"
+[[ -z "$BIND_IP" ]] && BIND_IP="0.0.0.0"
 PROTOCOL="http"
-[ "$ROUTER_USE_TLS" = "true" ] || [ "$ROUTER_USE_HTTPS" = "true" ] && PROTOCOL="https"
+[[ "$ROUTER_USE_TLS" = "true" ]] || [[ "$ROUTER_USE_HTTPS" = "true" ]] && PROTOCOL="https"
 BASE="${ROUTER_BASE_URL:-${PROTOCOL}://${BIND_IP}:8080}"
 ROUTER_KEY=$(grep '^ROUTER_API_KEY=' /root/llm-smart-router/.env 2>/dev/null | cut -d= -f2)
 ADMIN_KEY=$(grep '^ADMIN_API_KEY=' /root/llm-smart-router/.env 2>/dev/null | cut -d= -f2)
@@ -22,8 +22,8 @@ echo ""
 echo "--- Health Checks ---"
 HEALTH=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/healthz" 2>/dev/null || echo "000")
 READY=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/readyz" 2>/dev/null || echo "000")
-echo "healthz: HTTP $HEALTH  $( [ "$HEALTH" = "200" ] && echo '✅' || echo '❌' )"
-echo "readyz:  HTTP $READY  $( [ "$READY" = "200" ] && echo '✅' || echo '❌' )"
+echo "healthz: HTTP $HEALTH  $( [[ "$HEALTH" = "200" ]] && echo '✅' || echo '❌' )"
+echo "readyz:  HTTP $READY  $( [[ "$READY" = "200" ]] && echo '✅' || echo '❌' )"
 echo ""
 
 # 2. Models
@@ -56,11 +56,11 @@ test_tier() {
     USAGE=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); u=d.get('usage',{}); print(f'prompt={u.get(\"prompt_tokens\",0)} completion={u.get(\"completion_tokens\",0)} total={u.get(\"total_tokens\",0)}')" 2>/dev/null || echo "N/A")
     ERROR=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); e=d.get('error'); print(e.get('message','')[:200] if e else '')" 2>/dev/null || echo "")
     
-    if [ "$MODEL" != "parse-error" ] && [ -n "$MODEL" ] && [ "$MODEL" != "N/A" ]; then
+    if [[ "$MODEL" != "parse-error" ]] && [[ -n "$MODEL" ]] && [[ "$MODEL" != "N/A" ]]; then
         echo "  ✅ Model: $MODEL"
         echo "  Tokens: $USAGE"
         echo "  Response: $CONTENT"
-        if [ -n "$ERROR" ]; then
+        if [[ -n "$ERROR" ]]; then
             echo "  ⚠️ Error field: $ERROR"
         fi
     else
@@ -88,7 +88,7 @@ BODY=$(curl -s -X POST "$BASE/v1/chat/completions" \
 MODEL=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('model','N/A'))" 2>/dev/null || echo "parse-error")
 CONTENT=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['choices'][0]['message']['content'][:120])" 2>/dev/null || echo "parse-error")
 
-if [ "$MODEL" != "parse-error" ] && [ -n "$MODEL" ] && [ "$MODEL" != "N/A" ]; then
+if [[ "$MODEL" != "parse-error" ]] && [[ -n "$MODEL" ]] && [[ "$MODEL" != "N/A" ]]; then
     echo "  ✅ Model: $MODEL"
     echo "  Response: $CONTENT"
 else
@@ -129,7 +129,7 @@ echo "=========================================="
 echo " SUMMARY"
 echo "=========================================="
 echo "  Health: HTTP $HEALTH ✅  | Ready: HTTP $READY ✅"
-if [ "$ALL_PASS" = "1" ]; then
+if [[ "$ALL_PASS" = "1" ]]; then
     echo "  All Tiers: OPERATIONAL ✅"
 else
     echo "  Some Tiers: FAILED ❌"

@@ -378,6 +378,42 @@ class GuardrailEngine:
 
     # --- PII + secret masking (input) -----------------------------------------
 
+    def _mask_input_pii(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Mask PII patterns in input text. Returns (masked_text, findings)."""
+        findings: list[GuardrailFinding] = []
+        for pid, pattern in PII_RULES:
+            def _pii_sub(m: re.Match, _pid=pid) -> str:
+                match_text = m.group(0)
+                if _pid == "pii-credit-card" and not _is_likely_credit_card(match_text):
+                    return match_text  # don't mask non-CC digit runs
+                if _pid == "pii-passport":
+                    # Avoid false positive: require context keyword or
+                    # that the 9-digit run is not part of a longer number
+                    if not re.search(r"passport", text[:m.start() + 50], re.IGNORECASE):
+                        return match_text
+                findings.append(GuardrailFinding(
+                    rule_id=_pid, severity="HIGH",
+                    snippet=match_text[:20] + "\u2026",
+                    start=m.start(), end=m.end(), direction="input",
+                ))
+                return PII_MASK
+            text = pattern.sub(_pii_sub, text)
+        return text, findings
+
+    def _mask_input_secrets(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Mask provider credentials in input text. Returns (masked_text, findings)."""
+        findings: list[GuardrailFinding] = []
+        for pid, pattern in SECRET_RULES:
+            def _secret_sub(m: re.Match, _pid=pid) -> str:
+                findings.append(GuardrailFinding(
+                    rule_id=_pid, severity="CRITICAL",
+                    snippet=m.group(0)[:12] + "\u2026",
+                    start=m.start(), end=m.end(), direction="input",
+                ))
+                return SECRET_MASK
+            text = pattern.sub(_secret_sub, text)
+        return text, findings
+
     def mask_input_sensitive(self, text: str) -> tuple[str, list[GuardrailFinding]]:
         """Mask all PII and secrets in input text before forwarding upstream.
 
@@ -391,38 +427,11 @@ class GuardrailEngine:
         if not text:
             return text, []
         findings: list[GuardrailFinding] = []
-
-        # Pass 1: PII rules (email, phone, SSN, CC, IBAN, passport, DL)
         if self.config.input_pii_masking_enabled:
-            for pid, pattern in PII_RULES:
-                def _pii_sub(m: re.Match, _pid=pid) -> str:
-                    match_text = m.group(0)
-                    if _pid == "pii-credit-card" and not _is_likely_credit_card(match_text):
-                        return match_text  # don't mask non-CC digit runs
-                    if _pid == "pii-passport":
-                        # Avoid false positive: require context keyword or
-                        # that the 9-digit run is not part of a longer number
-                        if not re.search(r"passport", text[:m.start() + 50], re.IGNORECASE):
-                            return match_text
-                    findings.append(GuardrailFinding(
-                        rule_id=_pid, severity="HIGH",
-                        snippet=match_text[:20] + "\u2026",
-                        start=m.start(), end=m.end(), direction="input",
-                    ))
-                    return PII_MASK
-                text = pattern.sub(_pii_sub, text)
-
-        # Pass 2: Secret rules (API keys, tokens, PEM keys)
-        for pid, pattern in SECRET_RULES:
-            def _secret_sub(m: re.Match, _pid=pid) -> str:
-                findings.append(GuardrailFinding(
-                    rule_id=_pid, severity="CRITICAL",
-                    snippet=m.group(0)[:12] + "\u2026",
-                    start=m.start(), end=m.end(), direction="input",
-                ))
-                return SECRET_MASK
-            text = pattern.sub(_secret_sub, text)
-
+            text, pii_fs = self._mask_input_pii(text)
+            findings.extend(pii_fs)
+        text, secret_fs = self._mask_input_secrets(text)
+        findings.extend(secret_fs)
         return text, findings
 
     # --- Malicious URL detection (output) -------------------------------------
