@@ -47,7 +47,7 @@ PLACEHOLDER_RE = re.compile(r"\[ipaddress-(\d+)\]")
 
 # Fuzzy variant for LLM output formatting quirks: [ipaddress - 01],
 # [ ipaddress-1 ], backticked, etc. (spec §4).
-PLACEHOLDER_FUZZY_RE = re.compile(r"[\[`]{0,2}\s*ipaddress\s*-\s*(\d+)\s*[\]`]{0,2}")
+PLACEHOLDER_FUZZY_RE = re.compile(r"\[?\s*ipaddress\s*-\s*(\d+)\s*\]?")
 
 PLACEHOLDER_FMT = "[ipaddress-{:02d}]"
 
