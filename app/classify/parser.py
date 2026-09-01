@@ -23,7 +23,7 @@ def parse_classifier_output(
     # Strip markdown fences
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
+        text = re.sub(r"```$", "", text)
         text = text.strip()
 
     # Try JSON parse

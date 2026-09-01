@@ -427,7 +427,7 @@ REFUSAL_RULES = [
         re.IGNORECASE,
     )),
     ("refusal-sorry", re.compile(
-        r"\bI(?:'m\s+| am\s+)?sorry\b.*\b(?:can(?:no|')?t|unable|not\s+able|won't|cannot)\b",
+        r"\bI(?:'m\s+| am\s+)?sorry\b.*\b(?:can(?:no|')?t|unable|not\s+able|won't)\b",
         re.IGNORECASE,
     )),
     ("refusal-inappropriate", re.compile(

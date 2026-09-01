@@ -309,9 +309,9 @@ class Settings(BaseModel):
         import json
         raw = json.dumps(self.model_dump())
         import re
-        if re.search(r'"[^"]*sk-or-[A-Za-z0-9_-]+"', raw):
+        if re.search(r'"sk-or-[A-Za-z0-9_-]+"', raw):
             raise ValueError("settings.json must not contain API keys (sk-or-* pattern detected)")
-        if re.search(r'"[^"]*sk-[A-Za-z0-9]{20,}"', raw):
+        if re.search(r'"sk-[A-Za-z0-9]{20,}"', raw):
             raise ValueError("settings.json must not contain API keys (sk-* pattern detected)")
         return self
 
