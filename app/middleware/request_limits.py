@@ -39,9 +39,12 @@ def _check_message_sizes(body) -> JSONResponse | None:
             return _err(422, f"Message content exceeds {MAX_MESSAGE_TEXT_BYTES} bytes", "message_too_large")
         elif isinstance(content, list):
             for block in content:
-                if isinstance(block, dict) and isinstance(block.get("text"), str):
-                    if len(block["text"].encode("utf-8")) > MAX_MESSAGE_TEXT_BYTES:
-                        return _err(422, f"Message block exceeds {MAX_MESSAGE_TEXT_BYTES} bytes", "message_too_large")
+                if (
+                    isinstance(block, dict)
+                    and isinstance(block.get("text"), str)
+                    and len(block["text"].encode("utf-8")) > MAX_MESSAGE_TEXT_BYTES
+                ):
+                    return _err(422, f"Message block exceeds {MAX_MESSAGE_TEXT_BYTES} bytes", "message_too_large")
     return None
 
 

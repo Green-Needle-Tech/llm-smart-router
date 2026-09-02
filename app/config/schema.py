@@ -121,7 +121,7 @@ class ClassificationCacheConfig(BaseModel):
 
 
 class TierPrefixConfig(BaseModel):
-    """Tier-prefix session pinning: detect a tier label (L1–L5) at the
+    """Tier-prefix session pinning: detect a tier label (L1-L5) at the
     start of the first user prompt and pin the session to that tier
     without calling the classifier LLM."""
     enabled: bool = True
