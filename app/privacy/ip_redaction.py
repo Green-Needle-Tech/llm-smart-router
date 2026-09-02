@@ -176,20 +176,23 @@ class IPRedactionEngine:
         """Redact IPs in message content in place. Returns True if any change."""
         changed = False
         for msg in messages:
-            content = msg.get("content") if isinstance(msg, dict) else None
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
             if isinstance(content, str):
                 if await self._redact_text_inplace(msg, "content", content, session_id):
                     changed = True
             elif isinstance(content, list):
-                for block in content:
-                    if (
-                        isinstance(block, dict)
-                        and isinstance(block.get("text"), str)
-                        and await self._redact_text_inplace(
-                            block, "text", block["text"], session_id
-                        )
-                    ):
-                        changed = True
+                changed = await self._redact_blocks(content, session_id) or changed
+        return changed
+
+    async def _redact_blocks(self, blocks, session_id):
+        """Redact IPs in content blocks. Returns True if any changed."""
+        changed = False
+        for block in blocks:
+            if (isinstance(block, dict) and isinstance(block.get("text"), str)
+                    and await self._redact_text_inplace(block, "text", block["text"], session_id)):
+                changed = True
         return changed
 
     async def _redact_text_inplace(

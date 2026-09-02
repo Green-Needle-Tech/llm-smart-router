@@ -63,53 +63,57 @@ def _already_has_cache_control(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _inject_cache_control(payload: dict[str, Any], pc: PromptCachingConfigView) -> bool:
-    """Add an ephemeral cache_control breakpoint to the system/developer message.
+def _find_system_target(messages):
+    """Find the first system/developer message. Returns (target, content) or None."""
+    for msg in messages:
+        if msg.get("role") in ("system", "developer"):
+            return msg, msg.get("content")
+    return None
 
-    Only the FIRST system (or developer) message is anchored — the stable
-    prefix. Returns True if a breakpoint was injected.
-    """
+
+def _extract_text_from_content(content) -> str | None:
+    """Extract text from str or block-list content."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return None
+
+
+def _apply_cache_control(target, content, cc):
+    """Apply cache_control to the target message. Returns True on success."""
+    if isinstance(content, str):
+        target["content"] = [{"type": "text", "text": content, "cache_control": cc}]
+        return True
+    if isinstance(content, list):
+        last = content[-1]
+        if isinstance(last, dict):
+            last["cache_control"] = cc
+            return True
+    return False
+
+
+def _inject_cache_control(payload: dict[str, Any], pc: PromptCachingConfigView) -> bool:
+    """Add an ephemeral cache_control breakpoint to the system/developer message."""
     messages = payload.get("messages") or []
     if not messages or _already_has_cache_control(messages):
         return False
 
-    target = None
-    for msg in messages:
-        if msg.get("role") in ("system", "developer"):
-            target = msg
-            break
-    if target is None:
+    found = _find_system_target(messages)
+    if found is None:
         return False
+    target, content = found
 
-    # Skip prompts below the provider token floor — they never cache anyway.
-    content = target.get("content")
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        text = " ".join(
-            b.get("text", "") for b in content if isinstance(b, dict)
-        )
-    else:
-        return False
-    if _estimate_tokens(text) < pc.min_tokens:
+    text = _extract_text_from_content(content)
+    if text is None or _estimate_tokens(text) < pc.min_tokens:
         return False
 
     cc: dict[str, Any] = {"type": "ephemeral"}
-    # ttl is Anthropic-specific; "5m" is the default, "1h" costs 2x write.
     model = str(payload.get("model", ""))
     if model.startswith("anthropic/") and pc.anthropic_ttl in ("5m", "1h"):
         cc["ttl"] = pc.anthropic_ttl
 
-    if isinstance(content, str):
-        target["content"] = [{"type": "text", "text": content, "cache_control": cc}]
-    else:
-        # Anchor the final block of the system message.
-        last = content[-1]
-        if isinstance(last, dict):
-            last["cache_control"] = cc
-        else:
-            return False
-    return True
+    return _apply_cache_control(target, content, cc)
 
 
 def extract_cache_usage(json_resp: dict[str, Any]) -> tuple[int, int]:

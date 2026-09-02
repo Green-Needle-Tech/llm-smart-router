@@ -17,6 +17,433 @@ from app.config.schema import TemporalAwarenessConfig
 from app.temporal_awareness.rules import COMPILED_TEMPORAL_PATTERNS
 
 
+
+# ── Tag dispatch handlers ──────────────────────────────────────────
+# Each handler takes (engine, groups, match, now) and returns str | None.
+
+def _h_day_after_tomorrow(engine, groups, match, now):
+    return engine._format_date(now + timedelta(days=2))
+
+def _h_day_before_yesterday(engine, groups, match, now):
+    return engine._format_date(now - timedelta(days=2))
+
+def _h_following_period(engine, groups, match, now):
+    unit = groups[0].lower() if groups and groups[0] else "day"
+    if unit == "week":
+        start = now.start_of("week") + timedelta(weeks=1)
+        return engine._format_week_range(start)
+    elif unit == "month":
+        dt = now.start_of("month") + timedelta(days=32)
+        return engine._format_month_range(dt.start_of("month"))
+    return engine._format_date(now + timedelta(days=1))
+
+def _h_fortnight_ago(engine, groups, match, now):
+    return engine._format_date(now - timedelta(weeks=2))
+
+def _h_fortnight_future(engine, groups, match, now):
+    return engine._format_date(now + timedelta(weeks=2))
+
+def _h_yesterday_morning(engine, groups, match, now):
+    return engine._format_datetime((now - timedelta(days=1)).set(hour=9, minute=0, second=0, microsecond=0))
+
+def _h_yesterday_afternoon(engine, groups, match, now):
+    return engine._format_datetime((now - timedelta(days=1)).set(hour=15, minute=0, second=0, microsecond=0))
+
+def _h_yesterday_evening(engine, groups, match, now):
+    return engine._format_datetime((now - timedelta(days=1)).set(hour=20, minute=0, second=0, microsecond=0))
+
+def _h_yesterday_night(engine, groups, match, now):
+    return engine._format_datetime((now - timedelta(days=1)).set(hour=22, minute=0, second=0, microsecond=0))
+
+def _h_last_night(engine, groups, match, now):
+    return engine._format_datetime((now - timedelta(days=1)).set(hour=22, minute=0, second=0, microsecond=0))
+
+def _h_tomorrow_morning(engine, groups, match, now):
+    return engine._format_datetime((now + timedelta(days=1)).set(hour=9, minute=0, second=0, microsecond=0))
+
+def _h_tomorrow_afternoon(engine, groups, match, now):
+    return engine._format_datetime((now + timedelta(days=1)).set(hour=15, minute=0, second=0, microsecond=0))
+
+def _h_tomorrow_evening(engine, groups, match, now):
+    return engine._format_datetime((now + timedelta(days=1)).set(hour=20, minute=0, second=0, microsecond=0))
+
+def _h_tomorrow_night(engine, groups, match, now):
+    return engine._format_datetime((now + timedelta(days=1)).set(hour=22, minute=0, second=0, microsecond=0))
+
+def _h_military_time(engine, groups, match, now):
+    hh, mm = int(groups[0]), int(groups[1])
+    return engine._format_datetime(now.set(hour=hh, minute=mm, second=0, microsecond=0))
+
+def _h_military_time_hundred(engine, groups, match, now):
+    hh = int(groups[0])
+    if hh > 23:
+        hh = hh % 24
+    return engine._format_datetime(now.set(hour=hh, minute=0, second=0, microsecond=0))
+
+def _h_quarter_past(engine, groups, match, now):
+    hour = int(groups[0])
+    ampm = groups[1] if len(groups) > 1 else None
+    hour = engine._apply_ampm(hour, ampm)
+    return engine._format_datetime(now.set(hour=hour, minute=15, second=0, microsecond=0))
+
+def _h_quarter_to(engine, groups, match, now):
+    hour = int(groups[0])
+    ampm = groups[1] if len(groups) > 1 else None
+    hour = engine._apply_ampm(hour, ampm)
+    hour = (hour - 1) % 24
+    return engine._format_datetime(now.set(hour=hour, minute=45, second=0, microsecond=0))
+
+def _h_half_past(engine, groups, match, now):
+    hour = int(groups[0])
+    ampm = groups[1] if len(groups) > 1 else None
+    hour = engine._apply_ampm(hour, ampm)
+    return engine._format_datetime(now.set(hour=hour, minute=30, second=0, microsecond=0))
+
+def _h_oclock(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=int(groups[0]), minute=0, second=0, microsecond=0))
+
+def _h_specific_time_datetime(engine, groups, match, now):
+    if len(groups) == 3:
+        hour, minute, ampm = int(groups[0]), int(groups[1]) if groups[1] else 0, groups[2]
+    elif len(groups) == 2:
+        hour, minute, ampm = int(groups[0]), 0, groups[1]
+    else:
+        return None
+    hour = engine._apply_ampm(hour, ampm)
+    return engine._format_datetime(now.set(hour=hour, minute=minute, second=0, microsecond=0))
+
+def _h_cob_eod(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=17, minute=0, second=0, microsecond=0))
+
+def _h_end_of_day(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=23, minute=59, second=59, microsecond=0))
+
+def _h_end_of_period(engine, groups, match, now):
+    unit = groups[0].lower()
+    if unit == "week":
+        return engine._format_date(now.end_of("week"))
+    elif unit == "month":
+        return engine._format_date(now.end_of("month"))
+    return engine._format_date(now.end_of("year"))
+
+def _h_start_of_period(engine, groups, match, now):
+    unit = groups[0].lower()
+    if unit == "week":
+        return engine._format_date(now.start_of("week"))
+    elif unit == "month":
+        return engine._format_date(now.start_of("month"))
+    return engine._format_date(now.start_of("year"))
+
+def _h_eow(engine, groups, match, now):
+    return engine._format_date(now.end_of("week"))
+
+def _h_eom(engine, groups, match, now):
+    return engine._format_date(now.end_of("month"))
+
+def _h_eoy(engine, groups, match, now):
+    return engine._format_date(now.end_of("year"))
+
+def _h_month_end(engine, groups, match, now):
+    return engine._format_date(now.end_of("month"))
+
+def _h_year_end(engine, groups, match, now):
+    return engine._format_date(now.end_of("year"))
+
+def _h_first_thing_tomorrow(engine, groups, match, now):
+    return engine._format_datetime((now + timedelta(days=1)).set(hour=8, minute=0, second=0, microsecond=0))
+
+def _h_first_thing_morning(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=8, minute=0, second=0, microsecond=0))
+
+def _h_lunchtime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=12, minute=30, second=0, microsecond=0))
+
+def _h_dinnertime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=19, minute=0, second=0, microsecond=0))
+
+def _h_teatime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=16, minute=0, second=0, microsecond=0))
+
+def _h_breakfast_time(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=8, minute=0, second=0, microsecond=0))
+
+def _h_midweek(engine, groups, match, now):
+    return engine._format_date(now.start_of("week") + timedelta(days=2))
+
+def _h_the_other_day(engine, groups, match, now):
+    return engine._format_date(now - timedelta(days=2))
+
+def _h_a_long_time_ago(engine, groups, match, now):
+    return engine._format_date(now - timedelta(days=365))
+
+def _h_a_while_ago(engine, groups, match, now):
+    return engine._format_date(now - timedelta(days=14))
+
+def _h_in_a_bit(engine, groups, match, now):
+    return engine._format_datetime(now + timedelta(hours=1))
+
+def _h_shortly(engine, groups, match, now):
+    return engine._format_datetime(now + timedelta(minutes=15))
+
+def _h_soon(engine, groups, match, now):
+    return engine._format_datetime(now + timedelta(hours=1))
+
+def _h_couple_units_ago(engine, groups, match, now):
+    return engine._format_date(now - timedelta(days=2))
+
+def _h_few_units_ago(engine, groups, match, now):
+    delta = engine._unit_to_timedelta(groups[0].lower().rstrip("s"), 3)
+    return engine._format_date(now - delta)
+
+def _h_few_units_from_now(engine, groups, match, now):
+    delta = engine._unit_to_timedelta(groups[0].lower().rstrip("s"), 3)
+    return engine._format_date(now + delta)
+
+def _resolve_n_units(engine, groups, now, sign):
+    n, unit = int(groups[0]), groups[1]
+    delta = engine._unit_to_timedelta(unit, n)
+    if unit.lower().rstrip("s") in ("hour", "hr", "minute", "min", "second", "sec"):
+        return engine._format_datetime(now + sign * delta)
+    return engine._format_date(now + sign * delta)
+
+def _h_past_n_units(engine, groups, match, now):
+    return _resolve_n_units(engine, groups, now, -1)
+
+def _h_n_units_ago(engine, groups, match, now):
+    return _resolve_n_units(engine, groups, now, -1)
+
+def _h_n_units_from_now(engine, groups, match, now):
+    return _resolve_n_units(engine, groups, now, 1)
+
+def _h_in_n_units(engine, groups, match, now):
+    return _resolve_n_units(engine, groups, now, 1)
+
+def _h_a_unit_ago(engine, groups, match, now):
+    return engine._format_date(now - engine._unit_to_timedelta(groups[0], 1))
+
+def _h_a_unit_from_now(engine, groups, match, now):
+    return engine._format_date(now + engine._unit_to_timedelta(groups[0], 1))
+
+def _h_relative_season(engine, groups, match, now):
+    text = match.group(0).lower().split()
+    return engine._resolve_season(text[1], now, text[0])
+
+def _h_this_quarter(engine, groups, match, now):
+    return engine._format_quarter_range(now, (now.month - 1) // 3 + 1)
+
+def _h_last_quarter(engine, groups, match, now):
+    q = (now.month - 1) // 3 + 1
+    if q == 1:
+        return engine._format_quarter_range(now.set(year=now.year - 1), 4)
+    return engine._format_quarter_range(now, q - 1)
+
+def _h_next_quarter(engine, groups, match, now):
+    q = (now.month - 1) // 3 + 1
+    if q == 4:
+        return engine._format_quarter_range(now.set(year=now.year + 1), 1)
+    return engine._format_quarter_range(now, q + 1)
+
+def _h_quarter_n(engine, groups, match, now):
+    return engine._format_quarter_range(now, int(groups[0]))
+
+def _h_relative_decade(engine, groups, match, now):
+    direction = match.group(0).lower().split()[0]
+    if direction == "last":
+        return f"{now.year - 10}..{now.year - 1}"
+    elif direction == "next":
+        return f"{now.year + 1}..{now.year + 10}"
+    return f"{now.year // 10 * 10}..{now.year // 10 * 10 + 9}"
+
+def _h_relative_day_of_week(engine, groups, match, now):
+    direction = groups[0].lower()
+    target_dow = engine._resolve_weekday(groups[1].lower())
+    current_dow = now.day_of_week
+    if direction in ("last", "previous"):
+        diff = (current_dow - target_dow) % 7 or 7
+        return engine._format_date(now - timedelta(days=diff))
+    elif direction == "this":
+        return engine._format_date(now.start_of("week") + timedelta(days=target_dow))
+    diff = (target_dow - current_dow) % 7 or 7
+    return engine._format_date(now + timedelta(days=diff))
+
+def _h_coming_day_of_week(engine, groups, match, now):
+    target_dow = engine._resolve_weekday(groups[0].lower())
+    diff = (target_dow - now.day_of_week) % 7 or 7
+    return engine._format_date(now + timedelta(days=diff))
+
+def _h_on_weekday(engine, groups, match, now):
+    target_dow = engine._resolve_weekday(groups[0].lower())
+    diff = (target_dow - now.day_of_week) % 7
+    return engine._format_date(now + timedelta(days=diff))
+
+def _h_bare_weekday(engine, groups, match, now):
+    target_dow = engine._resolve_weekday(groups[0].lower())
+    diff = (target_dow - now.day_of_week) % 7
+    if diff == 0:
+        return engine._format_date(now)
+    return engine._format_date(now + timedelta(days=diff))
+
+def _h_this_weekend(engine, groups, match, now):
+    start = now.start_of("week") + timedelta(days=5)
+    return f"{start.to_date_string()}..{(start + timedelta(days=1)).to_date_string()}"
+
+def _h_last_weekend(engine, groups, match, now):
+    start = now.start_of("week") + timedelta(days=5) - timedelta(weeks=1)
+    return f"{start.to_date_string()}..{(start + timedelta(days=1)).to_date_string()}"
+
+def _h_next_weekend(engine, groups, match, now):
+    start = now.start_of("week") + timedelta(days=5) + timedelta(weeks=1)
+    return f"{start.to_date_string()}..{(start + timedelta(days=1)).to_date_string()}"
+
+def _h_last_week(engine, groups, match, now):
+    return engine._format_week_range(now.start_of("week") - timedelta(weeks=1))
+
+def _h_this_week(engine, groups, match, now):
+    return engine._format_week_range(now.start_of("week"))
+
+def _h_next_week(engine, groups, match, now):
+    return engine._format_week_range(now.start_of("week") + timedelta(weeks=1))
+
+def _h_last_month(engine, groups, match, now):
+    return engine._format_month_range((now - timedelta(days=now.day)).start_of("month"))
+
+def _h_this_month(engine, groups, match, now):
+    return engine._format_month_range(now)
+
+def _h_next_month(engine, groups, match, now):
+    return engine._format_month_range((now.start_of("month") + timedelta(days=32)).start_of("month"))
+
+def _h_last_year(engine, groups, match, now):
+    return engine._format_year_range(now.set(year=now.year - 1))
+
+def _h_this_year(engine, groups, match, now):
+    return engine._format_year_range(now)
+
+def _h_next_year(engine, groups, match, now):
+    return engine._format_year_range(now.set(year=now.year + 1))
+
+def _h_now_datetime(engine, groups, match, now):
+    return engine._format_datetime(now)
+
+def _h_this_morning_datetime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=9, minute=0, second=0, microsecond=0))
+
+def _h_this_afternoon_datetime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=15, minute=0, second=0, microsecond=0))
+
+def _h_this_evening_datetime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=20, minute=0, second=0, microsecond=0))
+
+def _h_later_today(engine, groups, match, now):
+    return engine._format_datetime(now + timedelta(hours=3))
+
+def _h_earlier_today(engine, groups, match, now):
+    return engine._format_datetime(now - timedelta(hours=3))
+
+def _h_noon_datetime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=12, minute=0, second=0, microsecond=0))
+
+def _h_midnight_datetime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=0, minute=0, second=0, microsecond=0))
+
+def _h_morning_standalone(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=9, minute=0, second=0, microsecond=0))
+
+def _h_afternoon_standalone(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=15, minute=0, second=0, microsecond=0))
+
+def _h_evening_standalone(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=20, minute=0, second=0, microsecond=0))
+
+def _h_tonight_datetime(engine, groups, match, now):
+    return engine._format_datetime(now.set(hour=22, minute=0, second=0, microsecond=0))
+
+def _h_today(engine, groups, match, now):
+    return engine._format_date(now)
+
+def _h_yesterday(engine, groups, match, now):
+    return engine._format_date(now - timedelta(days=1))
+
+def _h_tomorrow(engine, groups, match, now):
+    return engine._format_date(now + timedelta(days=1))
+
+
+_TAG_DISPATCH: dict[str, object] = {
+    "day_after_tomorrow": _h_day_after_tomorrow,
+    "day_before_yesterday": _h_day_before_yesterday,
+    "following_period": _h_following_period,
+    "fortnight_ago": _h_fortnight_ago,
+    "in_fortnight": _h_fortnight_future,
+    "fortnight_from_now": _h_fortnight_future,
+    "yesterday_morning": _h_yesterday_morning,
+    "yesterday_afternoon": _h_yesterday_afternoon,
+    "yesterday_evening": _h_yesterday_evening,
+    "yesterday_night": _h_yesterday_night,
+    "last_night": _h_last_night,
+    "tomorrow_morning": _h_tomorrow_morning,
+    "tomorrow_afternoon": _h_tomorrow_afternoon,
+    "tomorrow_evening": _h_tomorrow_evening,
+    "tomorrow_night": _h_tomorrow_night,
+    "military_time": _h_military_time,
+    "military_time_hundred": _h_military_time_hundred,
+    "quarter_past": _h_quarter_past,
+    "quarter_to": _h_quarter_to,
+    "half_past": _h_half_past,
+    "oclock": _h_oclock,
+    "specific_time_datetime": _h_specific_time_datetime,
+    "cob": _h_cob_eod, "eod": _h_cob_eod,
+    "end_of_day": _h_end_of_day,
+    "end_of_period": _h_end_of_period,
+    "start_of_period": _h_start_of_period,
+    "eow": _h_eow, "eom": _h_eom, "eoy": _h_eoy,
+    "month_end": _h_month_end, "year_end": _h_year_end,
+    "first_thing_tomorrow": _h_first_thing_tomorrow,
+    "first_thing_morning": _h_first_thing_morning,
+    "lunchtime": _h_lunchtime, "dinnertime": _h_dinnertime,
+    "teatime": _h_teatime, "breakfast_time": _h_breakfast_time,
+    "midweek": _h_midweek,
+    "the_other_day": _h_the_other_day,
+    "a_long_time_ago": _h_a_long_time_ago,
+    "a_while_ago": _h_a_while_ago,
+    "in_a_bit": _h_in_a_bit, "shortly": _h_shortly, "soon": _h_soon,
+    "couple_units_ago": _h_couple_units_ago,
+    "few_units_ago": _h_few_units_ago,
+    "few_units_from_now": _h_few_units_from_now,
+    "past_n_units": _h_past_n_units,
+    "n_units_ago": _h_n_units_ago,
+    "n_units_from_now": _h_n_units_from_now,
+    "in_n_units": _h_in_n_units,
+    "a_unit_ago": _h_a_unit_ago, "a_unit_from_now": _h_a_unit_from_now,
+    "relative_season": _h_relative_season,
+    "this_quarter": _h_this_quarter,
+    "last_quarter": _h_last_quarter,
+    "next_quarter": _h_next_quarter,
+    "quarter_n": _h_quarter_n,
+    "relative_decade": _h_relative_decade,
+    "relative_day_of_week": _h_relative_day_of_week,
+    "coming_day_of_week": _h_coming_day_of_week,
+    "on_weekday": _h_on_weekday, "bare_weekday": _h_bare_weekday,
+    "this_weekend": _h_this_weekend,
+    "last_weekend": _h_last_weekend,
+    "next_weekend": _h_next_weekend,
+    "last_week": _h_last_week, "this_week": _h_this_week, "next_week": _h_next_week,
+    "last_month": _h_last_month, "this_month": _h_this_month, "next_month": _h_next_month,
+    "last_year": _h_last_year, "this_year": _h_this_year, "next_year": _h_next_year,
+    "now_datetime": _h_now_datetime,
+    "this_morning_datetime": _h_this_morning_datetime,
+    "this_afternoon_datetime": _h_this_afternoon_datetime,
+    "this_evening_datetime": _h_this_evening_datetime,
+    "later_today": _h_later_today, "earlier_today": _h_earlier_today,
+    "noon_datetime": _h_noon_datetime,
+    "midnight_datetime": _h_midnight_datetime,
+    "morning_standalone": _h_morning_standalone,
+    "afternoon_standalone": _h_afternoon_standalone,
+    "evening_standalone": _h_evening_standalone,
+    "tonight_datetime": _h_tonight_datetime,
+    "today": _h_today, "yesterday": _h_yesterday, "tomorrow": _h_tomorrow,
+}
+
+
 class TemporalAwarenessEngine:
     def __init__(self, config: TemporalAwarenessConfig):
         self.config = config
@@ -139,498 +566,10 @@ class TemporalAwarenessEngine:
     def _resolve_match(self, match: re.Match, tag: str, now: DateTime) -> str | None:
         """Resolve a matched temporal expression to a concrete date/datetime string."""
         groups = match.groups()
-
-        # ═══════════════════════════════════════════════════════════
-        # COMPOUND RELATIVE DAYS
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "day_after_tomorrow":
-            return self._format_date(now + timedelta(days=2))
-
-        if tag == "day_before_yesterday":
-            return self._format_date(now - timedelta(days=2))
-
-        if tag == "following_period":
-            unit = groups[0].lower() if groups and groups[0] else "day"
-            if unit == "week":
-                start = now.start_of("week") + timedelta(weeks=1)
-                return self._format_week_range(start)
-            elif unit == "month":
-                dt = now.start_of("month") + timedelta(days=32)
-                return self._format_month_range(dt.start_of("month"))
-            else:
-                return self._format_date(now + timedelta(days=1))
-
-        # ═══════════════════════════════════════════════════════════
-        # FORTNIGHT
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "fortnight_ago":
-            return self._format_date(now - timedelta(weeks=2))
-
-        if tag == "in_fortnight" or tag == "fortnight_from_now":
-            return self._format_date(now + timedelta(weeks=2))
-
-        # ═══════════════════════════════════════════════════════════
-        # RELATIVE DAY PARTS (yesterday/tomorrow + morning/evening/night)
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "yesterday_morning":
-            return self._format_datetime((now - timedelta(days=1)).set(hour=9, minute=0, second=0, microsecond=0))
-
-        if tag == "yesterday_afternoon":
-            return self._format_datetime((now - timedelta(days=1)).set(hour=15, minute=0, second=0, microsecond=0))
-
-        if tag == "yesterday_evening":
-            return self._format_datetime((now - timedelta(days=1)).set(hour=20, minute=0, second=0, microsecond=0))
-
-        if tag == "yesterday_night":
-            return self._format_datetime((now - timedelta(days=1)).set(hour=22, minute=0, second=0, microsecond=0))
-
-        if tag == "last_night":
-            return self._format_datetime((now - timedelta(days=1)).set(hour=22, minute=0, second=0, microsecond=0))
-
-        if tag == "tomorrow_morning":
-            return self._format_datetime((now + timedelta(days=1)).set(hour=9, minute=0, second=0, microsecond=0))
-
-        if tag == "tomorrow_afternoon":
-            return self._format_datetime((now + timedelta(days=1)).set(hour=15, minute=0, second=0, microsecond=0))
-
-        if tag == "tomorrow_evening":
-            return self._format_datetime((now + timedelta(days=1)).set(hour=20, minute=0, second=0, microsecond=0))
-
-        if tag == "tomorrow_night":
-            return self._format_datetime((now + timedelta(days=1)).set(hour=22, minute=0, second=0, microsecond=0))
-
-        # ═══════════════════════════════════════════════════════════
-        # SPECIFIC TIMES
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "military_time":
-            hh = int(groups[0])
-            mm = int(groups[1])
-            return self._format_datetime(now.set(hour=hh, minute=mm, second=0, microsecond=0))
-
-        if tag == "military_time_hundred":
-            hh = int(groups[0])
-            if hh > 23:
-                hh = hh % 24
-            return self._format_datetime(now.set(hour=hh, minute=0, second=0, microsecond=0))
-
-        if tag == "quarter_past":
-            hour = int(groups[0])
-            ampm = groups[1] if len(groups) > 1 else None
-            hour = self._apply_ampm(hour, ampm)
-            return self._format_datetime(now.set(hour=hour, minute=15, second=0, microsecond=0))
-
-        if tag == "quarter_to":
-            hour = int(groups[0])
-            ampm = groups[1] if len(groups) > 1 else None
-            hour = self._apply_ampm(hour, ampm)
-            hour = (hour - 1) % 24
-            return self._format_datetime(now.set(hour=hour, minute=45, second=0, microsecond=0))
-
-        if tag == "half_past":
-            hour = int(groups[0])
-            ampm = groups[1] if len(groups) > 1 else None
-            hour = self._apply_ampm(hour, ampm)
-            return self._format_datetime(now.set(hour=hour, minute=30, second=0, microsecond=0))
-
-        if tag == "oclock":
-            hour = int(groups[0])
-            return self._format_datetime(now.set(hour=hour, minute=0, second=0, microsecond=0))
-
-        if tag == "specific_time_datetime":
-            # Groups can be: (hour, minute, ampm) or (hour, ampm)
-            if len(groups) == 3:
-                hour = int(groups[0])
-                minute = int(groups[1]) if groups[1] else 0
-                ampm = groups[2]
-            elif len(groups) == 2:
-                hour = int(groups[0])
-                minute = 0
-                ampm = groups[1]
-            else:
-                return None
-            hour = self._apply_ampm(hour, ampm)
-            return self._format_datetime(now.set(hour=hour, minute=minute, second=0, microsecond=0))
-
-        # ═══════════════════════════════════════════════════════════
-        # END / BEGINNING / ABBREVIATIONS
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "cob" or tag == "eod":
-            return self._format_datetime(now.set(hour=17, minute=0, second=0, microsecond=0))
-
-        if tag == "end_of_day":
-            return self._format_datetime(now.set(hour=23, minute=59, second=59, microsecond=0))
-
-        if tag == "end_of_period":
-            unit = groups[0].lower()
-            if unit == "week":
-                return self._format_date(now.end_of("week"))
-            elif unit == "month":
-                return self._format_date(now.end_of("month"))
-            else:
-                return self._format_date(now.end_of("year"))
-
-        if tag == "start_of_period":
-            unit = groups[0].lower()
-            if unit == "week":
-                return self._format_date(now.start_of("week"))
-            elif unit == "month":
-                return self._format_date(now.start_of("month"))
-            else:
-                return self._format_date(now.start_of("year"))
-
-        if tag == "eow":
-            return self._format_date(now.end_of("week"))
-
-        if tag == "eom":
-            return self._format_date(now.end_of("month"))
-
-        if tag == "eoy":
-            return self._format_date(now.end_of("year"))
-
-        if tag == "month_end":
-            return self._format_date(now.end_of("month"))
-
-        if tag == "year_end":
-            return self._format_date(now.end_of("year"))
-
-        # ═══════════════════════════════════════════════════════════
-        # FIRST THING / MEAL TIMES / MIDWEEK
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "first_thing_tomorrow":
-            return self._format_datetime((now + timedelta(days=1)).set(hour=8, minute=0, second=0, microsecond=0))
-
-        if tag == "first_thing_morning":
-            return self._format_datetime(now.set(hour=8, minute=0, second=0, microsecond=0))
-
-        if tag == "lunchtime":
-            return self._format_datetime(now.set(hour=12, minute=30, second=0, microsecond=0))
-
-        if tag == "dinnertime":
-            return self._format_datetime(now.set(hour=19, minute=0, second=0, microsecond=0))
-
-        if tag == "teatime":
-            return self._format_datetime(now.set(hour=16, minute=0, second=0, microsecond=0))
-
-        if tag == "breakfast_time":
-            return self._format_datetime(now.set(hour=8, minute=0, second=0, microsecond=0))
-
-        if tag == "midweek":
-            # Wednesday of current week
-            start = now.start_of("week")
-            return self._format_date(start + timedelta(days=2))
-
-        # ═══════════════════════════════════════════════════════════
-        # COLLOQUIAL EXPRESSIONS
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "the_other_day":
-            return self._format_date(now - timedelta(days=2))
-
-        if tag == "a_long_time_ago":
-            return self._format_date(now - timedelta(days=365))
-
-        if tag == "a_while_ago":
-            return self._format_date(now - timedelta(days=14))
-
-        if tag == "in_a_bit":
-            return self._format_datetime(now + timedelta(hours=1))
-
-        if tag == "shortly":
-            return self._format_datetime(now + timedelta(minutes=15))
-
-        if tag == "soon":
-            return self._format_datetime(now + timedelta(hours=1))
-
-        # ═══════════════════════════════════════════════════════════
-        # COUPLE / FEW UNITS
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "couple_units_ago":
-            return self._format_date(now - timedelta(days=2))
-
-        if tag == "few_units_ago":
-            unit = groups[0].lower().rstrip("s")
-            n = 3
-            delta = self._unit_to_timedelta(unit, n)
-            return self._format_date(now - delta)
-
-        if tag == "few_units_from_now":
-            unit = groups[0].lower().rstrip("s")
-            n = 3
-            delta = self._unit_to_timedelta(unit, n)
-            return self._format_date(now + delta)
-
-        # ═══════════════════════════════════════════════════════════
-        # N UNITS AGO / FROM NOW / IN / BACK / HENCE
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "past_n_units":
-            n = int(groups[0])
-            unit = groups[1]
-            delta = self._unit_to_timedelta(unit, n)
-            unit_clean = unit.lower().rstrip("s")
-            if unit_clean in ("hour", "hr", "minute", "min", "second", "sec"):
-                return self._format_datetime(now - delta)
-            return self._format_date(now - delta)
-
-        if tag == "n_units_ago":
-            n = int(groups[0])
-            unit = groups[1]
-            delta = self._unit_to_timedelta(unit, n)
-            # For hours/minutes/seconds, return a datetime
-            unit_clean = unit.lower().rstrip("s")
-            if unit_clean in ("hour", "hr", "minute", "min", "second", "sec"):
-                return self._format_datetime(now - delta)
-            return self._format_date(now - delta)
-
-        if tag == "n_units_from_now":
-            n = int(groups[0])
-            unit = groups[1]
-            delta = self._unit_to_timedelta(unit, n)
-            unit_clean = unit.lower().rstrip("s")
-            if unit_clean in ("hour", "hr", "minute", "min", "second", "sec"):
-                return self._format_datetime(now + delta)
-            return self._format_date(now + delta)
-
-        if tag == "in_n_units":
-            n = int(groups[0])
-            unit = groups[1]
-            delta = self._unit_to_timedelta(unit, n)
-            # For hours/minutes/seconds, return a datetime
-            unit_clean = unit.lower().rstrip("s")
-            if unit_clean in ("hour", "hr", "minute", "min", "second", "sec"):
-                return self._format_datetime(now + delta)
-            return self._format_date(now + delta)
-
-        # ═══════════════════════════════════════════════════════════
-        # A/AN UNIT AGO / FROM NOW / HENCE
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "a_unit_ago":
-            unit = groups[0]
-            delta = self._unit_to_timedelta(unit, 1)
-            return self._format_date(now - delta)
-
-        if tag == "a_unit_from_now":
-            unit = groups[0]
-            delta = self._unit_to_timedelta(unit, 1)
-            return self._format_date(now + delta)
-
-        # ═══════════════════════════════════════════════════════════
-        # SEASONS
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "relative_season":
-            text = match.group(0).lower().split()
-            direction = text[0]  # this/last/next
-            season = text[1]
-            return self._resolve_season(season, now, direction)
-
-        # ═══════════════════════════════════════════════════════════
-        # QUARTERS & DECADES
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "this_quarter":
-            q = (now.month - 1) // 3 + 1
-            return self._format_quarter_range(now, q)
-
-        if tag == "last_quarter":
-            q = (now.month - 1) // 3 + 1
-            if q == 1:
-                return self._format_quarter_range(now.set(year=now.year - 1), 4)
-            return self._format_quarter_range(now, q - 1)
-
-        if tag == "next_quarter":
-            q = (now.month - 1) // 3 + 1
-            if q == 4:
-                return self._format_quarter_range(now.set(year=now.year + 1), 1)
-            return self._format_quarter_range(now, q + 1)
-
-        if tag == "quarter_n":
-            q = int(groups[0])
-            return self._format_quarter_range(now, q)
-
-        if tag == "relative_decade":
-            text = match.group(0).lower().split()
-            direction = text[0]
-            if direction == "last":
-                return f"{now.year - 10}..{now.year - 1}"
-            elif direction == "next":
-                return f"{now.year + 1}..{now.year + 10}"
-            else:
-                return f"{now.year // 10 * 10}..{now.year // 10 * 10 + 9}"
-
-        # ═══════════════════════════════════════════════════════════
-        # DAYS OF THE WEEK
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "relative_day_of_week":
-            direction = groups[0].lower()  # last/next/this/previous
-            day_name = groups[1].lower()
-            target_dow = self._resolve_weekday(day_name)
-            current_dow = now.day_of_week
-            if direction in ("last", "previous"):
-                diff = (current_dow - target_dow) % 7
-                if diff == 0:
-                    diff = 7
-                return self._format_date(now - timedelta(days=diff))
-            elif direction == "this":
-                # "this Monday" = the Monday of the current week
-                start = now.start_of("week")
-                return self._format_date(start + timedelta(days=target_dow))
-            else:  # "next"
-                diff = (target_dow - current_dow) % 7
-                if diff == 0:
-                    diff = 7
-                return self._format_date(now + timedelta(days=diff))
-
-        if tag == "coming_day_of_week":
-            day_name = groups[0].lower()
-            target_dow = self._resolve_weekday(day_name)
-            current_dow = now.day_of_week
-            diff = (target_dow - current_dow) % 7
-            if diff == 0:
-                diff = 7
-            return self._format_date(now + timedelta(days=diff))
-
-        if tag == "on_weekday":
-            day_name = groups[0].lower()
-            target_dow = self._resolve_weekday(day_name)
-            current_dow = now.day_of_week
-            # "on Monday" = next occurrence of that day (today if it is that day)
-            diff = (target_dow - current_dow) % 7
-            return self._format_date(now + timedelta(days=diff))
-
-        if tag == "bare_weekday":
-            day_name = groups[0].lower()
-            target_dow = self._resolve_weekday(day_name)
-            current_dow = now.day_of_week
-            diff = (target_dow - current_dow) % 7
-            if diff == 0:
-                # If today is that day, return today
-                return self._format_date(now)
-            return self._format_date(now + timedelta(days=diff))
-
-        # ═══════════════════════════════════════════════════════════
-        # WEEKEND
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "this_weekend":
-            # Saturday of current week
-            start = now.start_of("week") + timedelta(days=5)
-            end = start + timedelta(days=1)
-            return f"{start.to_date_string()}..{end.to_date_string()}"
-
-        if tag == "last_weekend":
-            start = now.start_of("week") + timedelta(days=5) - timedelta(weeks=1)
-            end = start + timedelta(days=1)
-            return f"{start.to_date_string()}..{end.to_date_string()}"
-
-        if tag == "next_weekend":
-            start = now.start_of("week") + timedelta(days=5) + timedelta(weeks=1)
-            end = start + timedelta(days=1)
-            return f"{start.to_date_string()}..{end.to_date_string()}"
-
-        # ═══════════════════════════════════════════════════════════
-        # RELATIVE PERIODS
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "last_week":
-            start = now.start_of("week") - timedelta(weeks=1)
-            return self._format_week_range(start)
-
-        if tag == "this_week":
-            start = now.start_of("week")
-            return self._format_week_range(start)
-
-        if tag == "next_week":
-            start = now.start_of("week") + timedelta(weeks=1)
-            return self._format_week_range(start)
-
-        if tag == "last_month":
-            dt = now - timedelta(days=now.day)
-            dt = dt.start_of("month")
-            return self._format_month_range(dt)
-
-        if tag == "this_month":
-            return self._format_month_range(now)
-
-        if tag == "next_month":
-            dt = now.start_of("month") + timedelta(days=32)
-            dt = dt.start_of("month")
-            return self._format_month_range(dt)
-
-        if tag == "last_year":
-            dt = now.set(year=now.year - 1)
-            return self._format_year_range(dt)
-
-        if tag == "this_year":
-            return self._format_year_range(now)
-
-        if tag == "next_year":
-            dt = now.set(year=now.year + 1)
-            return self._format_year_range(dt)
-
-        # ═══════════════════════════════════════════════════════════
-        # STANDALONE DAY PARTS
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "now_datetime":
-            return self._format_datetime(now)
-
-        if tag == "this_morning_datetime":
-            return self._format_datetime(now.set(hour=9, minute=0, second=0, microsecond=0))
-
-        if tag == "this_afternoon_datetime":
-            return self._format_datetime(now.set(hour=15, minute=0, second=0, microsecond=0))
-
-        if tag == "this_evening_datetime":
-            return self._format_datetime(now.set(hour=20, minute=0, second=0, microsecond=0))
-
-        if tag == "later_today":
-            return self._format_datetime(now + timedelta(hours=3))
-
-        if tag == "earlier_today":
-            return self._format_datetime(now - timedelta(hours=3))
-
-        if tag == "noon_datetime":
-            return self._format_datetime(now.set(hour=12, minute=0, second=0, microsecond=0))
-
-        if tag == "midnight_datetime":
-            return self._format_datetime(now.set(hour=0, minute=0, second=0, microsecond=0))
-
-        if tag == "morning_standalone":
-            return self._format_datetime(now.set(hour=9, minute=0, second=0, microsecond=0))
-
-        if tag == "afternoon_standalone":
-            return self._format_datetime(now.set(hour=15, minute=0, second=0, microsecond=0))
-
-        if tag == "evening_standalone":
-            return self._format_datetime(now.set(hour=20, minute=0, second=0, microsecond=0))
-
-        if tag == "tonight_datetime":
-            return self._format_datetime(now.set(hour=22, minute=0, second=0, microsecond=0))
-
-        # ═══════════════════════════════════════════════════════════
-        # BASIC RELATIVE DAYS
-        # ═══════════════════════════════════════════════════════════
-
-        if tag == "today":
-            return self._format_date(now)
-
-        if tag == "yesterday":
-            return self._format_date(now - timedelta(days=1))
-
-        if tag == "tomorrow":
-            return self._format_date(now + timedelta(days=1))
-
-        return None
+        handler = _TAG_DISPATCH.get(tag)
+        if handler is None:
+            return None
+        return handler(self, groups, match, now)
 
     # ── Message processing ─────────────────────────────────────────
 

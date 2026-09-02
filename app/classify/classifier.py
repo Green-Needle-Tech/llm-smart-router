@@ -124,42 +124,13 @@ class ClassifierService:
             return result, digest_info
 
         # Heuristic fast path
-        if self.config.heuristics.enabled:
-            heur_result = evaluate_heuristics(
-                digest=digest_info["digest"],
-                has_code=digest_info["has_code"],
-                code_fences=digest_info["code_fences"],
-                json_mode=response_format is not None and response_format.get("type") == "json_object",
-                prompt_tokens=digest_info["task_tokens"] if self.config.heuristics.measure == "task_payload" else digest_info["total_tokens"],
-                task_chars=digest_info.get("task_chars"),
-                huge_context_tokens=self.config.heuristics.huge_context_tokens,
-                rules=[r.model_dump() if hasattr(r, "model_dump") else r for r in self.config.heuristics.rules] if self.config.heuristics.rules else None,
-                measure=self.config.heuristics.measure,
-            )
-
-            if heur_result is not None:
-                level, stop, rule_name = heur_result
-                if stop:
-                    result = ClassificationResult(
-                        level=level,
-                        confidence=1.0,
-                        reason=f"heuristic: {rule_name}",
-                        source=ClassificationSource.HEURISTIC,
-                        latency_ms=int((time.monotonic() - start) * 1000),
-                    )
-                    return result, digest_info
+        heur_result = self._try_heuristics(digest_info, response_format, start)
+        if heur_result is not None:
+            return heur_result, digest_info
 
         # Call classifier model
         if not self.config.classification.enabled:
-            default_level = Level.from_str(self.config.classification.default_level)
-            result = ClassificationResult(
-                level=default_level,
-                confidence=0.0,
-                reason="classification disabled",
-                source=ClassificationSource.DEFAULT,
-                latency_ms=int((time.monotonic() - start) * 1000),
-            )
-            return result, digest_info
+            return self._default_result("classification disabled", start), digest_info
 
         try:
             raw_output = await self._call_classifier_model(digest_info["digest"])
@@ -171,55 +142,57 @@ class ClassifierService:
                 rubric_version=self.config.classification.rubric_version,
                 latency_ms=latency_ms,
             )
-
-            # Handle UNKNOWN or parse failure
-            if result.level is None:
-                if result.reason == "parse failure":
-                    # Genuine parse failure: be conservative, use default_level.
-                    # Return directly — default_level is already the deliberate
-                    # fallback choice, so the low-confidence escalation policy
-                    # must not bump it another tier (that silently ignored the
-                    # configured default and always produced L4).
-                    result.level = Level.from_str(self.config.classification.default_level)
-                    result.source = ClassificationSource.DEFAULT
-                    return result, digest_info
-                # Classifier deliberately returned UNKNOWN (greeting, bare
-                # acknowledgement, too vague). There is no task content, so
-                # the cheapest tier is correct — not the conservative default.
-                # UNKNOWN is a definite judgement, not low confidence, so skip
-                # the escalation policy below.
-                result.level = Level.from_str(self.config.classification.unknown_level)
-                result.source = ClassificationSource.MODEL
-                return result, digest_info
-
-            # Apply confidence handling
-            result = self._apply_confidence_policy(result)
-
-            return result, digest_info
-
+            return self._handle_classifier_result(result, digest_info, start), digest_info
         except (TimeoutError, httpx.TimeoutException):
-            latency_ms = int((time.monotonic() - start) * 1000)
-            default_level = Level.from_str(self.config.classification.default_level)
-            result = ClassificationResult(
-                level=default_level,
-                confidence=0.0,
-                reason="classifier timeout",
-                source=ClassificationSource.DEFAULT,
-                latency_ms=latency_ms,
-            )
-            return result, digest_info
-
+            return self._default_result("classifier timeout", start), digest_info
         except Exception:
-            latency_ms = int((time.monotonic() - start) * 1000)
-            default_level = Level.from_str(self.config.classification.default_level)
-            result = ClassificationResult(
-                level=default_level,
-                confidence=0.0,
-                reason="classifier error",
-                source=ClassificationSource.DEFAULT,
-                latency_ms=latency_ms,
-            )
-            return result, digest_info
+            return self._default_result("classifier error", start), digest_info
+
+    def _try_heuristics(self, digest_info, response_format, start):
+        """Try heuristic fast path. Returns ClassificationResult or None."""
+        if not self.config.heuristics.enabled:
+            return None
+        heur_result = evaluate_heuristics(
+            digest=digest_info["digest"],
+            has_code=digest_info["has_code"],
+            code_fences=digest_info["code_fences"],
+            json_mode=response_format is not None and response_format.get("type") == "json_object",
+            prompt_tokens=digest_info["task_tokens"] if self.config.heuristics.measure == "task_payload" else digest_info["total_tokens"],
+            task_chars=digest_info.get("task_chars"),
+            huge_context_tokens=self.config.heuristics.huge_context_tokens,
+            rules=[r.model_dump() if hasattr(r, "model_dump") else r for r in self.config.heuristics.rules] if self.config.heuristics.rules else None,
+            measure=self.config.heuristics.measure,
+        )
+        if heur_result is not None:
+            level, stop, rule_name = heur_result
+            if stop:
+                return ClassificationResult(
+                    level=level, confidence=1.0, reason=f"heuristic: {rule_name}",
+                    source=ClassificationSource.HEURISTIC,
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                )
+        return None
+
+    def _default_result(self, reason, start):
+        """Build a default-level classification result."""
+        return ClassificationResult(
+            level=Level.from_str(self.config.classification.default_level),
+            confidence=0.0, reason=reason,
+            source=ClassificationSource.DEFAULT,
+            latency_ms=int((time.monotonic() - start) * 1000),
+        )
+
+    def _handle_classifier_result(self, result, digest_info, start):
+        """Handle UNKNOWN/parse-failure and apply confidence policy."""
+        if result.level is not None:
+            return self._apply_confidence_policy(result)
+        if result.reason == "parse failure":
+            result.level = Level.from_str(self.config.classification.default_level)
+            result.source = ClassificationSource.DEFAULT
+            return result
+        result.level = Level.from_str(self.config.classification.unknown_level)
+        result.source = ClassificationSource.MODEL
+        return result
 
     def _apply_confidence_policy(self, result: ClassificationResult) -> ClassificationResult:
         """Apply low-confidence action."""

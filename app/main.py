@@ -35,40 +35,8 @@ from app.temporal_awareness.engine import TemporalAwarenessEngine
 from app.version import APPLICATION_VERSION
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan: startup and shutdown."""
-    # --- Startup ---
-    cm = ConfigManager()
-    settings = cm.load()
-
-    # Startup guards
-    cm.validate_startup()
-
-    setup_logging(
-        level=settings.telemetry.log_level,
-        log_format=settings.telemetry.log_format,
-    )
-    logger = get_logger("startup")
-    logger.info("router.starting", version=APPLICATION_VERSION)
-
-    app.state.config = cm
-
-    # Provider adapter
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not openrouter_key:
-        logger.error("router.startup.no_key", msg="OPENROUTER_API_KEY not set")
-        raise RuntimeError("OPENROUTER_API_KEY environment variable is required")
-
-    provider = OpenRouterAdapter(settings, openrouter_key)
-    app.state.provider = provider
-
-    app.state.routing_engine = RoutingEngine(cm)
-
-    classifier = ClassifierService(settings, openrouter_key)
-    app.state.classifier = classifier
-
-    # Session store
+def _init_stores(app, settings):
+    """Initialize session store and classification cache."""
     cache_backend = os.environ.get("CACHE_BACKEND", settings.session.backend)
     if cache_backend == "redis":
         redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -83,11 +51,12 @@ async def lifespan(app: FastAPI):
             max_entries=settings.classification.cache.max_entries,
         )
 
-    # Fetch pricing and max_completion_tokens
+
+async def _load_pricing(provider, settings, logger):
+    """Fetch pricing and log auto-detected max_completion_tokens."""
     try:
         await provider.list_models()
         logger.info("router.pricing.loaded")
-        # Log auto-detected max_completion_tokens for configured tier models
         for level in ["L1", "L2", "L3", "L4", "L5"]:
             tier = settings.routing.get_tier(level)
             if tier.model:
@@ -104,6 +73,38 @@ async def lifespan(app: FastAPI):
                     )
     except Exception as e:
         logger.warning("router.pricing.failed", error=str(e))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: startup and shutdown."""
+    # --- Startup ---
+    cm = ConfigManager()
+    settings = cm.load()
+    cm.validate_startup()
+
+    setup_logging(
+        level=settings.telemetry.log_level,
+        log_format=settings.telemetry.log_format,
+    )
+    logger = get_logger("startup")
+    logger.info("router.starting", version=APPLICATION_VERSION)
+
+    app.state.config = cm
+
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not openrouter_key:
+        logger.error("router.startup.no_key", msg="OPENROUTER_API_KEY not set")
+        raise RuntimeError("OPENROUTER_API_KEY environment variable is required")
+
+    provider = OpenRouterAdapter(settings, openrouter_key)
+    app.state.provider = provider
+    app.state.routing_engine = RoutingEngine(cm)
+    classifier = ClassifierService(settings, openrouter_key)
+    app.state.classifier = classifier
+
+    _init_stores(app, settings)
+    await _load_pricing(provider, settings, logger)
 
     # Periodic refresh of pricing + max_completion_tokens
     async def _refresh_models_loop():

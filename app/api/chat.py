@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.guardrails.rules import strip_invisible_text
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
+from app.guardrails.streaming import secret_carry_split
 from app.middleware.auth import check_router_auth, unauthorized_response
 from app.middleware.request_limits import validate_request_bounds
 from app.privacy.ip_redaction import IPRedactionEngine
@@ -368,24 +369,30 @@ def _guardrail_scan_input(request, body):
 
     # Combine all findings for block decision
     all_findings = result.findings + banned_findings + obfuscation_findings
-    if cfg.input_action == "block" and all_findings:
-        threshold = _SEV_ORDER.get(cfg.block_on_severity, 2)
-        if any(_SEV_ORDER.get(f.severity, 0) >= threshold for f in all_findings):
-            top = max(all_findings, key=lambda f: _SEV_ORDER.get(f.severity, 0))
-            router_guardrail_blocks_total.labels(rule_id=top.rule_id, severity=top.severity).inc()
-            return JSONResponse(
-                status_code=400,
-                content={"error": {
-                    "message": (
-                        "Request blocked by router guardrail: potential prompt "
-                        f"injection detected (rule: {top.rule_id}, severity: {top.severity})."
-                    ),
-                    "type": "guardrail_violation",
-                    "param": None,
-                    "code": "router_guardrail_blocked",
-                }},
-            )
-    return None
+    return _check_guardrail_block(cfg, all_findings)
+
+
+def _check_guardrail_block(cfg, all_findings):
+    """Return a block response if configured to block and findings exceed threshold."""
+    if cfg.input_action != "block" or not all_findings:
+        return None
+    threshold = _SEV_ORDER.get(cfg.block_on_severity, 2)
+    if not any(_SEV_ORDER.get(f.severity, 0) >= threshold for f in all_findings):
+        return None
+    top = max(all_findings, key=lambda f: _SEV_ORDER.get(f.severity, 0))
+    router_guardrail_blocks_total.labels(rule_id=top.rule_id, severity=top.severity).inc()
+    return JSONResponse(
+        status_code=400,
+        content={"error": {
+            "message": (
+                "Request blocked by router guardrail: potential prompt "
+                f"injection detected (rule: {top.rule_id}, severity: {top.severity})."
+            ),
+            "type": "guardrail_violation",
+            "param": None,
+            "code": "router_guardrail_blocked",
+        }},
+    )
 def _process_guardrail_finding(f, engine) -> None:
     """Log and count a single output guardrail finding."""
     if f.rule_id.startswith("refusal-"):
@@ -666,6 +673,7 @@ async def _classify_and_pin(request, body, config, classifier, routing_engine, f
 async def _handle_lock_race_won(
     store, session_id, existing_pin, config, routing_engine,
     request, body, include_metadata, start, redaction_key,
+    *, session_source=None,
 ):
     """Handle the case where we lost the lock but another session has a pin."""
     pin = existing_pin
@@ -680,7 +688,7 @@ async def _handle_lock_race_won(
         level=pin.level, model=pin.model, params=pin.params, classification=classification,
     )
     return await _forward_to_provider(
-        request, body, route, session_id, None, pin, include_metadata, start,
+        request, body, route, session_id, session_source, pin, include_metadata, start,
         redaction_key=redaction_key,
     )
 
@@ -758,6 +766,32 @@ async def _create_and_pin_session(
     )
 
 
+def _resolve_session(request, body, config):
+    """Resolve session ID from request."""
+    headers_dict = {k.lower(): v for k, v in request.headers.items()}
+    auth_header = headers_dict.get("authorization", "")
+    key_identity = _get_api_key_identity(auth_header)
+    return resolve_session_id(
+        body, headers_dict, config, config.session.fingerprint_salt,
+        api_key_identity=key_identity,
+        namespace=getattr(config.session, "namespace_by_api_key", False),
+    )
+
+
+async def _lookup_pin(store, session_id, config):
+    """Look up and validate a session pin. Returns pin or None."""
+    pin = await store.get(session_id)
+    if pin is not None and pin.status != SessionStatus.CLASSIFYING:
+        expired_reason = check_expiry(pin)
+        if expired_reason or check_turn_cap(pin, config.session.max_turns):
+            await store.delete(session_id)
+            pin = None
+            router_session_lookups_total.labels(result="miss").inc()
+        else:
+            router_session_lookups_total.labels(result="hit").inc()
+    return pin
+
+
 async def _session_pinned_route(
     request, body, config, routing_engine,
     directive, forced_level, forced_model, max_level, min_level,
@@ -768,32 +802,14 @@ async def _session_pinned_route(
     store = request.app.state.session_store
     classifier = request.app.state.classifier
 
-    headers_dict = {k.lower(): v for k, v in request.headers.items()}
-    auth_header = headers_dict.get("authorization", "")
-    key_identity = _get_api_key_identity(auth_header)
-    session_id, session_source = resolve_session_id(
-        body, headers_dict, config, config.session.fingerprint_salt,
-        api_key_identity=key_identity,
-        namespace=getattr(config.session, "namespace_by_api_key", False),
-    )
-
+    session_id, session_source = _resolve_session(request, body, config)
     if session_id is None:
         router_session_lookups_total.labels(result="disabled").inc()
         return await _stateless_classify_and_forward(
             request, body, config, routing_engine, task_text, max_level, min_level, forced_model, bypass_cache
         )
 
-    pin = await store.get(session_id)
-
-    if pin is not None and pin.status != SessionStatus.CLASSIFYING:
-        expired_reason = check_expiry(pin)
-        if expired_reason or check_turn_cap(pin, config.session.max_turns):
-            await store.delete(session_id)
-            pin = None
-            router_session_lookups_total.labels(result="miss").inc()
-        else:
-            router_session_lookups_total.labels(result="hit").inc()
-
+    pin = await _lookup_pin(store, session_id, config)
     if pin is not None and not reclassify:
         return await _handle_session_hit(
             request, body, pin, config, routing_engine, forced_level, forced_model,
@@ -810,20 +826,10 @@ async def _session_pinned_route(
     )
 
     if not won and existing_pin is not None:
-        pin = existing_pin
-        pin.turn_count += 1
-        pin.touch(config.session.idle_ttl_seconds, config.session.max_ttl_seconds)
-        await store.put(pin)
-        classification = ClassificationResult(
-            level=pin.level, confidence=1.0, reason="session pin (race resolved)",
-            source=ClassificationSource.SESSION, latency_ms=0,
-        )
-        route = RouteDecision(
-            level=pin.level, model=pin.model, params=pin.params, classification=classification,
-        )
-        return await _forward_to_provider(
-            request, body, route, session_id, session_source, pin, include_metadata, start,
-            redaction_key=redaction_key,
+        return await _handle_lock_race_won(
+            store, session_id, existing_pin, config, routing_engine,
+            request, body, include_metadata, start, redaction_key,
+            session_source=session_source,
         )
 
     if not won and existing_pin is None:
@@ -1136,37 +1142,13 @@ async def _handle_non_stream(
 
     json_resp["model"] = f"smart-router/{route.level.value}"
 
-    # Token tracking
     config = request.app.state.config.get()
-    tt_cfg = getattr(getattr(config, "telemetry", None), "token_tracking", None)
-    tt_enabled = tt_cfg is not None and getattr(tt_cfg, "enabled", True)
-    tt_show = tt_cfg is not None and getattr(tt_cfg, "show_in_postfix", True)
-    usage = json_resp.get("usage", {})
-    prompt_tokens, completion_tokens = extract_tokens(usage)
-    if tt_enabled:
-        if pin is not None:
-            accumulate_tokens(pin.token_usage, route.level.value, prompt_tokens, completion_tokens)
-        token_usage_for_postfix = pin.token_usage if pin is not None else {
-            route.level.value: {"prompt": prompt_tokens, "completion": completion_tokens}
-        }
-        _add_model_postfix(json_resp, model_used, route, token_usage_for_postfix, tt_show)
-    else:
-        _add_model_postfix(json_resp, model_used, route)
+    prompt_tokens, completion_tokens = _apply_token_tracking(
+        json_resp, pin, route, model_used, config)
 
-    _rehydrate_response_content(
-        getattr(request.app.state, "ip_redaction", None), json_resp, redaction_key,
-    )
-    _guardrail_process_output(request, json_resp)
-    _record_cache_usage(json_resp, route, model_used)
-    _update_pin_metrics(pin, provider, route, model_used, prompt_tokens, completion_tokens)
-    if pin:
-        await request.app.state.session_store.put(pin)
-
-    budget_mgr = getattr(request.app.state, "budget_manager", None)
-    if budget_mgr is not None:
-        await budget_mgr.reconcile(session_id, model_used, prompt_tokens, completion_tokens)
-
-    _record_request_metrics(route, model_used, fallback_used, upstream_ms)
+    await _post_process_response(
+        request, json_resp, route, model_used, pin, provider,
+        prompt_tokens, completion_tokens, session_id, redaction_key, upstream_ms, fallback_used)
 
     if include_metadata:
         json_resp["router"] = {
@@ -1182,6 +1164,44 @@ async def _handle_non_stream(
     response = JSONResponse(content=json_resp)
     _add_router_headers(response, route, session_id, session_source, pin, total_ms, fallback_used)
     return response
+
+
+def _apply_token_tracking(json_resp, pin, route, model_used, config):
+    """Apply token tracking postfix to response. Returns (prompt_tokens, completion_tokens)."""
+    tt_cfg = getattr(getattr(config, "telemetry", None), "token_tracking", None)
+    tt_enabled = tt_cfg is not None and getattr(tt_cfg, "enabled", True)
+    tt_show = tt_cfg is not None and getattr(tt_cfg, "show_in_postfix", True)
+    usage = json_resp.get("usage", {})
+    prompt_tokens, completion_tokens = extract_tokens(usage)
+    if tt_enabled:
+        if pin is not None:
+            accumulate_tokens(pin.token_usage, route.level.value, prompt_tokens, completion_tokens)
+        token_usage_for_postfix = pin.token_usage if pin is not None else {
+            route.level.value: {"prompt": prompt_tokens, "completion": completion_tokens}
+        }
+        _add_model_postfix(json_resp, model_used, route, token_usage_for_postfix, tt_show)
+    else:
+        _add_model_postfix(json_resp, model_used, route)
+    return prompt_tokens, completion_tokens
+
+
+async def _post_process_response(
+    request, json_resp, route, model_used, pin, provider,
+    prompt_tokens, completion_tokens, session_id, redaction_key, upstream_ms, fallback_used,
+):
+    """Run all post-response processing: rehydration, guardrails, metrics, budget."""
+    _rehydrate_response_content(
+        getattr(request.app.state, "ip_redaction", None), json_resp, redaction_key,
+    )
+    _guardrail_process_output(request, json_resp)
+    _record_cache_usage(json_resp, route, model_used)
+    _update_pin_metrics(pin, provider, route, model_used, prompt_tokens, completion_tokens)
+    if pin:
+        await request.app.state.session_store.put(pin)
+    budget_mgr = getattr(request.app.state, "budget_manager", None)
+    if budget_mgr is not None:
+        await budget_mgr.reconcile(session_id, model_used, prompt_tokens, completion_tokens)
+    _record_request_metrics(route, model_used, fallback_used, upstream_ms)
 
 
 def _mask_carry_flush(carry, guardrail_engine) -> str:
@@ -1332,6 +1352,67 @@ def _process_data_line(line, stream_usage, had_tool_calls) -> tuple:
     return stream_usage, had_tool_calls
 
 
+
+_PARTIAL_TAIL_RE = re.compile(r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?$", re.IGNORECASE)
+
+
+def _split_carry(text: str, guardrail_mask_active: bool) -> tuple[str, str]:
+    """Split text into (flushable, carry) around a possible partial token tail."""
+    for keep in range(min(len(text), 20), 0, -1):
+        tail = text[-keep:]
+        if tail.lstrip("`").startswith("[") and re.fullmatch(
+            r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?", tail, re.IGNORECASE
+        ):
+            return text[:-keep], tail
+    if guardrail_mask_active:
+        idx = secret_carry_split(text)
+        if idx < len(text):
+            return text[:idx], text[idx:]
+    return text, ""
+
+
+def _rehydrate_chunk(
+    payload_text: str, carry: str,
+    rehydrate_engine, redaction_key, guardrail_engine, guardrail_mask_active,
+) -> tuple[str, str]:
+    """Re-hydrate and mask a chunk of streaming text."""
+    text = carry + payload_text
+    if rehydrate_engine is not None and redaction_key and "ipaddress" in text:
+        text = rehydrate_engine.rehydrate_text_sync(text, redaction_key)
+    flush, carry = _split_carry(text, guardrail_mask_active)
+    flush = _mask_stream_flush(flush, guardrail_engine) if guardrail_engine else flush
+    return flush, carry
+
+
+async def _rehydrate_line(
+    line: str, carry: str,
+    rehydrate_engine, redaction_key, guardrail_engine, guardrail_mask_active,
+):
+    """Re-hydrate content inside a data: SSE line; returns (line, carry)."""
+    if not line.startswith("data: "):
+        return line, carry
+    if not guardrail_mask_active and "ipaddress" not in line and not carry:
+        return line, carry
+    try:
+        data = json.loads(line[6:])
+    except (ValueError, TypeError):
+        return line, carry
+    mutated = False
+    for choice in data.get("choices", []):
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+            flushed, carry = _rehydrate_chunk(
+                delta["content"], carry,
+                rehydrate_engine, redaction_key, guardrail_engine, guardrail_mask_active,
+            )
+            if flushed != delta["content"]:
+                delta["content"] = flushed
+                mutated = True
+    if not mutated:
+        return line, carry
+    return f"data: {json.dumps(data)}", carry
+
+
 async def _handle_stream(
     request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
     redaction_key=None, tier_base_url=None, tier_api_key=None,
@@ -1374,60 +1455,16 @@ async def _handle_stream(
             request.app.state, "guardrails", None
         )
 
-        def _split_carry(text: str) -> tuple[str, str]:
-            """Split text into (flushable, carry) around a possible partial token tail."""
-            for keep in range(min(len(text), 20), 0, -1):
-                tail = text[-keep:]
-                if tail.lstrip("`").startswith("[") and re.fullmatch(
-                    r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?", tail, re.IGNORECASE
-                ):
-                    return text[:-keep], tail
-            if _guardrail_mask_active:
-                idx = secret_carry_split(text)
-                if idx < len(text):
-                    return text[:idx], text[idx:]
-            return text, ""
-
-        import re as _re
-
-        from app.guardrails.streaming import secret_carry_split
-        _PARTIAL_TAIL_RE = _re.compile(r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?$", _re.IGNORECASE)
-
-        def _rehydrate_chunk(payload_text: str, carry: str) -> tuple[str, str]:
-            text = carry + payload_text
-            if rehydrate_engine is not None and redaction_key and "ipaddress" in text:
-                text = rehydrate_engine.rehydrate_text_sync(text, redaction_key)
-            flush, carry = _split_carry(text)
-            flush = _mask_stream_flush(flush, guardrail_engine) if guardrail_engine else flush
-            return flush, carry
-
+        # Stream processing helpers (module-level for reduced nesting)
+        rehydrate_engine = getattr(request.app.state, "ip_redaction", None)
+        guardrail_engine: GuardrailEngine | None = getattr(
+            request.app.state, "guardrails", None
+        )
         _guardrail_mask_active = (
             guardrail_engine is not None
             and guardrail_engine.config.output_enabled
             and guardrail_engine.config.output_action == "mask"
         )
-
-        async def _rehydrate_line(line: str, carry: str):
-            """Re-hydrate content inside a data: SSE line; returns (line, carry)."""
-            if not line.startswith("data: "):
-                return line, carry
-            if not _guardrail_mask_active and "ipaddress" not in line and not carry:
-                return line, carry
-            try:
-                data = json.loads(line[6:])
-            except (ValueError, TypeError):
-                return line, carry
-            mutated = False
-            for choice in data.get("choices", []):
-                delta = choice.get("delta")
-                if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                    flushed, carry = _rehydrate_chunk(delta["content"], carry)
-                    if flushed != delta["content"]:
-                        delta["content"] = flushed
-                        mutated = True
-            if not mutated:
-                return line, carry
-            return f"data: {json.dumps(data)}", carry
 
         _config = request.app.state.config.get()
         _tt_cfg = getattr(getattr(_config, "telemetry", None), "token_tracking", None)
@@ -1463,7 +1500,10 @@ async def _handle_stream(
                     _stream_usage, _stream_had_tool_calls = _process_data_line(
                         line, _stream_usage, _stream_had_tool_calls,
                     )
-                line, carry = await _rehydrate_line(line, carry)
+                line, carry = await _rehydrate_line(
+                    line, carry,
+                    rehydrate_engine, redaction_key, guardrail_engine, _guardrail_mask_active,
+                )
                 yield f"{line}\n"
         except Exception as e:
             error_data = _handle_stream_error(e, route, model_used, session_id, upstream_start)

@@ -73,6 +73,81 @@ def validate_external_session_id(sid: str) -> bool:
     return bool(_SESSION_ID_RE.match(sid))
 
 
+def _try_header_sid(headers, config, api_key_identity, namespace):
+    """Try X-Session-Id header."""
+    header_name = config.session.id_header if config else "X-Session-Id"
+    sid = headers.get(header_name.lower()) or headers.get(header_name)
+    if not sid:
+        return None
+    if not validate_external_session_id(sid):
+        return (None, SessionSource.NONE)
+    if namespace and api_key_identity:
+        sid = derive_internal_session_id(api_key_identity, sid)
+    return (sid, SessionSource.HEADER)
+
+
+def _try_body_sid(request, api_key_identity, namespace):
+    """Try router.session_id body field."""
+    if not (request.router and isinstance(request.router, dict)):
+        return None
+    sid = request.router.get("session_id")
+    if not sid:
+        return None
+    sid = str(sid)
+    if not validate_external_session_id(sid):
+        return (None, SessionSource.NONE)
+    if namespace and api_key_identity:
+        sid = derive_internal_session_id(api_key_identity, sid)
+    return (sid, SessionSource.BODY)
+
+
+def _try_user_field(request, config, api_key_identity, namespace):
+    """Try user field if enabled."""
+    if not (config and config.session.use_user_field and request.user):
+        return None
+    uid = str(request.user)
+    if namespace and api_key_identity:
+        uid = derive_internal_session_id(api_key_identity, uid)
+    return (uid, SessionSource.USER_FIELD)
+
+
+def _try_fingerprint(request, headers, config, fingerprint_salt, api_key_identity):
+    """Try fingerprint fallback."""
+    if not (config and config.session.fingerprint_fallback):
+        return None
+    messages = request.messages
+    if not messages:
+        return (None, SessionSource.NONE)
+
+    system_msg = ""
+    first_user_msg = ""
+    for msg in messages:
+        if msg.role == "system" and not system_msg:
+            system_msg = _extract_text(msg.content)
+        if msg.role == "user" and not first_user_msg:
+            first_user_msg = _extract_text(msg.content)
+        if system_msg and first_user_msg:
+            break
+
+    if not first_user_msg:
+        return (None, SessionSource.NONE)
+
+    tool_names = _get_tool_names(request.tools)
+    auth_header = headers.get("authorization", "")
+    key_id = api_key_identity or _get_api_key_id(auth_header)
+    strip_patterns = config.session.fingerprint_strip_patterns if config else []
+
+    fp = derive_fingerprint(
+        system_message=system_msg,
+        first_user_message=first_user_msg,
+        tool_names=tool_names,
+        api_key_id=key_id,
+        salt=fingerprint_salt or (config.session.fingerprint_salt if config else ""),
+        strip_patterns=strip_patterns,
+    )
+    return (fp, SessionSource.FINGERPRINT)
+
+
 def resolve_session_id(
     request: ChatCompletionRequest,
     headers: dict[str, str],
@@ -85,77 +160,15 @@ def resolve_session_id(
     """Resolve session_id in strict priority order.
 
     Returns (session_id, source). session_id is None if unresolvable.
-
-    When ``namespace=True`` and ``api_key_identity`` is provided, the returned
-    session_id is the HMAC-namespaced internal key, not the raw external ID.
-    This prevents cross-tenant session interference.
     """
-    # 1. X-Session-Id header
-    header_name = config.session.id_header if config else "X-Session-Id"
-    session_id = headers.get(header_name.lower()) or headers.get(header_name)
-    if session_id:
-        # Validate external session ID
-        if not validate_external_session_id(session_id):
-            return None, SessionSource.NONE
-        if namespace and api_key_identity:
-            session_id = derive_internal_session_id(
-                api_key_identity, session_id,
-            )
-        return session_id, SessionSource.HEADER
-
-    # 2. router.session_id body field
-    if request.router and isinstance(request.router, dict):
-        sid = request.router.get("session_id")
-        if sid:
-            sid = str(sid)
-            if not validate_external_session_id(sid):
-                return None, SessionSource.NONE
-            if namespace and api_key_identity:
-                sid = derive_internal_session_id(api_key_identity, sid)
-            return sid, SessionSource.BODY
-
-    # 3. user field (if enabled)
-    if config and config.session.use_user_field and request.user:
-        uid = str(request.user)
-        if namespace and api_key_identity:
-            uid = derive_internal_session_id(api_key_identity, uid)
-        return uid, SessionSource.USER_FIELD
-
-    # 4. Fingerprint fallback
-    if config and config.session.fingerprint_fallback:
-        messages = request.messages
-        if not messages:
-            return None, SessionSource.NONE
-
-        system_msg = ""
-        first_user_msg = ""
-        for msg in messages:
-            if msg.role == "system" and not system_msg:
-                system_msg = _extract_text(msg.content)
-            if msg.role == "user" and not first_user_msg:
-                first_user_msg = _extract_text(msg.content)
-            if system_msg and first_user_msg:
-                break
-
-        if not first_user_msg:
-            return None, SessionSource.NONE
-
-        tool_names = _get_tool_names(request.tools)
-        auth_header = headers.get("authorization", "")
-        key_id = api_key_identity or _get_api_key_id(auth_header)
-
-        strip_patterns = config.session.fingerprint_strip_patterns if config else []
-
-        fp = derive_fingerprint(
-            system_message=system_msg,
-            first_user_message=first_user_msg,
-            tool_names=tool_names,
-            api_key_id=key_id,
-            salt=fingerprint_salt or (config.session.fingerprint_salt if config else ""),
-            strip_patterns=strip_patterns,
-        )
-        return fp, SessionSource.FINGERPRINT
-
+    for attempt in (
+        _try_header_sid(headers, config, api_key_identity, namespace),
+        _try_body_sid(request, api_key_identity, namespace),
+        _try_user_field(request, config, api_key_identity, namespace),
+        _try_fingerprint(request, headers, config, fingerprint_salt, api_key_identity),
+    ):
+        if attempt is not None:
+            return attempt
     return None, SessionSource.NONE
 
 
