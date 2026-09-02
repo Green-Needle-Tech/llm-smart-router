@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 # Application version — must match pyproject.toml [project] version.
-APPLICATION_VERSION = "2.16.5"
+APPLICATION_VERSION = "2.16.6"
 
 # Configuration schema version — used in settings.json.
 # This is independent of the application version; it only changes when the
