@@ -1,10 +1,16 @@
 """Integration tests for session pinning behavior."""
-import pytest
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
-from app.schemas.router import Level, SessionPin, SessionStatus, ClassificationResult, ClassificationSource
+from app.schemas.router import (
+    Level,
+    SessionPin,
+    SessionStatus,
+)
 from app.session.memory_store import MemorySessionStore
 
 
@@ -76,7 +82,7 @@ async def test_reserve_prevents_duplicate_classification(store):
 @pytest.mark.asyncio
 async def test_session_expiry(store):
     """An expired session should return None."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     session_id = "expiring-session"
 
     pin = SessionPin(
@@ -86,7 +92,7 @@ async def test_session_expiry(store):
         turn_count=1,
     )
     # Set expiry in the past
-    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     pin.expires_at = past
     await store.put(pin)
 
@@ -137,13 +143,13 @@ async def test_concurrent_turn1_one_classifier_call(store):
 @pytest.mark.asyncio
 async def test_session_pinned_route_single_classifier_call(monkeypatch):
     """Verify that on cache miss, _call_classifier_model is called only ONCE, not duplicated during cache lookup."""
-    from app.config.loader import ConfigManager
-    from app.classify.classifier import ClassifierService
-    from app.cache.memory import MemoryClassificationCache
-    from app.api.chat import _session_pinned_route
-    from app.routing.engine import RoutingEngine
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock
+
+    from app.api.chat import _session_pinned_route
+    from app.cache.memory import MemoryClassificationCache
+    from app.classify.classifier import ClassifierService
+    from app.config.loader import ConfigManager
+    from app.routing.engine import RoutingEngine
 
     cm = ConfigManager(settings_path="/nonexistent")
     config = cm.load()

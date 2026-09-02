@@ -215,5 +215,5 @@ See the [full specification](./llm-smart-router-spec.md) for complete details.
 ## License
 
 This project is dual-licensed:
-- **Open Source:** [GNU Affero General Public License v3.0 (AGPLv3)](./LICENSE) for community and non-commercial use.
-- **Commercial:** Commercial license available for proprietary integrations, SaaS deployments without source disclosure, and enterprise SLAs. Contact admin@greenneedle.tech or via [GitHub](https://github.com/Green-Needle-Tech/llm-smart-router).
+- **Open Source:** [GNU Affero General Public License v3.0 (AGPL-3.0-or-later)](./LICENSE) for community use. The AGPL permits commercial use but requires source disclosure for network-accessible services.
+- **Commercial:** Commercial license available for proprietary integrations, SaaS deployments without source disclosure, and enterprise SLAs. See [COMMERCIAL-LICENSE.md](./COMMERCIAL-LICENSE.md) or via [GitHub](https://github.com/Green-Needle-Tech/llm-smart-router).

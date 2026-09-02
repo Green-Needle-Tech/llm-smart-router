@@ -7,12 +7,10 @@
 from __future__ import annotations
 
 import base64
-import urllib.parse
+
 from app.guardrails.rules import (
     calculate_shannon_entropy,
     normalize_homoglyphs,
-    scan_obfuscated_payloads,
-    COMPILED_INJECTION,
 )
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 

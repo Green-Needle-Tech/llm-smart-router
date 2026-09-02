@@ -71,6 +71,7 @@ DEFAULTS = {
         "fingerprint_salt": "",
         "fingerprint_strip_patterns": [],
         "on_unidentifiable": "classify",
+        "namespace_by_api_key": False,
         "idle_ttl_seconds": 7200,
         "max_ttl_seconds": 86400,
         "max_turns": None,

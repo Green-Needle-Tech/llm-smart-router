@@ -62,7 +62,7 @@ class ClassifierService:
         """Load the classifier prompt template (cached)."""
         if self._prompt_template is None:
             try:
-                with open(self._prompt_file, "r") as f:
+                with open(self._prompt_file) as f:
                     self._prompt_template = f.read()
             except FileNotFoundError:
                 # Fallback inline prompt

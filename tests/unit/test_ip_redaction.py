@@ -4,7 +4,9 @@ from __future__ import annotations
 import pytest
 
 from app.privacy.ip_redaction import (
-    IP_RE, IPRedactionEngine, IPRedactionStore, PLACEHOLDER_FMT,
+    IP_RE,
+    IPRedactionEngine,
+    IPRedactionStore,
 )
 
 

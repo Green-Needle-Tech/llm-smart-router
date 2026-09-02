@@ -6,7 +6,6 @@ import copy
 import json
 import os
 import threading
-import time
 from typing import Any
 
 from .defaults import DEFAULTS
@@ -61,7 +60,7 @@ class ConfigManager:
             cfg = copy.deepcopy(DEFAULTS)
 
             if os.path.exists(self.settings_path):
-                with open(self.settings_path, "r") as f:
+                with open(self.settings_path) as f:
                     file_cfg = json.load(f)
                 cfg = _deep_merge(cfg, file_cfg)
                 with contextlib.suppress(OSError):
@@ -104,14 +103,27 @@ class ConfigManager:
 
     def start_watcher(self, interval: float = 5.0):
         """Start a background thread polling for config changes."""
+        self._watcher_stop = threading.Event()
         def _watch():
-            while True:
-                time.sleep(interval)
+            while not self._watcher_stop.is_set():
+                self._watcher_stop.wait(interval)
+                if self._watcher_stop.is_set():
+                    break
                 with contextlib.suppress(Exception):
                     self.check_and_reload()
 
         t = threading.Thread(target=_watch, daemon=True, name="config-watcher")
         t.start()
+        self._watcher_thread = t
+
+    def stop_watcher(self):
+        """Stop the config watcher thread."""
+        evt = getattr(self, "_watcher_stop", None)
+        if evt:
+            evt.set()
+        t = getattr(self, "_watcher_thread", None)
+        if t and t.is_alive():
+            t.join(timeout=2.0)
 
     def validate_startup(self) -> None:
         """Startup-only validation guards."""

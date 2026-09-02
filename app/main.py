@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from contextlib import asynccontextmanager
 
@@ -20,14 +21,18 @@ from app.cache.redis import RedisClassificationCache
 from app.classify.classifier import ClassifierService
 from app.config.loader import ConfigManager
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
+from app.middleware.errors import error_middleware
+from app.middleware.request_limits import RequestLimitsMiddleware
 from app.privacy.ip_redaction import IPRedactionEngine, IPRedactionStore
 from app.providers.openrouter import OpenRouterAdapter
 from app.routing.engine import RoutingEngine
 from app.session.memory_store import MemorySessionStore
 from app.session.redis_store import RedisSessionStore
+from app.telemetry.budget import BudgetManager
 from app.telemetry.logging import get_logger, setup_logging
 from app.telemetry.metrics import router_info
 from app.temporal_awareness.engine import TemporalAwarenessEngine
+from app.version import APPLICATION_VERSION
 
 
 @asynccontextmanager
@@ -45,7 +50,7 @@ async def lifespan(app: FastAPI):
         log_format=settings.telemetry.log_format,
     )
     logger = get_logger("startup")
-    logger.info("router.starting", version=settings.version)
+    logger.info("router.starting", version=APPLICATION_VERSION)
 
     app.state.config = cm
 
@@ -113,7 +118,22 @@ async def lifespan(app: FastAPI):
     refresh_task = asyncio.create_task(_refresh_models_loop())
 
     cm.start_watcher(interval=5.0)
-    router_info.info({"version": str(settings.version), "provider": settings.provider.name})
+
+    # Register hot-reload callbacks to update components that captured
+    # startup settings. This ensures /admin/settings/reload actually
+    # affects runtime behavior, not just the config object.
+    def _on_reload(new_settings):
+        # Update provider config (base_url, timeout, headers)
+        provider.config = new_settings
+        # Update classifier config
+        classifier.config = new_settings
+        # Update temporal awareness engine config
+        app.state.temporal_awareness_engine.config = new_settings.telemetry.temporal_awareness
+        logger.info("router.hot_reload.applied")
+
+    cm.on_reload(_on_reload)
+
+    router_info.info({"version": APPLICATION_VERSION, "provider": settings.provider.name})
 
     # IP redaction & re-hydration privacy middleware (optional)
     purge_task = None
@@ -144,6 +164,13 @@ async def lifespan(app: FastAPI):
     # Config is re-read per request so settings hot-reload applies live.
     app.state.guardrails = GuardrailEngine(GuardrailConfig())
     app.state.temporal_awareness_engine = TemporalAwarenessEngine(app.state.config.get().telemetry.temporal_awareness)
+
+    # Budget manager (pre-request cost enforcement)
+    if settings.budget.enabled:
+        app.state.budget_manager = BudgetManager(provider)
+        logger.info("router.budget.enabled", daily_limit_usd=settings.budget.daily_limit_usd)
+    else:
+        app.state.budget_manager = None
     logger.info(
         "router.guardrails.ready",
         input_enabled=settings.telemetry.guardrails.input_enabled,
@@ -157,12 +184,30 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     logger.info("router.shutdown")
+    # Cancel and await background tasks
+    tasks_to_cancel = []
     if refresh_task:
         refresh_task.cancel()
+        tasks_to_cancel.append(refresh_task)
     if purge_task:
         purge_task.cancel()
+        tasks_to_cancel.append(purge_task)
+    for t in tasks_to_cancel:
+        with contextlib.suppress(asyncio.CancelledError):
+            await t
+
+    # Close IP redaction store
     if getattr(app.state, "ip_redaction", None) is not None:
         app.state.ip_redaction.store.close()
+
+    # Close Redis session store if applicable
+    session_store = getattr(app.state, "session_store", None)
+    if session_store is not None and hasattr(session_store, "close"):
+        await session_store.close()
+
+    # Stop config watcher thread
+    cm.stop_watcher()
+
     await provider.close()
     await classifier.close()
 
@@ -172,9 +217,13 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="LLM Smart Router",
         description="Session-pinned LLM smart router with OpenAI-compatible API",
-        version="1.0.0",
+        version=APPLICATION_VERSION,
         lifespan=lifespan,
     )
+
+    # Middleware (order: outermost first)
+    app.add_middleware(RequestLimitsMiddleware, max_body_bytes=10_485_760)
+    app.middleware("http")(error_middleware)
 
     # Register routers
     app.include_router(health_router)

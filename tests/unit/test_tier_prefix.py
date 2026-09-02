@@ -1,12 +1,13 @@
 """Tests for tier-prefix session pinning (bypasses classifier on turn 1)."""
-import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.schemas.openai import ChatCompletionRequest, ChatMessage
-from app.schemas.router import Level, ClassificationSource
-from app.config.loader import ConfigManager
+import pytest
+
 from app.api.chat import _detect_tier_prefix
+from app.config.loader import ConfigManager
+from app.schemas.openai import ChatCompletionRequest, ChatMessage
+from app.schemas.router import ClassificationSource, Level
 
 
 def _make_config(tier_prefix_enabled=True, strip_prefix=True, pattern=None):
@@ -211,8 +212,8 @@ def test_empty_string_returns_none():
 async def test_tier_prefix_bypasses_classifier():
     """A tier-prefix in the first prompt pins the session without calling the classifier LLM."""
     from app.api.chat import _session_pinned_route
-    from app.classify.classifier import ClassifierService
     from app.cache.memory import MemoryClassificationCache
+    from app.classify.classifier import ClassifierService
     from app.routing.engine import RoutingEngine
     from app.session.memory_store import MemorySessionStore
 
@@ -295,11 +296,11 @@ async def test_tier_prefix_bypasses_classifier():
 async def test_tier_prefix_does_not_fire_on_session_hit():
     """On a session hit (turn 2+), the tier prefix is NOT re-evaluated."""
     from app.api.chat import _session_pinned_route
-    from app.classify.classifier import ClassifierService
     from app.cache.memory import MemoryClassificationCache
+    from app.classify.classifier import ClassifierService
     from app.routing.engine import RoutingEngine
-    from app.session.memory_store import MemorySessionStore
     from app.schemas.router import SessionPin, SessionStatus
+    from app.session.memory_store import MemorySessionStore
 
     config = _make_config()
     config.classification.enabled = True
@@ -386,8 +387,8 @@ async def test_forced_level_takes_precedence_over_prefix():
     """When forced_level is already set (e.g. via smart-router/L4 directive),
     the tier-prefix detection is skipped."""
     from app.api.chat import _session_pinned_route
-    from app.classify.classifier import ClassifierService
     from app.cache.memory import MemoryClassificationCache
+    from app.classify.classifier import ClassifierService
     from app.routing.engine import RoutingEngine
     from app.session.memory_store import MemorySessionStore
 

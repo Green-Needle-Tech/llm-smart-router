@@ -4,15 +4,20 @@ from __future__ import annotations
 import pytest
 
 from app.guardrails.base import (
-    BaseValidator, GuardrailFinding, RegexValidator, ValidatorRegistry,
-    SEV_ORDER, severity_at_least,
+    SEV_ORDER,
+    BaseValidator,
+    RegexValidator,
+    ValidatorRegistry,
+    severity_at_least,
 )
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 from app.guardrails.validators import (
-    SystemPromptLeakValidator, _normalize, _fuzzy_ratio, _chunk_fragment,
-    DEFAULT_FUZZY_THRESHOLD, DEFAULT_MASK,
+    DEFAULT_MASK,
+    SystemPromptLeakValidator,
+    _chunk_fragment,
+    _fuzzy_ratio,
+    _normalize,
 )
-from app.guardrails.rules import COMPILED_INJECTION, SECRET_RULES
 
 
 def _engine(**cfg) -> GuardrailEngine:

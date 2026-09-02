@@ -19,7 +19,6 @@ import respx
 from app.config.loader import ConfigManager
 from app.routing.fallback import FallbackExecutor
 
-
 UPSTREAM = "https://openrouter.ai/api/v1/chat/completions"
 
 PRIMARY = "anthropic/claude-sonnet-4.5"

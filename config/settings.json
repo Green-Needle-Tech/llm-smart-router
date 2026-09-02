@@ -125,7 +125,8 @@
       "retry_on_failure_max_per_session": 2
     },
     "reclassify_every_n_turns": null,
-    "shadow_classify_every_n_turns": null
+    "shadow_classify_every_n_turns": null,
+    "namespace_by_api_key": false
   },
   "heuristics": {
     "enabled": true,

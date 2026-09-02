@@ -1,8 +1,6 @@
 """Tests for the guardrails module: injection detection + secret masking."""
 from __future__ import annotations
 
-import pytest
-
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 
 

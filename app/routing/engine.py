@@ -69,15 +69,19 @@ class RoutingEngine:
         """Check if a model slug is allowed for passthrough."""
         if not self.config.routing.allow_passthrough:
             return False
-        # Check if it's a configured tier model or in allowlist
-        for level in ["L1", "L2", "L3", "L4"]:
+        # Check if it's a configured tier model or in a tier's fallbacks
+        for level in ["L1", "L2", "L3", "L4", "L5"]:
             tier = self.config.routing.get_tier(level)
             if tier.model == model:
                 return True
             if model in tier.fallbacks:
                 return True
-        # Could check an explicit allowlist here
-        return True  # if passthrough is enabled, allow by default
+        # Check explicit allowlist
+        allowlist = getattr(self.config.routing, "passthrough_model_allowlist", [])
+        if model in allowlist:
+            return True
+        # Default deny — do not allow arbitrary model slugs
+        return False
 
     def parse_model_directive(self, model: str) -> dict:
         """Parse the model field as a routing directive.

@@ -24,7 +24,6 @@ def test_different_across_distinct_openers():
 
 def test_strip_patterns():
     """Timestamp patterns should be stripped before hashing."""
-    import re
     sys1 = "System prompt with 2026-08-16T09:00:00 timestamp"
     sys2 = "System prompt with 2026-08-16T11:30:00 timestamp"
     patterns = [r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"]

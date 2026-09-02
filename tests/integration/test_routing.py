@@ -1,8 +1,9 @@
 """Integration tests for the routing engine."""
 import pytest
-from app.routing.engine import RoutingEngine
-from app.schemas.router import Level, ClassificationResult, ClassificationSource
+
 from app.config.loader import ConfigManager
+from app.routing.engine import RoutingEngine
+from app.schemas.router import ClassificationResult, ClassificationSource, Level
 
 
 @pytest.fixture

@@ -27,9 +27,8 @@ from httpx import ASGITransport, AsyncClient
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
 os.environ.setdefault("ROUTER_API_KEY", "test-router-key")
 
-from app.main import create_app  # noqa: E402
-from app.schemas.router import Level, SessionPin, SessionStatus  # noqa: E402
-
+from app.main import create_app
+from app.schemas.router import Level, SessionPin, SessionStatus
 
 UPSTREAM = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -65,11 +64,10 @@ async def app_client():
     with respx.mock(assert_all_called=False) as rmock:
         # startup calls list_models() for pricing
         rmock.get(MODELS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
-        async with app.router.lifespan_context(app):
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as ac:
-                yield app, ac, rmock
+        async with app.router.lifespan_context(app), AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            yield app, ac, rmock
 
 
 async def _pin_l3(app, session_id: str) -> SessionPin:

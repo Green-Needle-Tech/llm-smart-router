@@ -179,7 +179,7 @@ class GuardrailEngine:
             return []
         if _in_code_block_heavy_text(text):
             return []
-        
+
         # Homoglyph normalization pass
         eval_text = normalize_homoglyphs(text) if self.config.homoglyph_normalization else text
 

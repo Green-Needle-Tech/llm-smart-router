@@ -8,10 +8,8 @@ Covers two bugs found on 2026-08-17:
 """
 from types import SimpleNamespace
 
-import pytest
-
 from app.api.chat import _check_escalation_signals
-from app.schemas.router import SessionPin, Level
+from app.schemas.router import Level, SessionPin
 
 
 def _cfg(turn_depth_weight=0, threshold=5, escalate_after_turns=25,
