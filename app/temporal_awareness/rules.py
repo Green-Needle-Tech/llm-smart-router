@@ -40,6 +40,11 @@ _UNIT = r"(days?|dys?|weeks?|wks?|months?|mnths?|years?|yrs?|hours?|hrs?|minutes
 # ── AM/PM pattern (with periods: a.m., p.m.) ──
 _AMPM = r"(?:am|pm|a\.m\.|p\.m\.)"
 
+# Duplicated regex fragments extracted as constants
+_LOOKAHEAD_BOUNDARY = r"(?=\s|[,.;!?]|$)"
+_OPT_AMPM_BOUNDARY = r"))?\b"
+_NUM_UNIT_PREFIX = r"\b(\d+)\s+"
+
 TEMPORAL_EXPRESSION_PATTERNS = [
 
     # ═══════════════════════════════════════════════════════════════
@@ -83,19 +88,19 @@ TEMPORAL_EXPRESSION_PATTERNS = [
     (r"\b(\d{1,2})\s*hundred\s*(?:hours?|hrs?|h)?\b", "military_time_hundred"),
 
     # Quarter past/to, half past
-    (r"\b(?:a\s+)?quarter\s+past\s+(\d{1,2})(?:\s*(" + _AMPM + r"))?\b", "quarter_past"),
-    (r"\b(?:a\s+)?quarter\s+(?:to|till|of)\s+(\d{1,2})(?:\s*(" + _AMPM + r"))?\b", "quarter_to"),
-    (r"\bhalf\s+past\s+(\d{1,2})(?:\s*(" + _AMPM + r"))?\b", "half_past"),
+    (r"\b(?:a\s+)?quarter\s+past\s+(\d{1,2})(?:\s*(" + _AMPM + _OPT_AMPM_BOUNDARY, "quarter_past"),
+    (r"\b(?:a\s+)?quarter\s+(?:to|till|of)\s+(\d{1,2})(?:\s*(" + _AMPM + _OPT_AMPM_BOUNDARY, "quarter_to"),
+    (r"\bhalf\s+past\s+(\d{1,2})(?:\s*(" + _AMPM + _OPT_AMPM_BOUNDARY, "half_past"),
 
     # O'clock (3 o'clock, 3o'clock, 3 o clock)
     (r"\b(\d{1,2})\s*o['']?\s*clock\b", "oclock"),
 
     # At/by H:MM AM/PM (requires AM/PM, not followed by o'clock or hundred)
-    (r"\b(?:at|by|@)\s+(\d{1,2})(?::(\d{2}))\s*(" + _AMPM + r")(?=\s|[,.;!?]|$)", "specific_time_datetime"),
-    (r"\b(?:at|by|@)\s+(\d{1,2})\s*(" + _AMPM + r")(?=\s|[,.;!?]|$)", "specific_time_datetime"),
+    (r"\b(?:at|by|@)\s+(\d{1,2})(?::(\d{2}))\s*(" + _AMPM + r")" + _LOOKAHEAD_BOUNDARY, "specific_time_datetime"),
+    (r"\b(?:at|by|@)\s+(\d{1,2})\s*(" + _AMPM + r")" + _LOOKAHEAD_BOUNDARY, "specific_time_datetime"),
 
     # H:MM AM/PM or H AM/PM (standalone, requires AM/PM)
-    (r"\b(\d{1,2})(?::(\d{2}))?\s*(" + _AMPM + r")(?=\s|[,.;!?]|$)", "specific_time_datetime"),
+    (r"\b(\d{1,2})(?::(\d{2}))?\s*(" + _AMPM + r")" + _LOOKAHEAD_BOUNDARY, "specific_time_datetime"),
 
     # ═══════════════════════════════════════════════════════════════
     # END / BEGINNING / ABBREVIATIONS
@@ -149,10 +154,10 @@ TEMPORAL_EXPRESSION_PATTERNS = [
     # ═══════════════════════════════════════════════════════════════
 
     (r"\b(?:last|past)\s+(\d+)\s+" + _UNIT + r"\b", "past_n_units"),
-    (r"\b(\d+)\s+" + _UNIT + r"\s+ago\b", "n_units_ago"),
-    (r"\b(\d+)\s+" + _UNIT + r"\s+back\b", "n_units_ago"),
-    (r"\b(\d+)\s+" + _UNIT + r"\s+from\s+(?:now|today)\b", "n_units_from_now"),
-    (r"\b(\d+)\s+" + _UNIT + r"\s+hence\b", "n_units_from_now"),
+    (_NUM_UNIT_PREFIX + _UNIT + r"\s+ago\b", "n_units_ago"),
+    (_NUM_UNIT_PREFIX + _UNIT + r"\s+back\b", "n_units_ago"),
+    (_NUM_UNIT_PREFIX + _UNIT + r"\s+from\s+(?:now|today)\b", "n_units_from_now"),
+    (_NUM_UNIT_PREFIX + _UNIT + r"\s+hence\b", "n_units_from_now"),
     (r"\bin\s+(\d+)\s+" + _UNIT + r"\b", "in_n_units"),
 
     # ═══════════════════════════════════════════════════════════════

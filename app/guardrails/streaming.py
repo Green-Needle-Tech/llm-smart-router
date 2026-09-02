@@ -17,27 +17,32 @@ import re
 # an unmasked tail this short may still be growing into a real secret.
 _MARGIN = 8
 
+# Character classes for secret body matching (extracted to avoid duplication)
+_BODY_ALNUM = r"[A-Za-z0-9]"
+_BODY_ALNUM_DASH = r"[A-Za-z0-9_-]"
+_BODY_ALNUM_HYPHEN = r"[A-Za-z0-9-]"
+
 SECRET_CARRY_MARKERS: list[tuple[str, str, int]] = [
-    ("sk-or-v1-", r"[A-Za-z0-9]", 16),
-    ("sk-ant-", r"[A-Za-z0-9_-]", 16),  # + optional apiNN- prefix -> margin covers it
-    ("sk-proj-", r"[A-Za-z0-9_-]", 20),
-    ("sk-", r"[A-Za-z0-9]", 32),
-    ("ghp_", r"[A-Za-z0-9]", 20),
-    ("gho_", r"[A-Za-z0-9]", 20),
-    ("ghu_", r"[A-Za-z0-9]", 20),
-    ("ghs_", r"[A-Za-z0-9]", 20),
-    ("ghr_", r"[A-Za-z0-9]", 20),
+    ("sk-or-v1-", _BODY_ALNUM, 16),
+    ("sk-ant-", _BODY_ALNUM_DASH, 16),  # + optional apiNN- prefix -> margin covers it
+    ("sk-proj-", _BODY_ALNUM_DASH, 20),
+    ("sk-", _BODY_ALNUM, 32),
+    ("ghp_", _BODY_ALNUM, 20),
+    ("gho_", _BODY_ALNUM, 20),
+    ("ghu_", _BODY_ALNUM, 20),
+    ("ghs_", _BODY_ALNUM, 20),
+    ("ghr_", _BODY_ALNUM, 20),
     ("github_pat_", r"[A-Za-z0-9_]", 20),
     ("AKIA", r"[0-9A-Z]", 16),
     ("AIza", r"[0-9A-Za-z_-]", 30),
-    ("xoxa-", r"[A-Za-z0-9-]", 10),
-    ("xoxb-", r"[A-Za-z0-9-]", 10),
-    ("xoxp-", r"[A-Za-z0-9-]", 10),
-    ("xoxr-", r"[A-Za-z0-9-]", 10),
-    ("xoxs-", r"[A-Za-z0-9-]", 10),
-    ("glpat-", r"[A-Za-z0-9_-]", 20),
-    ("sk_live_", r"[A-Za-z0-9]", 20),
-    ("rk_live_", r"[A-Za-z0-9]", 20),
+    ("xoxa-", _BODY_ALNUM_HYPHEN, 10),
+    ("xoxb-", _BODY_ALNUM_HYPHEN, 10),
+    ("xoxp-", _BODY_ALNUM_HYPHEN, 10),
+    ("xoxr-", _BODY_ALNUM_HYPHEN, 10),
+    ("xoxs-", _BODY_ALNUM_HYPHEN, 10),
+    ("glpat-", _BODY_ALNUM_DASH, 20),
+    ("sk_live_", _BODY_ALNUM, 20),
+    ("rk_live_", _BODY_ALNUM, 20),
     ("-----BEGIN ", r"[A-Z -]", 30),
 ]
 

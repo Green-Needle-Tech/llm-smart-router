@@ -15,7 +15,7 @@ def _check_admin(request: Request):
         raise HTTPException(status_code=401, detail="Invalid admin key")
 
 
-@router.get("/sessions")
+@router.get("/sessions", responses={401: {"description": "Invalid admin key"}})
 async def list_sessions(
     request: Request,
     level: str | None = Query(default=None),
@@ -49,7 +49,7 @@ async def get_settings(request: Request):
     return cm.redacted_dict()
 
 
-@router.post("/settings/reload")
+@router.post("/settings/reload", responses={422: {"description": "Config validation failed"}})
 async def reload_settings(request: Request):
     """Re-read and validate settings.json."""
     _check_admin(request)

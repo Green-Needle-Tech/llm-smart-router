@@ -14,10 +14,17 @@ class ProviderAdapter(ABC):
     async def chat_completion(
         self,
         payload: dict[str, Any],
+        fallback_models: list[str] | None = None,
         *,
         stream: bool = False,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ) -> tuple[dict | None, httpx.Response | None, str, bool, str | None]:
-        """Execute a chat completion request. Returns (json, stream_response, model, fallback_used, error)."""
+        """Execute a chat completion request with optional fallback chain.
+
+        Returns (json, stream_response, model, fallback_used, error).
+        When base_url/api_key are provided, they override the adapter defaults.
+        """
         ...
 
     @abstractmethod

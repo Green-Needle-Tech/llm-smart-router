@@ -72,7 +72,7 @@ router = APIRouter()
 logger = get_logger("chat")
 
 
-@router.post("/v1/chat/completions")
+@router.post("/v1/chat/completions", responses={400: {"description": "Bad request"}})
 async def chat_completions(request: Request, body: ChatCompletionRequest):
     """Handle a chat completion request with session-pinned routing."""
     start = time.monotonic()

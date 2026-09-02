@@ -20,7 +20,7 @@ class SignalRequest(BaseModel):
     detail: str = ""
 
 
-@router.get("/{session_id}")
+@router.get("/{session_id}", responses={404: {"description": "Session not found"}})
 async def get_session(session_id: str, request: Request):
     """Inspect a session pin."""
     store = request.app.state.session_store
@@ -67,7 +67,7 @@ async def set_session(session_id: str, body: SetPinRequest, request: Request):
     return pin.model_dump()
 
 
-@router.delete("/{session_id}")
+@router.delete("/{session_id}", responses={404: {"description": "Session not found"}})
 async def delete_session(session_id: str, request: Request):
     """Drop a pin."""
     store = request.app.state.session_store
@@ -77,7 +77,7 @@ async def delete_session(session_id: str, request: Request):
     return {"deleted": True, "session_id": session_id}
 
 
-@router.post("/{session_id}/signal")
+@router.post("/{session_id}/signal", responses={404: {"description": "Session not found"}})
 async def signal_session(session_id: str, body: SignalRequest, request: Request):
     """Report difficulty evidence for escalation scoring."""
     config = request.app.state.config.get()
