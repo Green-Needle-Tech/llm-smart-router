@@ -1,7 +1,7 @@
 services:
   smart-router:
     build: .
-    image: llm-smart-router:2.16.2
+    image: llm-smart-router:2.16.4
     container_name: smart-router
     restart: unless-stopped
     ports:
