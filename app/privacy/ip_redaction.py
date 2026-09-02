@@ -31,10 +31,18 @@ IPV4_RE = re.compile(
 )
 
 # IPv6: full form, compressed runs (::), and trailing compressions.
+# Enumerate group counts explicitly to avoid nested variable quantifiers
+# ({1,4} inside {1,7}) which cause super-linear backtracking (S5850).
+_H = r"[0-9a-fA-F]{1,4}"
+_IPV6_FULL = rf"\b(?:{_H}:){{7}}{_H}\b"
+_IPV6_LEAD = "|".join(
+    rf"\b{':'.join([_H] * k)}::" for k in range(7, 0, -1)
+)
+_IPV6_TRAIL = "|".join(
+    rf":{':'.join([''] + [_H] * k)}\b" for k in range(7, 0, -1)
+)
 IPV6_RE = re.compile(
-    r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b"
-    r"|\b(?:[0-9a-fA-F]{1,4}:){1,7}:"
-    r"|:(?::[0-9a-fA-F]{1,4}){1,7}\b"
+    f"{_IPV6_FULL}|{_IPV6_LEAD}|{_IPV6_TRAIL}"
 )
 
 # Combined matcher: IPv4 first so dotted quads are never misread as IPv6.

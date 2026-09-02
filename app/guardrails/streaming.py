@@ -163,9 +163,8 @@ def _collapsed_marker_bodies(collapsed, pairs):
         if cidx == -1:
             continue
         body = collapsed[cidx + len(marker):]
-        if body_re.fullmatch(body):
-            if best is None or pairs[cidx][0] < best:
-                best = pairs[cidx][0]
+        if body_re.fullmatch(body) and (best is None or pairs[cidx][0] < best):
+            best = pairs[cidx][0]
     return best
 
 

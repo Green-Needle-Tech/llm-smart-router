@@ -78,10 +78,8 @@ class RoutingEngine:
                 return True
         # Check explicit allowlist
         allowlist = getattr(self.config.routing, "passthrough_model_allowlist", [])
-        if model in allowlist:
-            return True
         # Default deny — do not allow arbitrary model slugs
-        return False
+        return model in allowlist
 
     def parse_model_directive(self, model: str) -> dict:
         """Parse the model field as a routing directive.

@@ -382,15 +382,15 @@ class GuardrailEngine:
         """Mask PII patterns in input text. Returns (masked_text, findings)."""
         findings: list[GuardrailFinding] = []
         for pid, pattern in PII_RULES:
-            def _pii_sub(m: re.Match, _pid=pid) -> str:
+            def _pii_sub(m: re.Match, _pid=pid, _text=text) -> str:
                 match_text = m.group(0)
                 if _pid == "pii-credit-card" and not _is_likely_credit_card(match_text):
                     return match_text  # don't mask non-CC digit runs
-                if _pid == "pii-passport":
-                    # Avoid false positive: require context keyword or
-                    # that the 9-digit run is not part of a longer number
-                    if not re.search(r"passport", text[:m.start() + 50], re.IGNORECASE):
-                        return match_text
+                if _pid == "pii-passport" and not re.search(
+                    r"passport", _text[:m.start() + 50], re.IGNORECASE
+                ):
+                    # Avoid false positive: require context keyword nearby
+                    return match_text
                 findings.append(GuardrailFinding(
                     rule_id=_pid, severity="HIGH",
                     snippet=match_text[:20] + "\u2026",

@@ -512,7 +512,7 @@ def _rehydrate_response_content(engine, json_resp, key: str | None) -> None:
 
 
 def _detect_tier_prefix(body, config) -> Level | None:
-    """Detect a tier label (L1–L5) at the start of the first user prompt.
+    """Detect a tier label (L1-L5) at the start of the first user prompt.
 
     When the user's opening message begins with a tier identifier like
     "L4 explain quantum computing", the session is pinned directly to
@@ -706,7 +706,7 @@ async def _handle_lock_timeout(
     )
     route = routing_engine.resolve(default_level, classification, max_level=max_level, min_level=min_level)
     return await _forward_to_provider(
-        request, body, route, session_id, None, include_metadata, start,
+        request, body, route, session_id, None, None, include_metadata, start,
         redaction_key=redaction_key,
     )
 
