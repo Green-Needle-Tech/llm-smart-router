@@ -193,6 +193,13 @@ router_privacy_redactions_total = Counter(
     "Requests that passed through IP redaction",
 )
 
+# Tier-prefix pinning metrics
+router_tier_prefix_pins_total = Counter(
+    "router_tier_prefix_pins_total",
+    "Sessions pinned via tier-prefix detection (bypasses classifier)",
+    ["level"],
+)
+
 # Guardrail metrics
 router_guardrail_findings_total = Counter(
     "router_guardrail_findings_total",

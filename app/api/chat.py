@@ -30,11 +30,6 @@ from app.session.lifecycle import check_expiry, check_turn_cap
 from app.session.locks import acquire_or_wait
 from app.session.resolver import resolve_session_id
 from app.telemetry.logging import get_logger
-from app.telemetry.token_tracker import (
-    accumulate as accumulate_tokens,
-    build_postfix as build_token_postfix,
-    extract_tokens,
-)
 from app.telemetry.metrics import (
     router_active_requests,
     router_cache_events_total,
@@ -55,8 +50,18 @@ from app.telemetry.metrics import (
     router_sessions_active,
     router_sessions_created_total,
     router_stream_errors_total,
+    router_tier_prefix_pins_total,
     router_tokens_total,
     router_upstream_duration_seconds,
+)
+from app.telemetry.token_tracker import (
+    accumulate as accumulate_tokens,
+)
+from app.telemetry.token_tracker import (
+    build_postfix as build_token_postfix,
+)
+from app.telemetry.token_tracker import (
+    extract_tokens,
 )
 from app.temporal_awareness.engine import TemporalAwarenessEngine
 
@@ -440,6 +445,65 @@ def _rehydrate_response_content(engine, json_resp, key: str | None) -> None:
                         block["text"] = engine.rehydrate_text_sync(block["text"], key)
 
 
+def _detect_tier_prefix(body, config) -> Level | None:
+    """Detect a tier label (L1–L5) at the start of the first user prompt.
+
+    When the user's opening message begins with a tier identifier like
+    "L4 explain quantum computing", the session is pinned directly to
+    that tier, bypassing the classifier LLM entirely.
+
+    If strip_prefix is enabled and meaningful content remains after the
+    prefix, the prefix is removed from the message content before
+    forwarding upstream.
+
+    Returns the detected Level, or None.
+    """
+    tier_cfg = getattr(config.classification, "tier_prefix", None)
+    if tier_cfg is None or not getattr(tier_cfg, "enabled", False):
+        return None
+
+    pattern_str = getattr(tier_cfg, "pattern", r"^(L[1-5])[\s:.\-]")
+    strip_prefix = getattr(tier_cfg, "strip_prefix", True)
+
+    # Find the first user message
+    first_user_msg = None
+    for msg in body.messages:
+        if msg.role == "user":
+            first_user_msg = msg
+            break
+
+    if first_user_msg is None:
+        return None
+
+    content = first_user_msg.content
+    if not isinstance(content, str) or not content.strip():
+        return None
+
+    match = re.match(pattern_str, content.strip(), re.IGNORECASE)
+    if match is None:
+        return None
+
+    level_str = match.group(1)
+    try:
+        level = Level.from_str(level_str)
+    except ValueError:
+        return None
+
+    # Strip the prefix from the message if configured and content remains
+    if strip_prefix:
+        stripped = content.strip()[match.end():].strip()
+        if stripped:
+            first_user_msg.content = stripped
+
+    router_tier_prefix_pins_total.labels(level=level.value).inc()
+    logger.info(
+        "router.tier_prefix.detected",
+        level=level.value,
+        strip_prefix=strip_prefix,
+    )
+    return level
+
+
 async def _session_pinned_route(
     request, body, config, routing_engine,
     directive, forced_level, forced_model, max_level, min_level,
@@ -595,6 +659,17 @@ async def _session_pinned_route(
             level=level,
             confidence=1.0,
             reason="forced override",
+            source=ClassificationSource.OVERRIDE,
+            latency_ms=int((time.monotonic() - start) * 1000),
+        )
+    elif (prefix_level := _detect_tier_prefix(body, config)) is not None:
+        # Tier-prefix detected in the first user prompt — pin directly
+        # to that tier, bypassing the classifier LLM entirely.
+        level = prefix_level
+        classification = ClassificationResult(
+            level=level,
+            confidence=1.0,
+            reason="tier-prefix pin",
             source=ClassificationSource.OVERRIDE,
             latency_ms=int((time.monotonic() - start) * 1000),
         )

@@ -55,6 +55,7 @@ print(r.model)  # actual model used
 ## How It Works
 
 - **Turn 1**: Classifier assigns L1–L5 → session pinned to the matching model
+  - **Tier-prefix override**: If the first message starts with a tier label (e.g. `L4 explain quantum computing`), the session pins directly to that tier — no classifier LLM call. The prefix is stripped before forwarding upstream. Configurable via `classification.tier_prefix` (enabled, pattern, strip_prefix)
 - **Turn 2+**: Straight to the pinned model, no classifier call (sub-ms lookup)
 - **Escalation**: Free signals (repair language, tool errors, etc.) can ratchet the tier up mid-session
 - **Config changes**: `session.on_config_change: keep_level` (default) re-resolves the tier's model per turn after settings changes — no pin expiry wait, no re-classification
@@ -124,6 +125,9 @@ REQUEST TO CLASSIFY:
 | `min_confidence` | `0.5` | Below → escalate to `default_level` |
 | `cache.enabled` | `true` | Avoid re-classifying identical prompts |
 | `cache.ttl_seconds` | `3600` | 1-hour prompt cache |
+| `tier_prefix.enabled` | `true` | Detect tier label at start of first prompt |
+| `tier_prefix.pattern` | `^(L[1-5])[\s:.\-]*` | Regex (group 1 = level) |
+| `tier_prefix.strip_prefix` | `true` | Remove prefix from message before forwarding |
 
 
 ## Configuration
@@ -146,7 +150,10 @@ flowchart TD
         C --> P1["🛡️ Guardrails Input<br/>Injection detection 26 rules (log/block)<br/>+ Homoglyph normalization<br/>Cyrillic/Greek/Full-width lookalikes<br/>+ Obfuscation & entropy scanning<br/>Base64/Hex/URL-encoded payloads<br/>+ Invisible text stripping<br/>+ Banned substrings scan<br/>+ Input PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
         P1 --> P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
         P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags<br/>typo + grammar tolerant"]
-        P2T --> D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
+        P2T --> TP{"Tier-prefix<br/>in prompt?"}
+        TP -->|Yes| TP2["Tier-Prefix Pin<br/>L1–L5 detected<br/>prefix stripped<br/>classifier skipped"]
+        TP -->|No| D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
+        TP2 --> D2["Route to<br/>pinned tier"]
     end
 
     D -->|L1| E[GLM 5.3 Flash<br/>OpenRouter]
@@ -154,6 +161,11 @@ flowchart TD
     D -->|L3| F2[GLM 5.2<br/>OpenRouter]
     D -->|L4| F3[GLM 5.3<br/>OpenRouter]
     D -->|L5| H[Opus 5<br/>Claude API]
+    D2 --> E
+    D2 --> F
+    D2 --> F2
+    D2 --> F3
+    D2 --> H
 
     E --> C
     F --> C
@@ -196,6 +208,7 @@ Turn 2+ skips the classifier: the session pin routes straight to the tier model,
 - `router_privacy_redactions_total` — requests passing through IP redaction
 - `router_prompt_cached_tokens_total` / `router_prompt_cache_hit_ratio` — KV-cache usage
 - `router_requests_total{source}` — requests by classification source (model, heuristic, pin, override)
+- `router_tier_prefix_pins_total{level}` — sessions pinned via tier-prefix detection (classifier bypassed)
 
 See the [full specification](./llm-smart-router-spec.md) for complete details.
 

@@ -120,6 +120,19 @@ class ClassificationCacheConfig(BaseModel):
     max_entries: int = 10000
 
 
+class TierPrefixConfig(BaseModel):
+    """Tier-prefix session pinning: detect a tier label (L1–L5) at the
+    start of the first user prompt and pin the session to that tier
+    without calling the classifier LLM."""
+    enabled: bool = True
+    # Regex pattern for the tier prefix. Must capture the level in group 1.
+    # Default: "L1".."L5" optionally followed by whitespace/punctuation.
+    pattern: str = r"^(L[1-5])[\s:.\-]*"
+    # When True, strips the matched prefix from the user message before
+    # forwarding upstream. Only strips if there is remaining content.
+    strip_prefix: bool = True
+
+
 class ClassificationConfig(BaseModel):
     enabled: bool = True
     model: str = "mistralai/mistral-small-3.2-24b-instruct"
@@ -138,6 +151,7 @@ class ClassificationConfig(BaseModel):
     api_key_env: str | None = None
     digest: DigestConfig = Field(default_factory=DigestConfig)
     cache: ClassificationCacheConfig = Field(default_factory=ClassificationCacheConfig)
+    tier_prefix: TierPrefixConfig = Field(default_factory=TierPrefixConfig)
 
 
 class EscalationConfig(BaseModel):
