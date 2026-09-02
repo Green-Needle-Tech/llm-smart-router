@@ -7,6 +7,10 @@ from app.schemas.router import SessionPin
 
 from .store import SessionStore
 
+# Key prefix/marker constants (extracted to avoid duplication)
+_SESSION_PREFIX = "session:"
+_RES_MARKER = ":res:"
+
 
 class RedisSessionStore(SessionStore):
     """Redis-backed store using SETNX for reservations."""
@@ -17,11 +21,11 @@ class RedisSessionStore(SessionStore):
 
     @staticmethod
     def _key(session_id: str) -> str:
-        return f"session:{session_id}"
+        return f"{_SESSION_PREFIX}{session_id}"
 
     @staticmethod
     def _res_key(session_id: str) -> str:
-        return f"session:res:{session_id}"
+        return f"{_SESSION_PREFIX}res{_RES_MARKER}{session_id}"
 
     async def get(self, session_id: str) -> SessionPin | None:
         raw = await self._redis.get(self._key(session_id))
@@ -60,16 +64,16 @@ class RedisSessionStore(SessionStore):
 
     async def delete_all(self) -> int:
         count = 0
-        async for key in self._redis.scan_iter(match="session:*", count=100):
-            if ":res:" not in key:
+        async for key in self._redis.scan_iter(match=f"{_SESSION_PREFIX}*", count=100):
+            if _RES_MARKER not in key:
                 await self._redis.delete(key)
                 count += 1
         return count
 
     async def list_sessions(self, level: str | None = None, offset: int = 0, limit: int = 50) -> list[SessionPin]:
         pins = []
-        async for key in self._redis.scan_iter(match="session:*", count=100):
-            if ":res:" in key:
+        async for key in self._redis.scan_iter(match=f"{_SESSION_PREFIX}*", count=100):
+            if _RES_MARKER in key:
                 continue
             raw = await self._redis.get(key)
             if raw:
@@ -80,8 +84,8 @@ class RedisSessionStore(SessionStore):
 
     async def count(self) -> int:
         count = 0
-        async for key in self._redis.scan_iter(match="session:*", count=100):
-            if ":res:" not in key:
+        async for key in self._redis.scan_iter(match=f"{_SESSION_PREFIX}*", count=100):
+            if _RES_MARKER not in key:
                 count += 1
         return count
 
