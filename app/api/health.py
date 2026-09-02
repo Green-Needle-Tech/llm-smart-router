@@ -13,72 +13,77 @@ async def healthz():
     return {"status": "ok"}
 
 
-@router.get("/readyz")
-async def readyz(request: Request):
-    """Readiness probe. Returns 503 when required dependencies are unavailable.
+def _check_config(state) -> tuple[str, bool]:
+    cm = getattr(state, "config", None)
+    if cm is None:
+        return "missing", False
+    try:
+        settings = cm.get()
+        if not settings.provider.base_url:
+            return "no provider base_url", False
+        return "ok", True
+    except Exception as e:
+        return f"error: {e}", False
 
-    Checks:
-    - app.state.config exists and has provider base_url
-    - provider adapter is initialized
-    - session store is accessible
-    - IP redaction store is accessible (if enabled)
-    """
+
+def _check_provider(state) -> tuple[str, bool]:
+    provider = getattr(state, "provider", None)
+    if provider is None:
+        return "missing", False
+    return "ok", True
+
+
+async def _check_session_store(state) -> tuple[str, bool]:
+    session_store = getattr(state, "session_store", None)
+    if session_store is None:
+        return "missing", False
+    try:
+        await session_store.count()
+        return "ok", True
+    except Exception as e:
+        return f"error: {e}", False
+
+
+def _check_ip_redaction(state) -> tuple[str, bool]:
+    ip_redaction = getattr(state, "ip_redaction", None)
+    if ip_redaction is None:
+        return None, True  # Not enabled, skip
+    try:
+        ip_redaction.store.get_mappings("__health_check__")
+        return "ok", True
+    except Exception as e:
+        return f"error: {e}", False
+
+
+@router.get("/readyz", responses={503: {"description": "Not ready"}})
+async def readyz(request: Request):
+    """Readiness probe. Returns 503 when required dependencies are unavailable."""
+    state = request.app.state
     checks = {}
     all_ok = True
 
-    # Check config
-    cm = getattr(request.app.state, "config", None)
-    if cm is None:
-        checks["config"] = "missing"
-        all_ok = False
-    else:
-        try:
-            settings = cm.get()
-            if not settings.provider.base_url:
-                checks["config"] = "no provider base_url"
-                all_ok = False
-            else:
-                checks["config"] = "ok"
-        except Exception as e:
-            checks["config"] = f"error: {e}"
+    for name, result in [
+        ("config", _check_config(state)),
+        ("provider", _check_provider(state)),
+    ]:
+        status, ok = result
+        if status is not None:
+            checks[name] = status
+        if not ok:
             all_ok = False
 
-    # Check provider
-    provider = getattr(request.app.state, "provider", None)
-    if provider is None:
-        checks["provider"] = "missing"
+    status, ok = await _check_session_store(state)
+    checks["session_store"] = status
+    if not ok:
         all_ok = False
-    else:
-        checks["provider"] = "ok"
 
-    # Check session store
-    session_store = getattr(request.app.state, "session_store", None)
-    if session_store is None:
-        checks["session_store"] = "missing"
+    status, ok = _check_ip_redaction(state)
+    if status is not None:
+        checks["ip_redaction"] = status
+    if not ok:
         all_ok = False
-    else:
-        # Try a count operation
-        try:
-            await session_store.count()
-            checks["session_store"] = "ok"
-        except Exception as e:
-            checks["session_store"] = f"error: {e}"
-            all_ok = False
 
-    # Check IP redaction store (if enabled)
-    ip_redaction = getattr(request.app.state, "ip_redaction", None)
-    if ip_redaction is not None:
-        try:
-            # Simple check: store connection is alive
-            ip_redaction.store.get_mappings("__health_check__")
-            checks["ip_redaction"] = "ok"
-        except Exception as e:
-            checks["ip_redaction"] = f"error: {e}"
-            all_ok = False
-
-    status = "ready" if all_ok else "not_ready"
-    status_code = 200 if all_ok else 503
     return JSONResponse(
-        status_code=status_code,
-        content={"status": status, "checks": checks},
+        status_code=200 if all_ok else 503,
+        content={"status": "ready" if all_ok else "not_ready", "checks": checks},
     )

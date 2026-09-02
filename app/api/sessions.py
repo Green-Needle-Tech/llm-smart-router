@@ -30,7 +30,7 @@ async def get_session(session_id: str, request: Request):
     return pin.model_dump()
 
 
-@router.put("/{session_id}")
+@router.put("/{session_id}", responses={400: {"description": "Invalid level"}})
 async def set_session(session_id: str, body: SetPinRequest, request: Request):
     """Manually set or move a pin."""
     config = request.app.state.config.get()
