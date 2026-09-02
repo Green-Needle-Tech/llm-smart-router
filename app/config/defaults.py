@@ -56,6 +56,11 @@ DEFAULTS = {
             "ttl_seconds": 3600,
             "max_entries": 10000,
         },
+        "tier_prefix": {
+            "enabled": True,
+            "pattern": r"^(L[1-5])[\s:.\-]*",
+            "strip_prefix": True,
+        },
     },
     "session": {
         "enabled": True,

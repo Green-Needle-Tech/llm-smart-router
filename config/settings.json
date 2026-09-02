@@ -69,6 +69,11 @@
       "enabled": true,
       "ttl_seconds": 86400,
       "max_entries": 10000
+    },
+    "tier_prefix": {
+      "enabled": true,
+      "pattern": "^(L[1-5])[\\s:.\\-]*",
+      "strip_prefix": true
     }
   },
   "session": {
