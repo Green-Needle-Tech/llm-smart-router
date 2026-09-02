@@ -427,11 +427,11 @@ class GuardrailEngine:
         if not text:
             return text, []
         findings: list[GuardrailFinding] = []
+        text, secret_fs = self._mask_input_secrets(text)
+        findings.extend(secret_fs)
         if self.config.input_pii_masking_enabled:
             text, pii_fs = self._mask_input_pii(text)
             findings.extend(pii_fs)
-        text, secret_fs = self._mask_input_secrets(text)
-        findings.extend(secret_fs)
         return text, findings
 
     # --- Malicious URL detection (output) -------------------------------------
