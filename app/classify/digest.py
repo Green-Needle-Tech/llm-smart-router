@@ -56,6 +56,21 @@ def _get_tool_names(tools: list[dict] | None) -> list[str]:
     return names
 
 
+def _build_context_summary(messages, task_system, task_user, tool_names):
+    """Build the context summary string for the digest."""
+    msg_count = len(messages)
+    task_tokens = _estimate_tokens(f"{task_system} {task_user}")
+    tool_count = len(tool_names)
+    has_attachments = any("image" in str(m.content).lower() for m in messages)
+    parts = [f"[conversation: {msg_count} messages, ~{task_tokens} task tokens"]
+    if tool_count:
+        parts.append(f", {tool_count} tools present")
+    if has_attachments:
+        parts.append(", attachments: 1 image")
+    parts.append("]")
+    return "".join(parts)
+
+
 class DigestBuilder:
     """Builds the classification prompt digest from a request."""
 
@@ -150,19 +165,9 @@ class DigestBuilder:
         # Context summary
         context_summary = ""
         if self.include_context_summary:
-            msg_count = len(messages)
-            task_tokens = _estimate_tokens(f"{task_system} {task_user}")
-            tool_count = len(tool_names)
-            has_attachments = any("image" in str(m.content).lower() for m in messages)
-            parts = [f"[conversation: {msg_count} messages, ~{task_tokens} task tokens"]
-            if tool_count:
-                parts.append(f", {tool_count} tools present")
-            if has_attachments:
-                parts.append(", attachments: 1 image")
-            parts.append("]")
-            context_summary = "".join(parts)
-        else:
-            task_tokens = _estimate_tokens(f"{task_system} {task_user}")
+            context_summary = _build_context_summary(
+                messages, task_system, task_user, tool_names)
+        task_tokens = _estimate_tokens(f"{task_system} {task_user}")
 
         # Truncate user text
         truncated_user = _truncate(task_user, head_chars=1200, tail_chars=800)

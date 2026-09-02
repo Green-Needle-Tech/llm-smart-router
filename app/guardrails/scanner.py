@@ -519,69 +519,58 @@ class GuardrailEngine:
 
     # --- Full output processing ------------------------------------------------
 
+    def _mask_text(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Apply all output masks to text. Returns (masked_text, findings)."""
+        masked, fs = self.mask_secrets(text)
+        if self.config.pii_masking_enabled:
+            masked, pii_fs = self.mask_pii(masked)
+            fs.extend(pii_fs)
+        if self.config.malicious_url_detection:
+            masked, url_fs = self.mask_malicious_urls(masked)
+            fs.extend(url_fs)
+        if self._spleak_validator:
+            masked, spleak_fs = self.mask_system_prompt_leak(masked)
+            fs.extend(spleak_fs)
+        return masked, fs
+
+    def _scan_text(self, text: str) -> list[GuardrailFinding]:
+        """Scan text without masking. Returns findings."""
+        fs = self.scan_output_secrets(text)
+        if self.config.malicious_url_detection:
+            fs.extend(self.scan_malicious_urls(text))
+        if self._spleak_validator:
+            fs.extend(self.scan_system_prompt_leak(text))
+        return fs
+
+    def _process_text(self, text: str) -> tuple[str, list[GuardrailFinding]]:
+        """Process text: mask or scan based on config. Returns (text, findings)."""
+        if self.config.output_action == "mask":
+            return self._mask_text(text)
+        return text, self._scan_text(text)
+
     def process_response_content(self, message):
         """Mask secrets, PII, malicious URLs, and system prompt leaks in a
-        message dict's content, in place.
-
-        Also scans for refusal patterns (log-only, never modifies content).
-        Accepts the message dict ({role, content}) and mutates
-        message["content"] when masking applies. Returns findings.
+        message dict's content, in place. Returns findings.
         """
         if not self.config.output_enabled:
             return []
-        # Refresh spleak validator in case config changed
         self._update_spleak_validator()
 
         content = message.get("content") if isinstance(message, dict) else message
         findings: list[GuardrailFinding] = []
         if isinstance(content, str):
-            if self.config.output_action == "mask":
-                masked, fs = self.mask_secrets(content)
-                if self.config.pii_masking_enabled:
-                    masked, pii_fs = self.mask_pii(masked)
-                    fs.extend(pii_fs)
-                if self.config.malicious_url_detection:
-                    masked, url_fs = self.mask_malicious_urls(masked)
-                    fs.extend(url_fs)
-                # System prompt leak masking
-                if self._spleak_validator:
-                    masked, spleak_fs = self.mask_system_prompt_leak(masked)
-                    fs.extend(spleak_fs)
-                if masked != content and isinstance(message, dict):
-                    message["content"] = masked
-            else:
-                fs = self.scan_output_secrets(content)
-                if self.config.malicious_url_detection:
-                    fs.extend(self.scan_malicious_urls(content))
-                if self._spleak_validator:
-                    fs.extend(self.scan_system_prompt_leak(content))
-            # Refusal detection (always log-only, regardless of output_action)
+            result_text, fs = self._process_text(content)
+            if result_text != content and isinstance(message, dict):
+                message["content"] = result_text
             if self.config.refusal_detection:
                 fs.extend(self.scan_refusal(content))
             findings.extend(fs)
         elif isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and isinstance(block.get("text"), str):
-                    if self.config.output_action == "mask":
-                        masked, fs_block = self.mask_secrets(block["text"])
-                        if self.config.pii_masking_enabled:
-                            masked, pii_fs = self.mask_pii(masked)
-                            fs_block.extend(pii_fs)
-                        if self.config.malicious_url_detection:
-                            masked, url_fs = self.mask_malicious_urls(masked)
-                            fs_block.extend(url_fs)
-                        if self._spleak_validator:
-                            masked, spleak_fs = self.mask_system_prompt_leak(masked)
-                            fs_block.extend(spleak_fs)
-                        if masked != block["text"]:
-                            block["text"] = masked
-                    else:
-                        fs_block = self.scan_output_secrets(block["text"])
-                        if self.config.malicious_url_detection:
-                            fs_block.extend(self.scan_malicious_urls(block["text"]))
-                        if self._spleak_validator:
-                            fs_block.extend(self.scan_system_prompt_leak(block["text"]))
-                    # Refusal detection
+                    result_text, fs_block = self._process_text(block["text"])
+                    if result_text != block["text"]:
+                        block["text"] = result_text
                     if self.config.refusal_detection:
                         fs_block.extend(self.scan_refusal(block["text"]))
                     findings.extend(fs_block)

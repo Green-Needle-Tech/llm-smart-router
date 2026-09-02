@@ -52,46 +52,48 @@ def evaluate_heuristics(
             normalized_rules.append({"name": str(rule), "when": "", "level": "L1", "stop": False})
     rules = normalized_rules
 
-    # Deep keywords (always evaluated if rules exist)
-    deep_kw_pattern = re.compile(
-        r"\b(architect|design a system|prove|derive|refactor the|threat model|optimize the algorithm)\b",
-        re.IGNORECASE,
+    stop_result, floor_level = _evaluate_rules(
+        rules, digest, has_code, code_fences, json_mode, prompt_tokens, task_chars
     )
+    if stop_result:
+        return stop_result
 
-    # Evaluate explicit rules
-    floor_level: Level | None = None
-    for rule in rules:
-        name = rule.get("name", "")
-        when = rule.get("when", "")
-        level_str = rule.get("level", "L1")
-        stop = rule.get("stop", False)
-
-        # Simple expression evaluation
-        matched = _eval_condition(when, digest=digest, has_code=has_code,
-                                  code_fences=code_fences, json_mode=json_mode,
-                                  prompt_tokens=prompt_tokens, task_chars=task_chars)
-
-        if matched:
-            try:
-                level = Level.from_str(level_str)
-            except ValueError:
-                continue
-
-            if stop:
-                return (level, True, name)
-            else:
-                # Floor: track the highest floor
-                if floor_level is None or level > floor_level:
-                    floor_level = level
-
-    # Deep keywords as a floor
-    if deep_kw_pattern.search(digest) and (floor_level is None or floor_level < Level.L4):
+    if _DEEP_KW_PATTERN.search(digest) and (floor_level is None or floor_level < Level.L4):
         floor_level = Level.L4
 
     if floor_level is not None:
         return (floor_level, False, "floor")
 
     return None
+
+
+_DEEP_KW_PATTERN = re.compile(
+    r"\b(architect|design a system|prove|derive|refactor the|threat model|optimize the algorithm)\b",
+    re.IGNORECASE,
+)
+
+
+def _evaluate_rules(rules, digest, has_code, code_fences, json_mode, prompt_tokens, task_chars):
+    """Evaluate explicit rules. Returns (stop_result, floor_level)."""
+    floor_level: Level | None = None
+    for rule in rules:
+        name = rule.get("name", "")
+        when = rule.get("when", "")
+        level_str = rule.get("level", "L1")
+        stop = rule.get("stop", False)
+        matched = _eval_condition(when, digest=digest, has_code=has_code,
+                                  code_fences=code_fences, json_mode=json_mode,
+                                  prompt_tokens=prompt_tokens, task_chars=task_chars)
+        if matched:
+            try:
+                level = Level.from_str(level_str)
+            except ValueError:
+                continue
+            if stop:
+                return (level, True, name), None
+            if floor_level is None or level > floor_level:
+                floor_level = level
+    return None, floor_level
 
 
 def _eval_condition(expr: str, **kwargs) -> bool:

@@ -106,80 +106,84 @@ class SystemPromptLeakValidator(BaseValidator):
             return []
         findings: list[GuardrailFinding] = []
         norm_text = _normalize(text)
-
         for fragment in self._fragments:
             norm_frag = _normalize(fragment)
             if len(norm_frag) < self._min_fragment_len:
                 continue
+            exact = self._check_exact(text, fragment, norm_frag, norm_text)
+            if exact:
+                findings.append(exact)
+                continue
+            fuzzy = self._check_fuzzy(text, norm_frag, norm_text)
+            if fuzzy:
+                findings.append(fuzzy)
+        return findings
 
-            # Method 1: Direct substring match (verbatim leak)
-            idx = norm_text.find(norm_frag)
-            if idx != -1:
-                # Map normalized index back to original text — approximate.
-                # We search for the original fragment (case-insensitive) to
-                # get precise spans. Fall back to normalized position.
-                orig_idx = self._find_in_original(text, fragment, idx)
-                findings.append(GuardrailFinding(
+    def _check_exact(self, text, fragment, norm_frag, norm_text):
+        """Check for verbatim substring match."""
+        idx = norm_text.find(norm_frag)
+        if idx == -1:
+            return None
+        orig_idx = self._find_in_original(text, fragment, idx)
+        return GuardrailFinding(
+            rule_id=self.rule_id,
+            severity=self.severity,
+            snippet=fragment[:60] + "…" if len(fragment) > 60 else fragment,
+            start=orig_idx,
+            end=orig_idx + len(fragment) if orig_idx >= 0 else -1,
+            direction="output",
+            metadata={"method": "exact", "fragment_len": len(fragment)},
+        )
+
+    def _check_fuzzy(self, text, norm_frag, norm_text):
+        """Check for fuzzy match via sliding window."""
+        chunks = _chunk_fragment(norm_frag, self._fragment_overlap)
+        for chunk in chunks:
+            chunk_len = len(chunk)
+            if chunk_len < self._min_fragment_len:
+                continue
+            words = norm_text.split()
+            if len(words) < 2:
+                continue
+            best_ratio, best_pos = self._find_best_fuzzy(chunk, chunk_len, norm_text, words)
+            if best_ratio >= self._fuzzy_threshold and best_pos >= 0:
+                orig_idx = self._find_in_original(text, chunk, best_pos)
+                return GuardrailFinding(
                     rule_id=self.rule_id,
                     severity=self.severity,
-                    snippet=fragment[:60] + "…" if len(fragment) > 60 else fragment,
+                    snippet=chunk[:60] + "…" if len(chunk) > 60 else chunk,
                     start=orig_idx,
-                    end=orig_idx + len(fragment) if orig_idx >= 0 else -1,
+                    end=orig_idx + len(chunk) if orig_idx >= 0 else -1,
                     direction="output",
-                    metadata={"method": "exact", "fragment_len": len(fragment)},
-                ))
-                continue  # Don't double-report with fuzzy
+                    metadata={
+                        "method": "fuzzy",
+                        "similarity": round(best_ratio, 3),
+                        "fragment_len": len(chunk),
+                    },
+                )
+        return None
 
-            # Method 2: Fuzzy match via sliding window
-            chunks = _chunk_fragment(norm_frag, self._fragment_overlap)
-            for chunk in chunks:
-                # Slide the chunk across the normalized text
-                chunk_len = len(chunk)
-                if chunk_len < self._min_fragment_len:
-                    continue
-                # Check at word boundaries in the normalized text
-                best_ratio = 0.0
-                best_pos = -1
-                # Sample at word boundaries to reduce comparisons
-                words = norm_text.split()
-                if len(words) < 2:
-                    continue
-                # Build positions map
-                pos = 0
-                word_starts = []
-                for w in words:
-                    word_starts.append(pos)
-                    pos += len(w) + 1  # +1 for space
-                for ws in word_starts:
-                    candidate = norm_text[ws:ws + chunk_len]
-                    if len(candidate) < chunk_len // 2:
-                        break
-                    ratio = _fuzzy_ratio(chunk, candidate)
-                    if ratio > best_ratio:
-                        best_ratio = ratio
-                        best_pos = ws
-                    if ratio >= 0.98:
-                        break  # Near-perfect match, no need to continue
-
-                if best_ratio >= self._fuzzy_threshold and best_pos >= 0:
-                    # Approximate span in original text
-                    orig_idx = self._find_in_original(text, chunk, best_pos)
-                    findings.append(GuardrailFinding(
-                        rule_id=self.rule_id,
-                        severity=self.severity,
-                        snippet=chunk[:60] + "…" if len(chunk) > 60 else chunk,
-                        start=orig_idx,
-                        end=orig_idx + len(chunk) if orig_idx >= 0 else -1,
-                        direction="output",
-                        metadata={
-                            "method": "fuzzy",
-                            "similarity": round(best_ratio, 3),
-                            "fragment_len": len(chunk),
-                        },
-                    ))
-                    break  # One finding per fragment is enough
-
-        return findings
+    @staticmethod
+    def _find_best_fuzzy(chunk, chunk_len, norm_text, words):
+        """Slide chunk across word boundaries, return (ratio, pos)."""
+        best_ratio = 0.0
+        best_pos = -1
+        pos = 0
+        word_starts = []
+        for w in words:
+            word_starts.append(pos)
+            pos += len(w) + 1
+        for ws in word_starts:
+            candidate = norm_text[ws:ws + chunk_len]
+            if len(candidate) < chunk_len // 2:
+                break
+            ratio = _fuzzy_ratio(chunk, candidate)
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_pos = ws
+            if ratio >= 0.98:
+                break
+        return best_ratio, best_pos
 
     def _find_in_original(self, original: str, fragment: str, norm_pos: int) -> int:
         """Try to find the fragment in the original text (case-insensitive).
