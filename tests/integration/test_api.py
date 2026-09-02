@@ -1,6 +1,7 @@
 """Integration tests for the API endpoints."""
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
+
 from app.main import create_app
 
 

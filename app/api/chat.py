@@ -1,7 +1,6 @@
 """POST /v1/chat/completions — the primary endpoint."""
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import time
@@ -15,8 +14,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.guardrails.rules import strip_invisible_text
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 from app.middleware.auth import check_router_auth, unauthorized_response
+from app.middleware.request_limits import validate_request_bounds
 from app.privacy.ip_redaction import IPRedactionEngine
 from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
+from app.routing.policy import PolicyViolation, enforce_route_policy
 from app.schemas.openai import ChatCompletionRequest
 from app.schemas.router import (
     ClassificationResult,
@@ -28,7 +29,7 @@ from app.schemas.router import (
 )
 from app.session.lifecycle import check_expiry, check_turn_cap
 from app.session.locks import acquire_or_wait
-from app.session.resolver import resolve_session_id
+from app.session.resolver import _get_api_key_identity, resolve_session_id
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
     router_active_requests,
@@ -83,6 +84,11 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         if not check_router_auth(auth_header, config):
             return unauthorized_response()
 
+    # Request field validation
+    bounds_error = validate_request_bounds(body)
+    if bounds_error is not None:
+        return bounds_error
+
     # Guardrails: input injection/jailbreak scan (runs BEFORE privacy
     # redaction so detection sees the original text).
     guardrail_block = _guardrail_scan_input(request, body)
@@ -105,9 +111,20 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     # Extract router overrides
     router_opts = body.router or {}
     task_text = router_opts.get("task_text")
-    max_level = Level.from_str(router_opts["max_level"]) if router_opts.get("max_level") else None
-    min_level = Level.from_str(router_opts["min_level"]) if router_opts.get("min_level") else None
-    forced_level = Level.from_str(router_opts["level"]) if router_opts.get("level") else None
+    try:
+        max_level = Level.from_str(router_opts["max_level"]) if router_opts.get("max_level") else None
+        min_level = Level.from_str(router_opts["min_level"]) if router_opts.get("min_level") else None
+        forced_level = Level.from_str(router_opts["level"]) if router_opts.get("level") else None
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {
+                "message": f"Invalid level in router options: {e!s}",
+                "type": "invalid_request_error",
+                "param": "router",
+                "code": "invalid_level",
+            }},
+        )
     forced_model = router_opts.get("model")
     reclassify = router_opts.get("reclassify", False) or request.headers.get("X-Router-Reclassify") == "true"
     repin = router_opts.get("repin", False) or request.headers.get("X-Router-Repin") == "true"
@@ -118,11 +135,46 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     # Check header overrides
     header_level = request.headers.get("X-Router-Level")
     if header_level:
-        with contextlib.suppress(ValueError):
+        try:
             forced_level = Level.from_str(header_level)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {
+                    "message": f"Invalid level in X-Router-Level header: {header_level}",
+                    "type": "invalid_request_error",
+                    "param": "X-Router-Level",
+                    "code": "invalid_level",
+                }},
+            )
     header_model = request.headers.get("X-Router-Model")
     if header_model:
         forced_model = header_model
+
+    # Enforce route policy centrally: clamp levels, validate model allowlist
+    try:
+        policy = enforce_route_policy(
+            forced_level,
+            forced_model,
+            max_level=max_level,
+            min_level=min_level,
+            settings=config,
+            allow_overrides=config.routing.allow_client_overrides,
+        )
+    except PolicyViolation as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"error": {
+                "message": e.message,
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "policy_violation",
+            }},
+        )
+    # Apply clamped values
+    forced_level = policy.effective_level if policy.clamped or policy.overridden else forced_level
+    if not config.routing.allow_client_overrides:
+        forced_model = None  # Overrides disabled
 
     # Handle classify-only mode
     if directive["mode"] == "classify_only":
@@ -168,7 +220,9 @@ def _guardrail_scan_input(request, body):
         return None
     config = request.app.state.config.get()
     cfg = config.telemetry.guardrails
-    engine.config = GuardrailConfig(
+    # Create a per-request engine with its own config snapshot to avoid
+    # shared mutable state under concurrent requests.
+    request_engine = GuardrailEngine(GuardrailConfig(
         input_enabled=cfg.input_enabled,
         input_action=cfg.input_action,
         block_on_severity=cfg.block_on_severity,
@@ -186,7 +240,8 @@ def _guardrail_scan_input(request, body):
         homoglyph_normalization=getattr(cfg, "homoglyph_normalization", True),
         obfuscation_detection=getattr(cfg, "obfuscation_detection", True),
         entropy_threshold=getattr(cfg, "entropy_threshold", 4.5),
-    )
+    ))
+    engine = request_engine
     messages = [
         (m.model_dump() if hasattr(m, "model_dump") else m) for m in body.messages
     ]
@@ -251,13 +306,14 @@ def _guardrail_scan_input(request, body):
                 "router.guardrail.input_sensitive_masked", rule=f.rule_id,
             )
 
-    # Write masked content back onto the original pydantic body.messages
-    # so the masked version is what gets forwarded upstream.
-    if input_pii_findings:
-        for orig, dumped in zip(body.messages, messages, strict=False):
-            new_content = dumped.get("content")
-            if orig.content != new_content:
-                orig.content = new_content
+    # Write normalized content back onto the original pydantic body.messages
+    # so the normalized version is what gets forwarded upstream.
+    # Always copy back, even if no PII was found, because invisible text
+    # stripping may have modified the content.
+    for orig, dumped in zip(body.messages, messages, strict=False):
+        new_content = dumped.get("content")
+        if orig.content != new_content:
+            orig.content = new_content
 
     # Banned substrings detection
     banned_findings: list = []
@@ -394,6 +450,9 @@ async def _redact_incoming(request, body) -> str | None:
     Returns the re-hydration key (session id), or None when the privacy
     module is disabled. The key mirrors the routing session resolution so
     re-hydration on the response side looks up the same mapping bucket.
+
+    The session key is namespaced by API key identity to prevent cross-tenant
+    IP mapping leakage.
     """
     engine: IPRedactionEngine | None = getattr(
         request.app.state, "ip_redaction", None
@@ -402,7 +461,13 @@ async def _redact_incoming(request, body) -> str | None:
         return None
     headers_dict = {k.lower(): v for k, v in request.headers.items()}
     config = request.app.state.config.get()
-    session_id, _ = resolve_session_id(body, headers_dict, config, config.session.fingerprint_salt)
+    auth_header = headers_dict.get("authorization", "")
+    key_identity = _get_api_key_identity(auth_header)
+    session_id, _ = resolve_session_id(
+        body, headers_dict, config, config.session.fingerprint_salt,
+        api_key_identity=key_identity,
+        namespace=getattr(config.session, "namespace_by_api_key", False),
+    )
     key = session_id or f"req-{uuid.uuid4()}"
     messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
     await engine.redact_messages(messages, key)
@@ -514,9 +579,15 @@ async def _session_pinned_route(
     store = request.app.state.session_store
     classifier = request.app.state.classifier
 
-    # Resolve session id
+    # Resolve session id (namespaced by API key identity for tenant isolation)
     headers_dict = {k.lower(): v for k, v in request.headers.items()}
-    session_id, session_source = resolve_session_id(body, headers_dict, config, config.session.fingerprint_salt)
+    auth_header = headers_dict.get("authorization", "")
+    key_identity = _get_api_key_identity(auth_header)
+    session_id, session_source = resolve_session_id(
+        body, headers_dict, config, config.session.fingerprint_salt,
+        api_key_identity=key_identity,
+        namespace=getattr(config.session, "namespace_by_api_key", False),
+    )
 
     if session_id is None:
         # Unidentifiable — classify per request
@@ -928,6 +999,41 @@ async def _forward_to_provider(
     config = request.app.state.config.get()
     provider = request.app.state.provider
 
+    # Budget enforcement: pre-request cost check
+    budget_mgr = getattr(request.app.state, "budget_manager", None)
+    if budget_mgr is not None and config.budget.enabled:
+        tier_max_cost = config.routing.get_tier(route.level.value).max_cost_per_request_usd
+        decision = await budget_mgr.check_and_reserve(
+            session_id=session_id,
+            model=route.model,
+            messages=body.messages,
+            tier_max_cost_usd=tier_max_cost,
+            daily_limit_usd=config.budget.daily_limit_usd,
+            on_exceeded=config.budget.on_exceeded,
+            downgrade_to=config.budget.downgrade_to,
+        )
+        if not decision.allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"error": {
+                    "message": f"Budget limit exceeded: {decision.reason}",
+                    "type": "budget_exceeded",
+                    "code": "budget_exceeded",
+                }},
+            )
+        if decision.downgrade_level:
+            from app.schemas.router import Level as _L
+            try:
+                dl = _L.from_str(decision.downgrade_level)
+                route = RouteDecision(
+                    level=dl,
+                    model=config.routing.get_model(dl.value),
+                    params=config.routing.get_params(dl.value),
+                    classification=route.classification,
+                )
+            except ValueError:
+                pass  # Invalid downgrade level, continue with original
+
     # Build upstream payload
     payload = body.model_dump(exclude={"router"}, exclude_none=True)
     _strip_model_postfix_from_messages(payload.get("messages", []))
@@ -1058,6 +1164,11 @@ async def _handle_non_stream(
         router_tokens_total.labels(level=route.level.value, model=model_used, kind="prompt").inc(prompt_tokens)
         router_tokens_total.labels(level=route.level.value, model=model_used, kind="completion").inc(completion_tokens)
         await request.app.state.session_store.put(pin)
+
+    # Reconcile budget with actual usage
+    budget_mgr = getattr(request.app.state, "budget_manager", None)
+    if budget_mgr is not None:
+        await budget_mgr.reconcile(session_id, model_used, prompt_tokens, completion_tokens)
 
     # Metrics
     router_requests_total.labels(

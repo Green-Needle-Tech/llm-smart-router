@@ -34,8 +34,24 @@ class RedisSessionStore(SessionStore):
         return pin
 
     async def put(self, pin: SessionPin) -> None:
-        ttl = getattr(pin, "session_config_ttl", 7200)
+        # Compute TTL from expires_at instead of hardcoded 7200
+        ttl = self._compute_ttl(pin)
         await self._redis.set(self._key(pin.session_id), pin.model_dump_json(), ex=ttl)
+
+    @staticmethod
+    def _compute_ttl(pin: SessionPin) -> int:
+        """Compute remaining TTL from pin.expires_at."""
+        if pin.expires_at is None:
+            return 7200  # fallback
+        from datetime import UTC, datetime
+        try:
+            exp = datetime.fromisoformat(pin.expires_at)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=UTC)
+            remaining = int((exp - datetime.now(UTC)).total_seconds())
+            return max(remaining, 60)  # minimum 60s TTL
+        except Exception:
+            return 7200
 
     async def delete(self, session_id: str) -> bool:
         deleted = await self._redis.delete(self._key(session_id))
@@ -43,18 +59,19 @@ class RedisSessionStore(SessionStore):
         return deleted > 0
 
     async def delete_all(self) -> int:
-        keys = await self._redis.keys("session:*")
-        res_keys = [k for k in keys if ":res:" not in k]
-        if res_keys:
-            await self._redis.delete(*res_keys)
-        return len(res_keys) if res_keys else 0
+        count = 0
+        async for key in self._redis.scan_iter(match="session:*", count=100):
+            if ":res:" not in key:
+                await self._redis.delete(key)
+                count += 1
+        return count
 
     async def list_sessions(self, level: str | None = None, offset: int = 0, limit: int = 50) -> list[SessionPin]:
-        keys = await self._redis.keys("session:*")
-        keys = [k for k in keys if ":res:" not in k]
         pins = []
-        for k in keys:
-            raw = await self._redis.get(k)
+        async for key in self._redis.scan_iter(match="session:*", count=100):
+            if ":res:" in key:
+                continue
+            raw = await self._redis.get(key)
             if raw:
                 pin = SessionPin.model_validate_json(raw)
                 if not pin.is_expired() and (level is None or pin.level.value == level):
@@ -62,8 +79,11 @@ class RedisSessionStore(SessionStore):
         return pins[offset:offset + limit]
 
     async def count(self) -> int:
-        keys = await self._redis.keys("session:*")
-        return len([k for k in keys if ":res:" not in k])
+        count = 0
+        async for key in self._redis.scan_iter(match="session:*", count=100):
+            if ":res:" not in key:
+                count += 1
+        return count
 
     async def reserve(self, session_id: str, ttl_seconds: int) -> bool:
         result = await self._redis.set(
@@ -73,3 +93,7 @@ class RedisSessionStore(SessionStore):
 
     async def release(self, session_id: str) -> None:
         await self._redis.delete(self._res_key(session_id))
+
+    async def close(self) -> None:
+        """Close the Redis connection pool."""
+        await self._redis.aclose()

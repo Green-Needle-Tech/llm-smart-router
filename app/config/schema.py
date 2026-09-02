@@ -127,7 +127,7 @@ class TierPrefixConfig(BaseModel):
     enabled: bool = True
     # Regex pattern for the tier prefix. Must capture the level in group 1.
     # Default: "L1".."L5" optionally followed by whitespace/punctuation.
-    pattern: str = r"^(L[1-5])[\s:.\-]*"
+    pattern: str = r"^(L[1-5])(?=$|[\s:.\-])[\s:.\-]*"
     # When True, strips the matched prefix from the user message before
     # forwarding upstream. Only strips if there is remaining content.
     strip_prefix: bool = True
@@ -192,6 +192,10 @@ class SessionConfig(BaseModel):
     fingerprint_salt: str = ""
     fingerprint_strip_patterns: list[str] = Field(default_factory=list)
     on_unidentifiable: str = "classify"
+    # When True, session IDs from headers/body/user field are namespaced via
+    # HMAC-SHA256 with the API key identity, preventing cross-tenant collision.
+    # Requires SESSION_NAMESPACE_SECRET env var for full security.
+    namespace_by_api_key: bool = False
     idle_ttl_seconds: int = 7200
     max_ttl_seconds: int = 86400
     max_turns: int | None = None
@@ -243,6 +247,8 @@ class TierConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     allow_passthrough: bool = False
+    allow_client_overrides: bool = False
+    passthrough_model_allowlist: list[str] = Field(default_factory=list)
     expose_upstream_models: bool = True
     global_max_level: str = "L4"
     global_min_level: str = "L1"

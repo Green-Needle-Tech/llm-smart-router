@@ -1,12 +1,19 @@
 """Tests for response model-identification postfix behavior."""
-import json
 from types import SimpleNamespace
 
 import pytest
 
-from app.api.chat import _add_model_postfix, _strip_model_postfix_from_messages
-from app.api.chat import _forward_to_provider
-from app.schemas.router import ClassificationResult, ClassificationSource, Level, RouteDecision
+from app.api.chat import (
+    _add_model_postfix,
+    _forward_to_provider,
+    _strip_model_postfix_from_messages,
+)
+from app.schemas.router import (
+    ClassificationResult,
+    ClassificationSource,
+    Level,
+    RouteDecision,
+)
 
 
 def _route(level: Level = Level.L1) -> RouteDecision:

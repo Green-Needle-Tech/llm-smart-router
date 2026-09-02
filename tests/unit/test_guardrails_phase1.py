@@ -1,13 +1,12 @@
 """Tests for Phase 1 guardrail features: invisible text, PII, malicious URLs, banned substrings, refusal detection."""
 from __future__ import annotations
 
-import pytest
-
-from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 from app.guardrails.rules import (
-    detect_invisible_text, strip_invisible_text,
-    INVISIBLE_CHARS_RE, PII_MASK, MALICIOUS_URL_RE, SECRET_MASK,
+    PII_MASK,
+    detect_invisible_text,
+    strip_invisible_text,
 )
+from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 
 
 def _engine(**cfg) -> GuardrailEngine:

@@ -1,5 +1,9 @@
 """Tests for scaffolding stripping."""
-from app.classify.scaffolding import CommonPrefixLearner, strip_sections, split_scaffolding
+from app.classify.scaffolding import (
+    CommonPrefixLearner,
+    split_scaffolding,
+    strip_sections,
+)
 
 
 def test_common_prefix_learning():

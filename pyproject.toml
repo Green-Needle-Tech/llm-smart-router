@@ -1,8 +1,8 @@
 [project]
 name = "llm-smart-router"
-version = "1.0.0"
+version = "2.16.1"
 description = "Session-pinned LLM smart router with OpenAI-compatible API"
-license = { text = "AGPLv3 Dual License" }
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
@@ -35,3 +35,23 @@ packages = ["app"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "FLY"]
+ignore = [
+    "BLE001",  # blind exception catch — intentional in guard/error paths
+    "B023",    # loop variable binding in regex sub callbacks — safe in practice
+    "B017",    # pytest.raises(Exception) — intentional in some tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F841", "RUF059", "RUF015", "FLY002", "SIM117"]
+
+# Single source of truth for application version.
+# config/settings.json "version" field is the CONFIG SCHEMA version (separate).
+[tool.llm-smart-router]
+application_version = "2.16.1"
+config_schema_version = 1

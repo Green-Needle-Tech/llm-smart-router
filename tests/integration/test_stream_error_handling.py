@@ -16,13 +16,13 @@ import json
 import httpx
 import pytest
 
+from app.api.chat import _handle_stream
 from app.schemas.router import (
     ClassificationResult,
     ClassificationSource,
     Level,
     RouteDecision,
 )
-from app.api.chat import _handle_stream
 
 
 class _FakeStreamResponse:

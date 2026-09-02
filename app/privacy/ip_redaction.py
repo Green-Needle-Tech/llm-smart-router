@@ -95,16 +95,37 @@ class IPRedactionStore:
             ).fetchall()
         return {r["placeholder"]: r["original_ip"] for r in rows}
 
-    def get_next_placeholder(self, session_id: str) -> str:
-        """Compute the next placeholder postfix for a session (max + 1)."""
-        with self._lock:
+    def get_or_create_placeholder(self, session_id: str, original_ip: str) -> str:
+        """Atomically get or create a placeholder for an IP in a session.
+
+        Combines the lookup and insert in a single transaction to prevent
+        race conditions where two concurrent requests select the same
+        placeholder number.
+        """
+        with self._lock, self._conn:
+            # Check if IP already mapped
+            row = self._conn.execute(
+                "SELECT placeholder FROM ip_redaction_sessions "
+                "WHERE session_id = ? AND original_ip = ?",
+                (session_id, original_ip),
+            ).fetchone()
+            if row:
+                return row["placeholder"]
+
+            # Compute next number and insert atomically
             row = self._conn.execute(
                 "SELECT MAX(CAST(substr(placeholder, 12) AS INTEGER)) AS n "
                 "FROM ip_redaction_sessions WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
-        n = (row["n"] or 0) + 1
-        return PLACEHOLDER_FMT.format(n)
+            n = (row["n"] or 0) + 1
+            placeholder = PLACEHOLDER_FMT.format(n)
+            self._conn.execute(
+                "INSERT OR IGNORE INTO ip_redaction_sessions "
+                "(session_id, original_ip, placeholder) VALUES (?, ?, ?)",
+                (session_id, original_ip, placeholder),
+            )
+            return placeholder
 
     # --- Write path ------------------------------------------------------------
 

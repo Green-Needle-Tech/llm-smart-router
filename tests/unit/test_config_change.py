@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from app.api.chat import _resolve_effective_model
 from app.schemas.router import Level, SessionPin
 

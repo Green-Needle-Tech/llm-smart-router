@@ -1,7 +1,6 @@
 """Tests for the classifier output parser."""
-import pytest
 from app.classify.parser import parse_classifier_output
-from app.schemas.router import Level, ClassificationSource
+from app.schemas.router import Level
 
 
 def test_valid_json_l1():

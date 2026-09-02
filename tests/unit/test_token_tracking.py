@@ -1,8 +1,5 @@
 """Tests for per-session cumulative token tracking and postfix display."""
-import json
-from types import SimpleNamespace
 
-import pytest
 
 from app.api.chat import _add_model_postfix, _strip_model_postfix_from_messages
 from app.schemas.router import (
@@ -18,7 +15,6 @@ from app.telemetry.token_tracker import (
     extract_tokens,
     render_postfix,
 )
-
 
 # ---------------------------------------------------------------------------
 # extract_tokens

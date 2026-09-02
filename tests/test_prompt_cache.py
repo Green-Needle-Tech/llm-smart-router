@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import pytest
 
+from app.config.schema import Settings
 from app.providers.prompt_cache import (
     apply_prompt_cache_features,
     extract_cache_usage,
     needs_explicit_cache_control,
 )
-from app.config.schema import Settings
 
 
 @pytest.fixture

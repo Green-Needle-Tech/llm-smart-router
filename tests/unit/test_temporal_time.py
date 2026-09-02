@@ -4,7 +4,9 @@ Tests all pattern categories including typos, abbreviations, colloquial
 expressions, military time, seasons, quarters, and edge cases.
 """
 import re
+
 import pendulum
+
 from app.config.schema import TemporalAwarenessConfig
 from app.temporal_awareness.engine import TemporalAwarenessEngine
 
