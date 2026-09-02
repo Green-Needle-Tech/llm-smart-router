@@ -32,7 +32,7 @@ async def list_sessions(
     }
 
 
-@router.delete("/sessions")
+@router.delete("/sessions", responses={401: {"description": "Invalid admin key"}})
 async def flush_sessions(request: Request):
     """Flush all pins."""
     _check_admin(request)
@@ -41,7 +41,7 @@ async def flush_sessions(request: Request):
     return {"flushed": count}
 
 
-@router.get("/settings")
+@router.get("/settings", responses={401: {"description": "Invalid admin key"}})
 async def get_settings(request: Request):
     """Return active settings (API keys redacted)."""
     _check_admin(request)
@@ -49,7 +49,7 @@ async def get_settings(request: Request):
     return cm.redacted_dict()
 
 
-@router.post("/settings/reload", responses={422: {"description": "Config validation failed"}})
+@router.post("/settings/reload", responses={401: {"description": "Invalid admin key"}, 422: {"description": "Config validation failed"}})
 async def reload_settings(request: Request):
     """Re-read and validate settings.json."""
     _check_admin(request)
@@ -61,7 +61,7 @@ async def reload_settings(request: Request):
         raise HTTPException(status_code=422, detail=f"Config validation failed: {e!s}") from e
 
 
-@router.get("/stats")
+@router.get("/stats", responses={401: {"description": "Invalid admin key"}})
 async def get_stats(request: Request):
     """Rolling counters and summary stats."""
     _check_admin(request)
