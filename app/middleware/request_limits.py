@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 # Conservative defaults
-MAX_MESSAGES = 100
+MAX_MESSAGES = 500
 MAX_MESSAGE_TEXT_BYTES = 256_000  # 256 KB per message
 MAX_TOOLS = 50
 MAX_TOOL_SCHEMA_BYTES = 32_000  # 32 KB per tool schema
