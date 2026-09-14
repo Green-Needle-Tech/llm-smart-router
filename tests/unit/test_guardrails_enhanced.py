@@ -11,6 +11,7 @@ import base64
 from app.guardrails.rules import (
     calculate_shannon_entropy,
     normalize_homoglyphs,
+    scan_obfuscated_payloads,
 )
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 
@@ -73,6 +74,26 @@ class TestShannonEntropyAndObfuscation:
 
         high_ent = calculate_shannon_entropy("k9#mP$7vQ!xL2@wZ9&jB4*yN1^cT8%rD")
         assert high_ent > 4.5
+
+    def test_scan_obfuscated_prose_wordlists_not_flagged(self):
+        """Slash-joined documentation word lists are NOT flagged as base64.
+
+        Regression test (2026-09-14): 'consumption/purchase/waste/recovery/adjustment'
+        in a skill document was flagged as obfuscation-base64 (entropy >= 4.5,
+        length >= 40), hard-blocking innocent requests that merely quoted
+        documentation containing slash-joined word lists.
+        """
+        prose_tokens = [
+            "consumption/purchase/waste/recovery/adjustment",
+            "install/convert/quantize/inference/serve",
+            "timeline/hierarchy/comparison/process/etc",
+            "com/openclaw/openclaw/blob/main/skills/x",
+        ]
+        for token in prose_tokens:
+            findings = scan_obfuscated_payloads(token)
+            assert not any(
+                f[0] == "obfuscation-base64" for f in findings
+            ), f"false positive on {token}"
 
     def test_scan_obfuscated_base64_payload(self):
         """Base64 encoded string is detected and decoded preview extracted."""

@@ -256,6 +256,24 @@ def _try_decode(token: str, decoder) -> str:
     return decoded_snippet
 
 
+_WORDLIKE_RE = re.compile(r"^[a-z][a-z0-9_-]{2,}$", re.IGNORECASE)
+
+
+def _looks_like_prose(token: str) -> bool:
+    """Heuristic: reject tokens that are slash/underscore-separated readable words.
+
+    Real base64 secrets never decode to readable ASCII, and slash-joined prose
+    word lists (e.g. 'consumption/purchase/waste/recovery/adjustment') are
+    documentation, not encoded payloads. This eliminates the dominant class of
+    false positives from natural-language skill/document text.
+    """
+    segments = re.split(r"[/\\_]", token)
+    if len(segments) < 2:
+        return False
+    wordlike = sum(1 for s in segments if _WORDLIKE_RE.match(s))
+    return wordlike >= 2
+
+
 def _scan_base64_payloads(
     text: str, entropy_threshold: float,
 ) -> list[tuple[str, str, int, int]]:
@@ -263,6 +281,8 @@ def _scan_base64_payloads(
     findings: list[tuple[str, str, int, int]] = []
     for m in _B64_TOKEN_RE.finditer(text):
         token = m.group(0)
+        if _looks_like_prose(token):
+            continue
         ent = calculate_shannon_entropy(token)
         if ent < entropy_threshold and len(token) < 40:
             continue
@@ -271,6 +291,9 @@ def _scan_base64_payloads(
             padded = _token + ("=" * (4 - pad) if pad else "")
             return base64.b64decode(padded)
         decoded = _try_decode(token, _b64_decode)
+        # A token that decodes to readable ASCII words is documentation, not a secret.
+        if decoded and _looks_like_prose(re.sub(r"[^A-Za-z0-9/_-]", "", decoded)):
+            continue
         findings.append(("obfuscation-base64", decoded or token[:40], m.start(), m.end()))
     return findings
 
