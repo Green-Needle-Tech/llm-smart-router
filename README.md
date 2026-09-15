@@ -287,7 +287,7 @@ flowchart TD
     F3 --> C
     H --> C
 
-    C -->|"🔒 Secrets masked (11 provider types)<br/>🔒 PII masked<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Token tracking accumulated<br/>📋 Postfix [smart-router/Ln-In:…|Out:…]<br/>suppressed on tool-call turns<br/>📊 Refusal logged"| B
+    C -->|"🔒 Secrets masked (11 provider types)<br/>🔒 PII masked<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Token tracking accumulated<br/>📋 Postfix [smart-router/Ln-In:…|Out:…/Ctx:…/1M]<br/>suppressed on tool-call turns<br/>📊 Refusal logged"| B
     B --> A
 ```
 
