@@ -1293,13 +1293,19 @@ def _apply_token_tracking(json_resp, pin, route, model_used, config):
     tt_show = tt_cfg is not None and getattr(tt_cfg, "show_in_postfix", True)
     usage = json_resp.get("usage", {})
     prompt_tokens, completion_tokens = extract_tokens(usage)
+    # Context-window limit from provider config (default 1M)
+    provider_cfg = getattr(config, "provider", None)
+    ctx_window = getattr(provider_cfg, "context_window", 1_000_000) if provider_cfg else 1_000_000
     if tt_enabled:
         if pin is not None:
             accumulate_tokens(pin.token_usage, route.level.value, prompt_tokens, completion_tokens)
         token_usage_for_postfix = pin.token_usage if pin is not None else {
             route.level.value: {"prompt": prompt_tokens, "completion": completion_tokens}
         }
-        _add_model_postfix(json_resp, model_used, route, token_usage_for_postfix, tt_show)
+        _add_model_postfix(
+            json_resp, model_used, route, token_usage_for_postfix, tt_show,
+            last_ctx_tokens=prompt_tokens, context_window=ctx_window,
+        )
     else:
         _add_model_postfix(json_resp, model_used, route)
     return prompt_tokens, completion_tokens
@@ -1411,14 +1417,17 @@ def _handle_stream_error(e, route, model_used, session_id, upstream_start) -> di
     }}
 
 
-def _build_stream_postfix(route, pin, _stream_usage, _tt_enabled, _tt_show) -> str:
+def _build_stream_postfix(route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window=0) -> str:
     """Build the postfix text for the end of a stream."""
     if _tt_enabled and _stream_usage is not None:
         s_prompt, s_completion = extract_tokens(_stream_usage)
         token_usage_for_postfix = pin.token_usage if pin is not None else {
             route.level.value: {"prompt": s_prompt, "completion": s_completion}
         }
-        return build_token_postfix(route.level.value, token_usage_for_postfix, _tt_show)
+        return build_token_postfix(
+            route.level.value, token_usage_for_postfix, _tt_show,
+            last_ctx_tokens=s_prompt, context_window=_ctx_window,
+        )
     return f"[smart-router/{route.level.value}]"
 
 
@@ -1607,6 +1616,8 @@ async def _handle_stream(
         _tt_cfg = getattr(getattr(_config, "telemetry", None), "token_tracking", None)
         _tt_enabled = _tt_cfg is not None and getattr(_tt_cfg, "enabled", True)
         _tt_show = _tt_cfg is not None and getattr(_tt_cfg, "show_in_postfix", True)
+        _provider_cfg = getattr(_config, "provider", None)
+        _ctx_window = getattr(_provider_cfg, "context_window", 1_000_000) if _provider_cfg else 1_000_000
         _stream_usage: dict[str, Any] | None = None
         _stream_had_tool_calls = False
 
@@ -1626,7 +1637,7 @@ async def _handle_stream(
                             pin, route, model_used, provider, _stream_usage, request,
                         )
                     postfix_text = _build_stream_postfix(
-                        route, pin, _stream_usage, _tt_enabled, _tt_show,
+                        route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window,
                     )
                     if not _stream_had_tool_calls:
                         postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
@@ -1686,19 +1697,25 @@ def _add_model_postfix(
     route: RouteDecision,
     token_usage: dict[str, dict[str, int]] | None = None,
     show_tokens: bool = True,
+    last_ctx_tokens: int = 0,
+    context_window: int = 0,
 ) -> None:
     """Append a compact model marker to assistant content for user visibility.
 
     When ``show_tokens`` is True and ``token_usage`` contains data, the
-    marker includes cumulative per-tier token usage::
+    marker includes cumulative per-tier token usage plus the last call's
+    context-window consumption and the configured limit::
 
-        [smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]
+        [smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:6100/1M]
 
     Otherwise falls back to the classic format::
 
         [smart-router/L1]
     """
-    marker = build_token_postfix(route.level.value, token_usage, show_tokens)
+    marker = build_token_postfix(
+        route.level.value, token_usage, show_tokens,
+        last_ctx_tokens, context_window,
+    )
     for choice in json_resp.get("choices", []):
         # Skip tool-call responses: the postfix is a user-facing visibility
         # marker for final text answers, not for intermediate tool-call

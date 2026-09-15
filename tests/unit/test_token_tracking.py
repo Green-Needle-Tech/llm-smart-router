@@ -287,3 +287,148 @@ def test_settings_has_token_tracking():
     s = Settings()
     assert hasattr(s.telemetry, "token_tracking")
     assert s.telemetry.token_tracking.enabled is True
+
+
+# ---------------------------------------------------------------------------
+# _format_context_limit
+# ---------------------------------------------------------------------------
+
+def test_format_context_limit_million():
+    from app.telemetry.token_tracker import _format_context_limit
+    assert _format_context_limit(1_000_000) == "1M"
+
+
+def test_format_context_limit_fractional_million():
+    from app.telemetry.token_tracker import _format_context_limit
+    assert _format_context_limit(1_500_000) == "1.5M"
+
+
+def test_format_context_limit_thousands():
+    from app.telemetry.token_tracker import _format_context_limit
+    assert _format_context_limit(256_000) == "256K"
+    assert _format_context_limit(131072) == "131K"
+
+
+def test_format_context_limit_small():
+    from app.telemetry.token_tracker import _format_context_limit
+    assert _format_context_limit(500) == "500"
+
+
+def test_format_context_limit_zero():
+    from app.telemetry.token_tracker import _format_context_limit
+    assert _format_context_limit(0) == ""
+
+
+# ---------------------------------------------------------------------------
+# render_postfix with Ctx
+# ---------------------------------------------------------------------------
+
+def test_render_postfix_with_ctx():
+    usage = {"L1": {"prompt": 3032, "completion": 1000}}
+    assert render_postfix(usage, last_ctx_tokens=6100, context_window=1_000_000) == (
+        "L1-In:3032|Out:1000/Ctx:6100/1M"
+    )
+
+
+def test_render_postfix_multi_tier_with_ctx():
+    usage = {
+        "L1": {"prompt": 3032, "completion": 1000},
+        "L2": {"prompt": 10021, "completion": 6054},
+    }
+    assert render_postfix(usage, last_ctx_tokens=17341, context_window=1_000_000) == (
+        "L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M"
+    )
+
+
+def test_render_postfix_ctx_without_usage():
+    assert render_postfix(None, last_ctx_tokens=500, context_window=1_000_000) == "Ctx:500/1M"
+
+
+def test_render_postfix_ctx_no_context_window():
+    usage = {"L1": {"prompt": 100, "completion": 50}}
+    assert render_postfix(usage, last_ctx_tokens=200) == "L1-In:100|Out:50/Ctx:200"
+
+
+def test_render_postfix_no_ctx_no_change():
+    usage = {"L1": {"prompt": 3032, "completion": 1000}}
+    assert render_postfix(usage) == "L1-In:3032|Out:1000"
+
+
+# ---------------------------------------------------------------------------
+# build_postfix with Ctx
+# ---------------------------------------------------------------------------
+
+def test_build_postfix_with_ctx():
+    usage = {"L1": {"prompt": 17341, "completion": 42}}
+    result = build_postfix("L1", usage, last_ctx_tokens=6100, context_window=1_000_000)
+    assert result == "[smart-router/L1-In:17341|Out:42/Ctx:6100/1M]"
+
+
+def test_build_postfix_multi_tier_with_ctx():
+    usage = {
+        "L1": {"prompt": 3032, "completion": 1000},
+        "L2": {"prompt": 10021, "completion": 6054},
+    }
+    result = build_postfix("L2", usage, last_ctx_tokens=17341, context_window=1_000_000)
+    assert result == "[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M]"
+
+
+def test_build_postfix_ctx_no_usage_falls_back():
+    result = build_postfix("L1", None, last_ctx_tokens=500, context_window=1_000_000)
+    assert result == "[smart-router/Ctx:500/1M]"
+
+
+def test_build_postfix_no_ctx_defaults_unchanged():
+    usage = {"L1": {"prompt": 3032, "completion": 1000}}
+    assert build_postfix("L1", usage) == "[smart-router/L1-In:3032|Out:1000]"
+
+
+# ---------------------------------------------------------------------------
+# _add_model_postfix with Ctx
+# ---------------------------------------------------------------------------
+
+def test_add_model_postfix_with_ctx():
+    body = {"choices": [{"message": {"role": "assistant", "content": "Hello"}}]}
+    usage = {"L1": {"prompt": 17341, "completion": 42}}
+    _add_model_postfix(
+        body, "model/test", _route(),
+        token_usage=usage, last_ctx_tokens=6100, context_window=1_000_000,
+    )
+    assert body["choices"][0]["message"]["content"] == (
+        "Hello\n\n[smart-router/L1-In:17341|Out:42/Ctx:6100/1M]"
+    )
+
+
+def test_add_model_postfix_ctx_without_cumulative():
+    body = {"choices": [{"message": {"role": "assistant", "content": "Hello"}}]}
+    _add_model_postfix(
+        body, "model/test", _route(),
+        token_usage=None, last_ctx_tokens=500, context_window=1_000_000,
+    )
+    assert body["choices"][0]["message"]["content"] == (
+        "Hello\n\n[smart-router/Ctx:500/1M]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _strip_model_postfix_from_messages with Ctx format
+# ---------------------------------------------------------------------------
+
+def test_strip_model_postfix_removes_ctx_format():
+    messages = [
+        {"role": "user", "content": "First question"},
+        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:17341|Out:42/Ctx:6100/1M]"},
+        {"role": "user", "content": "Follow-up"},
+    ]
+    _strip_model_postfix_from_messages(messages)
+    assert messages[1]["content"] == "First answer"
+
+
+def test_strip_model_postfix_removes_multi_tier_ctx_format():
+    messages = [
+        {"role": "user", "content": "First question"},
+        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M]"},
+        {"role": "user", "content": "Follow-up"},
+    ]
+    _strip_model_postfix_from_messages(messages)
+    assert messages[1]["content"] == "First answer"
