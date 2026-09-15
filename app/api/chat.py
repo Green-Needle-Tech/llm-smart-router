@@ -48,6 +48,7 @@ from app.telemetry.metrics import (
     router_prompt_cache_writes_total,
     router_prompt_cached_tokens_total,
     router_requests_total,
+    router_retry_on_failure_total,
     router_session_lookups_total,
     router_sessions_active,
     router_sessions_created_total,
@@ -897,7 +898,7 @@ _DEEP_KEYWORDS_RE = re.compile(
     r"\b(architect|design a system|prove|derive|refactor the|threat model|optimize the algorithm)\b",
     re.IGNORECASE,
 )
-_STRONG_ESCALATION_SIGNALS = {"repair_language", "tool_error_loop"}
+_STRONG_ESCALATION_SIGNALS = {"repair_language", "tool_error_loop", "upstream_failure"}
 
 
 def _detect_escalation_signals(raw_user_text, pin, esc_cfg) -> list[tuple[str, int]]:
@@ -909,6 +910,11 @@ def _detect_escalation_signals(raw_user_text, pin, esc_cfg) -> list[tuple[str, i
         signals.append(("deep_keywords", esc_cfg.signal_weights.get("deep_keywords", 2)))
     if pin.turn_count >= esc_cfg.escalate_after_turns:
         signals.append(("turn_depth", esc_cfg.signal_weights.get("turn_depth", 1)))
+    # Upstream failure signal: previous turn(s) had upstream errors/timeouts
+    if pin.escalation.consecutive_failures > 0:
+        weight = esc_cfg.signal_weights.get("upstream_failure", 3)
+        if weight > 0:
+            signals.append(("upstream_failure", weight))
     return [(s, w) for s, w in signals if w > 0]
 
 
@@ -958,6 +964,100 @@ def _check_escalation_signals(body, pin, config) -> tuple[Level, str] | None:
         pin.escalation.score += weight
         router_escalation_signals_total.labels(signal=signal).inc()
     return _apply_escalation(pin, signals_fired, esc_cfg, config)
+
+
+def _mark_upstream_failure(pin, config, store=None) -> None:
+    """Mark a pin as having experienced an upstream failure (timeout/error).
+
+    Increments consecutive_failures and last_failure_turn so the next
+    user turn triggers the upstream_failure escalation signal.
+    Also triggers an immediate tier bump if retry_on_failure is enabled
+    and the session hasn't exhausted its retry budget.
+    """
+    if pin is None:
+        return
+    pin.escalation.consecutive_failures += 1
+    pin.escalation.last_failure_turn = pin.turn_count
+    logger.warning(
+        "router.upstream.failure_marked",
+        session_id=pin.session_id,
+        level=pin.level.value,
+        consecutive_failures=pin.escalation.consecutive_failures,
+        turn=pin.turn_count,
+    )
+
+
+def _clear_upstream_failure(pin) -> None:
+    """Reset consecutive_failures after a successful response."""
+    if pin is None:
+        return
+    if pin.escalation.consecutive_failures > 0:
+        pin.escalation.consecutive_failures = 0
+
+
+async def _retry_with_higher_tier(
+    request, body, route, pin, config, routing_engine, include_metadata, start,
+    session_id, session_source, redaction_key, store,
+):
+    """Retry a failed request with the next tier up.
+
+    Called when retry_on_failure is enabled and the upstream call failed.
+    Bumps the pin to the next tier, updates the store, and re-forwards.
+    Returns the response from the higher tier, or None if no higher tier
+    is available or retry budget is exhausted.
+    """
+    esc_cfg = config.session.escalation
+    if pin is None:
+        return None
+    if pin.escalation.retry_count >= esc_cfg.retry_on_failure_max_per_session:
+        logger.info(
+            "router.retry.exhausted",
+            session_id=session_id,
+            retry_count=pin.escalation.retry_count,
+        )
+        return None
+
+    new_level = Level.from_numeric(pin.level.numeric + 1)
+    if new_level > Level.from_str(config.routing.global_max_level):
+        logger.info(
+            "router.retry.max_tier_reached",
+            session_id=session_id,
+            current_level=pin.level.value,
+        )
+        return None
+
+    pin.escalation.retry_count += 1
+    old_level = pin.level
+    pin.level = new_level
+    pin.model = routing_engine.resolve_model_for_level(new_level)
+    pin.params = config.routing.get_params(new_level.value)
+    if pin.escalation.original_level is None:
+        pin.escalation.original_level = old_level
+
+    router_retry_on_failure_total.labels(
+        from_level=old_level.value, outcome="escalated",
+    ).inc()
+    logger.info(
+        "router.retry.escalating",
+        session_id=session_id,
+        from_level=old_level.value,
+        to_level=new_level.value,
+        retry_count=pin.escalation.retry_count,
+    )
+
+    await store.put(pin)
+
+    new_route = RouteDecision(
+        level=new_level, model=pin.model, params=pin.params,
+        classification=ClassificationResult(
+            level=new_level, confidence=1.0, reason="retry_on_failure",
+            source=ClassificationSource.SESSION, latency_ms=0,
+        ),
+    )
+    return await _forward_to_provider(
+        request, body, new_route, session_id, session_source, pin,
+        include_metadata, start, redaction_key=redaction_key,
+    )
 
 
 def _resolve_tier_provider(config, level: str) -> tuple[str | None, str | None]:
@@ -1066,11 +1166,11 @@ async def _forward_to_provider(
     try:
         if body.stream:
             return await _handle_stream(
-                request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+                request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
                 redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
             )
         return await _handle_non_stream(
-            request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+            request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
             redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
         )
     finally:
@@ -1116,7 +1216,7 @@ def _record_request_metrics(route, model_used, fallback_used, upstream_ms) -> No
 
 
 async def _handle_non_stream(
-    request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+    request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
     redaction_key=None, tier_base_url=None, tier_api_key=None,
 ):
     """Handle non-streaming request."""
@@ -1131,6 +1231,23 @@ async def _handle_non_stream(
     total_ms = int((time.monotonic() - start) * 1000)
 
     if error and json_resp is None:
+        # Mark the pin as having an upstream failure for next-turn escalation
+        config = request.app.state.config.get()
+        _mark_upstream_failure(pin, config)
+
+        # Attempt immediate retry with a higher tier if enabled
+        retry_cfg = getattr(config.session.escalation, "retry_on_failure", False)
+        if retry_cfg and pin is not None:
+            routing_engine = request.app.state.routing_engine
+            store = request.app.state.session_store
+            retry_resp = await _retry_with_higher_tier(
+                request, body, route, pin, config,
+                routing_engine, include_metadata, start, session_id,
+                session_source, redaction_key, store,
+            )
+            if retry_resp is not None:
+                return retry_resp
+
         status = 502 if "exhausted" in error else 504
         error_type = "upstream_error" if status == 502 else "upstream_timeout"
         return JSONResponse(
@@ -1139,6 +1256,9 @@ async def _handle_non_stream(
                 "message": error, "type": error_type, "param": None, "code": f"router_upstream_{status}",
             }},
         )
+
+    # Success — clear any previous failure state
+    _clear_upstream_failure(pin)
 
     json_resp["model"] = f"smart-router/{route.level.value}"
 
@@ -1414,7 +1534,7 @@ async def _rehydrate_line(
 
 
 async def _handle_stream(
-    request, payload, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+    request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
     redaction_key=None, tier_base_url=None, tier_api_key=None,
 ):
     """Handle streaming request — pass through SSE chunks."""
@@ -1427,6 +1547,23 @@ async def _handle_stream(
     )
 
     if error and stream_resp is None:
+        # Mark the pin for next-turn escalation
+        config = request.app.state.config.get()
+        _mark_upstream_failure(pin, config)
+
+        # Attempt immediate retry with a higher tier if enabled (non-stream fallback)
+        retry_cfg = getattr(config.session.escalation, "retry_on_failure", False)
+        if retry_cfg and pin is not None:
+            routing_engine = request.app.state.routing_engine
+            store = request.app.state.session_store
+            retry_resp = await _retry_with_higher_tier(
+                request, body, route, pin, config,
+                routing_engine, include_metadata, start, session_id,
+                session_source, redaction_key, store,
+            )
+            if retry_resp is not None:
+                return retry_resp
+
         status = 502 if "exhausted" in error else 504
         return JSONResponse(
             status_code=status,
@@ -1507,9 +1644,13 @@ async def _handle_stream(
                 yield f"{line}\n"
         except Exception as e:
             error_data = _handle_stream_error(e, route, model_used, session_id, upstream_start)
+            # Mark pin for next-turn escalation on mid-stream errors
+            _mark_upstream_failure(pin, request.app.state.config.get())
             yield f"data: {json.dumps(error_data)}\n\n"
         else:
             _record_stream_success(route, model_used)
+            # Clear failure state on successful stream completion
+            _clear_upstream_failure(pin)
         finally:
             await stream_resp.aclose()
             _record_stream_finally(route, model_used, upstream_start, fallback_used)

@@ -173,6 +173,7 @@ class EscalationConfig(BaseModel):
         "degenerate_response": 2,
         "turn_depth": 1,
         "code_volume_growth": 1,
+        "upstream_failure": 3,
     })
     escalate_after_turns: int = 12
     escalate_on_context_growth_tokens: int = 24000

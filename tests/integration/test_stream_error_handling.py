@@ -105,7 +105,7 @@ async def test_timeout_midstream_emits_coded_error_and_504_metric():
     request = _FakeRequest(_FakeProvider(resp))
 
     response = await _handle_stream(
-        request, {}, _route(), [], "sess-1", None, None, False, __import__("time").monotonic(),
+        request, {}, {}, _route(), [], "sess-1", None, None, False, __import__("time").monotonic(),
     )
     assert response.status_code == 200  # headers already sent
 
@@ -125,7 +125,7 @@ async def test_generic_break_emits_coded_error_and_502_metric():
     request = _FakeRequest(_FakeProvider(resp))
 
     response = await _handle_stream(
-        request, {}, _route(), [], "sess-1", None, None, False, __import__("time").monotonic(),
+        request, {}, {}, _route(), [], "sess-1", None, None, False, __import__("time").monotonic(),
     )
     body = _collect([chunk async for chunk in response.body_iterator])
     assert "router_stream_interrupted" in body
@@ -139,7 +139,7 @@ async def test_clean_stream_records_single_200_metric():
     request = _FakeRequest(_FakeProvider(resp))
 
     response = await _handle_stream(
-        request, {}, _route(), [], "sess-1", None, None, False, __import__("time").monotonic(),
+        request, {}, {}, _route(), [], "sess-1", None, None, False, __import__("time").monotonic(),
     )
     body = _collect([chunk async for chunk in response.body_iterator])
     assert "data: [DONE]" in body

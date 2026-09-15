@@ -1,7 +1,8 @@
 services:
   smart-router:
     build: .
-    image: llm-smart-router:2.17.1
+    image: llm-smart-router:2.17.2
+    pull_policy: never
     container_name: smart-router
     restart: unless-stopped
     ports:

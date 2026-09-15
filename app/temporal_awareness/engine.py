@@ -109,7 +109,11 @@ def _h_specific_time_datetime(engine, groups, match, now):
         hour, minute, ampm = int(groups[0]), 0, groups[1]
     else:
         return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
     hour = engine._apply_ampm(hour, ampm)
+    if hour > 23:
+        return None
     return engine._format_datetime(now.set(hour=hour, minute=minute, second=0, microsecond=0))
 
 def _h_cob_eod(engine, groups, match, now):

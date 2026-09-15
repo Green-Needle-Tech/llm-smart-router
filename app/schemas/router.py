@@ -106,6 +106,8 @@ class EscalationState(BaseModel):
     last_trigger: list[str] = Field(default_factory=list)
     cooldown_until_turn: int = 0
     retry_count: int = 0
+    consecutive_failures: int = 0
+    last_failure_turn: int = 0
 
 
 class SessionPin(BaseModel):

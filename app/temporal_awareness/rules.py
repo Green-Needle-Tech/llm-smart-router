@@ -96,11 +96,11 @@ TEMPORAL_EXPRESSION_PATTERNS = [
     (r"\b(\d{1,2})\s*o['']?\s*clock\b", "oclock"),
 
     # At/by H:MM AM/PM (requires AM/PM, not followed by o'clock or hundred)
-    (r"\b(?:at|by|@)\s+(\d{1,2})(?::(\d{2}))\s*(" + _AMPM + r")" + _LOOKAHEAD_BOUNDARY, "specific_time_datetime"),
+    (r"\b(?:at|by|@)\s+(\d{1,2})(?:[:.](\d{2}))\s*(" + _AMPM + r")" + _LOOKAHEAD_BOUNDARY, "specific_time_datetime"),
     (r"\b(?:at|by|@)\s+(\d{1,2})\s*(" + _AMPM + r")" + _LOOKAHEAD_BOUNDARY, "specific_time_datetime"),
 
     # H:MM AM/PM or H AM/PM (standalone, requires AM/PM)
-    (r"\b(\d{1,2})(?::(\d{2}))?\s*(" + _AMPM + r")" + _LOOKAHEAD_BOUNDARY, "specific_time_datetime"),
+    (r"\b(\d{1,2})(?:[:.](\d{2}))?\s*(" + _AMPM + r")" + _LOOKAHEAD_BOUNDARY, "specific_time_datetime"),
 
     # ═══════════════════════════════════════════════════════════════
     # END / BEGINNING / ABBREVIATIONS
