@@ -1,57 +1,60 @@
-[project]
-name = "llm-smart-router"
-version = "2.17.2"
-description = "Session-pinned LLM smart router with OpenAI-compatible API"
-license = "AGPL-3.0-or-later"
-requires-python = ">=3.11"
-dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-    "httpx[http2]>=0.27.0",
-    "pydantic>=2.9.0",
-    "pydantic-settings>=2.5.0",
-    "cachetools>=5.5.0",
-    "prometheus-client>=0.21.0",
-    "structlog>=24.4.0",
-    "redis>=5.2.0",
-    "pendulum>=3.0.0",
-]
+services:
+  smart-router:
+    build: .
+    image: llm-smart-router:2.17.3
+    pull_policy: never
+    container_name: smart-router
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?required}
+      ROUTER_API_KEY: ${ROUTER_API_KEY:?required}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      # Per-tier API keys (optional — set when tiers use different providers)
+      L1_API_KEY: ${L1_API_KEY:-}
+      L2_API_KEY: ${L2_API_KEY:-}
+      L3_API_KEY: ${L3_API_KEY:-}
+      L4_API_KEY: ${L4_API_KEY:-}
+      L5_API_KEY: ${L5_API_KEY:-}
+      CLASSIFIER_API_KEY: ${CLASSIFIER_API_KEY:-}
+      SETTINGS_PATH: /app/config/settings.json
+      CACHE_BACKEND: ${CACHE_BACKEND:-memory}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SESSION_ENABLED: ${SESSION_ENABLED:-true}
+      SESSION_IDLE_TTL_SECONDS: ${SESSION_IDLE_TTL_SECONDS:-7200}
+      SESSION_FINGERPRINT_SALT: ${SESSION_FINGERPRINT_SALT:-}
+      WORKERS: ${WORKERS:-1}
+    volumes:
+      - ./config:/app/config:ro
+      - router-data:/app/data
+    networks: [hermes-net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://0.0.0.0:8080/healthz',timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
-    "respx>=0.21.0",
-    "httpx>=0.27.0",
-]
+  redis:
+    image: redis:7-alpine
+    container_name: smart-router-redis
+    restart: unless-stopped
+    profiles: ["redis"]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [hermes-net]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+networks:
+  hermes-net:
+    driver: bridge
 
-[tool.hatch.build.targets.wheel]
-packages = ["app"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-
-[tool.ruff]
-target-version = "py311"
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "FLY"]
-ignore = [
-    "BLE001",  # blind exception catch — intentional in guard/error paths
-    "B023",    # loop variable binding in regex sub callbacks — safe in practice
-    "B017",    # pytest.raises(Exception) — intentional in some tests
-]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["F841", "RUF059", "RUF015", "FLY002", "SIM117"]
-
-# Single source of truth for application version.
-# config/settings.json "version" field is the CONFIG SCHEMA version (separate).
-[tool.llm-smart-router]
-application_version = "2.17.2"
-config_schema_version = 1
+volumes:
+  router-data:
