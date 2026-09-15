@@ -621,7 +621,7 @@ The router cannot fix this on its own; it does not own the conversation. Two mit
 - On escalation, the router sets `X-Router-Escalated: true` and `X-Router-Escalated-From: L1`. Hermes can react by injecting a brief system note inviting the model to re-examine earlier conclusions rather than build on them.
 - For high-stakes transitions, Hermes can start a **new session** with a clean summary instead of escalating an existing one. This is often the better move: it gets a fresh classification, a fresh pin, and no inherited weak context.
 
-#### 4.11.8 Recommended configuration
+#### 4.11.9 Recommended configuration
 
 ```json
 "escalation": {
