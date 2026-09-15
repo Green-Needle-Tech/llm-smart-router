@@ -595,14 +595,24 @@ Downgrades therefore happen only through an explicit `PUT /v1/router/sessions/{i
 
 #### 4.11.6 Rescuing the current turn: escalate-and-retry
 
-Every mechanism above fixes the *next* turn. `escalation.retry_on_failure` (default `false`) additionally rescues the turn that failed: when a response comes back degenerate — empty, refusal-shaped, invalid JSON against a requested `response_format`, or an explicit `task_failed` signal on the immediately preceding turn — the router re-runs the same request one tier up and returns that response instead.
+Every mechanism above fixes the *next* turn. `escalation.retry_on_failure` (default `true` since v2.19.0) additionally rescues the turn that failed: when a response comes back degenerate — empty, refusal-shaped, invalid JSON against a requested `response_format`, or an explicit `task_failed` signal on the immediately preceding turn — the router re-runs the same request one tier up and returns that response instead.
 
 Constraints, because this costs a duplicate call:
 - At most `retry_on_failure_max_per_session` retries (default 2).
-- Never on streaming responses — tokens have already reached the client, and retrying would duplicate them. Streaming sessions escalate for the following turn only.
+- Never on streaming responses once any byte has reached the client — tokens have already been forwarded, and retrying would duplicate them. The v2.19.0 stall guard (§4.11.7) restreams at the next tier only when the stall is detected BEFORE anything has been sent to the client. Streaming sessions that fail after delivery escalate for the following turn only.
 - The retried tier becomes the new pin.
 
-#### 4.11.7 Known limitation: the escalated model inherits weak context
+#### 4.11.7 Stream stall detection and automatic tier escalation (v2.19.0)
+
+An upstream that accepts the connection but then goes silent (hung model, dropped provider connection) previously held the request open until the client gave up. Three provider-level deadlines now bound it (all hot-reloadable):
+
+- `stream_first_token_timeout_seconds` (default 90) — max wait for the FIRST SSE byte from upstream.
+- `stream_idle_timeout_seconds` (default 120) — max silence BETWEEN SSE chunks once streaming has started.
+- `request_deadline_seconds` (default 900) — wall-clock budget for the whole fallback chain; each attempt's timeout is clamped to the remaining budget, so a 3-model chain cannot hang 3 x timeout_seconds. `0` disables.
+
+On a stall detected before anything has reached the client, the router transparently restreams the request at the NEXT higher tier (`_next_tier_route()`), recording the escalation on the session pin (reason `stream_stall_recovery`, `original_level` preserved) and honoring the per-session retry budget (`escalation.retry_count` vs `retry_on_failure_max_per_session`). At L5 there is no higher tier — `Level.from_numeric` clamps at L5 — so a stalled top-tier request fails rather than restreaming the same hung model.
+
+#### 4.11.8 Known limitation: the escalated model inherits weak context
 
 When a session escalates at turn 15, the stronger model arrives to a conversation whose previous fourteen assistant turns were written by a weaker one. It inherits that reasoning, those design choices, and any errors baked into them — and models tend to defer to their own apparent prior output rather than contradict it.
 
@@ -641,7 +651,7 @@ The router cannot fix this on its own; it does not own the conversation. Two mit
 
   "shadow_classify_every_n_turns": null,
   "reclassify_every_n_turns": null,
-  "retry_on_failure": false,
+  "retry_on_failure": true,
   "retry_on_failure_max_per_session": 2
 }
 ```
@@ -934,7 +944,7 @@ Secrets (API keys) come **only** from environment variables or Docker secrets. `
       "huge_context_hard_override": true,
       "shadow_classify_every_n_turns": null,
       "reclassify_every_n_turns": null,
-      "retry_on_failure": false,
+      "retry_on_failure": true,
       "retry_on_failure_max_per_session": 2
     }
   },

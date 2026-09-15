@@ -253,6 +253,18 @@ Edit `config/settings.json` (hot-reloadable) to change:
 - Heuristic rules
 - `provider.context_window` — context window (tokens) advertised to connected agents (default: 1,000,000)
 
+### Stream stall protection (v2.19.0)
+
+Upstream hangs are bounded by three hot-reloadable `provider` settings:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `stream_first_token_timeout_seconds` | `90` | Max wait for the first SSE byte from upstream |
+| `stream_idle_timeout_seconds` | `120` | Max silence between SSE chunks once streaming has started |
+| `request_deadline_seconds` | `900` | Wall-clock budget for the whole fallback chain (per-attempt timeouts are clamped to the remaining budget; `0` disables) |
+
+When a stall is detected before any byte has reached the client, the router transparently restreams the request at the next higher tier (recorded on the session pin as `stream_stall_recovery`, capped by `retry_on_failure_max_per_session`). At L5 there is no higher tier, so a stalled top-tier request fails instead of restreaming the same hung model. `routing.retry_on_failure` is enabled by default.
+
 ## Architecture
 
 ```mermaid
