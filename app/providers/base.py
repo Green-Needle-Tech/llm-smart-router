@@ -19,11 +19,14 @@ class ProviderAdapter(ABC):
         stream: bool = False,
         base_url: str | None = None,
         api_key: str | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict | None, httpx.Response | None, str, bool, str | None]:
         """Execute a chat completion request with optional fallback chain.
 
         Returns (json, stream_response, model, fallback_used, error).
         When base_url/api_key are provided, they override the adapter defaults.
+        When deadline (an absolute time.monotonic() value) is provided, the
+        whole fallback chain must complete within it.
         """
         ...
 

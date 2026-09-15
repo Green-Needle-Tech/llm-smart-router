@@ -1,9 +1,14 @@
 """Fallback chain execution: try primary, then fallbacks in order."""
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
+
+
+class FallbackDeadlineExceeded(Exception):
+    """Raised/reported when the wall-clock budget for a request is exhausted."""
 
 
 class FallbackExecutor:
@@ -13,12 +18,30 @@ class FallbackExecutor:
         self.config = config
         self.http = http_client
 
-    async def _try_stream(self, url, request_payload, headers, model):
+    def _remaining_budget(self, deadline: float | None) -> float | None:
+        """Seconds left before the wall-clock deadline, or None when unbounded."""
+        if deadline is None:
+            return None
+        return deadline - time.monotonic()
+
+    def _attempt_timeout(self, deadline: float | None) -> float:
+        """Timeout for a single upstream attempt, clamped to the remaining budget.
+
+        Without this clamp a 3-model chain can hang for 3 x timeout_seconds,
+        because each attempt gets a fresh full timeout.
+        """
+        base = float(self.config.provider.timeout_seconds)
+        remaining = self._remaining_budget(deadline)
+        if remaining is None:
+            return base
+        return max(1.0, min(base, remaining))
+
+    async def _try_stream(self, url, request_payload, headers, model, timeout=None):
         """Try a streaming request. Returns (resp, error)."""
         req = self.http.build_request(
             "POST", f"{url}/chat/completions",
             json=request_payload, headers=headers,
-            timeout=self.config.provider.timeout_seconds,
+            timeout=timeout if timeout is not None else self.config.provider.timeout_seconds,
         )
         resp = await self.http.send(req, stream=True)
         try:
@@ -32,12 +55,12 @@ class FallbackExecutor:
             await resp.aclose()
             raise
 
-    async def _try_non_stream(self, url, request_payload, headers, model):
+    async def _try_non_stream(self, url, request_payload, headers, model, timeout=None):
         """Try a non-streaming request. Returns (json, error)."""
         resp = await self.http.post(
             f"{url}/chat/completions",
             json=request_payload, headers=headers,
-            timeout=self.config.provider.timeout_seconds,
+            timeout=timeout if timeout is not None else self.config.provider.timeout_seconds,
         )
         if resp.status_code in self.config.provider.retry_on_status:
             return None, f"upstream {resp.status_code} for {model}"
@@ -53,25 +76,44 @@ class FallbackExecutor:
         *,
         stream: bool = False,
         base_url: str | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict | None, httpx.Response | None, str, bool, str | None]:
-        """Try primary, then fallbacks."""
+        """Try primary, then fallbacks.
+
+        ``deadline`` is an absolute ``time.monotonic()`` value bounding the
+        whole chain.  Each attempt's timeout is clamped to the remaining
+        budget, and the loop stops once the budget is gone, so a slow chain
+        can no longer hang for the sum of every model's timeout.
+        """
         models_to_try = [primary_model, *list(fallback_models)]
         last_error: str | None = None
         effective_base_url = (base_url or self.config.provider.base_url).rstrip("/")
 
         for i, model in enumerate(models_to_try):
+            remaining = self._remaining_budget(deadline)
+            if remaining is not None and remaining <= 0:
+                last_error = (
+                    f"request deadline exceeded before trying {model}"
+                    if last_error is None
+                    else f"{last_error}; deadline exceeded before trying {model}"
+                )
+                break
+
+            attempt_timeout = self._attempt_timeout(deadline)
             request_payload = {**payload, "model": model}
             try:
                 if stream:
                     resp, err = await self._try_stream(
-                        effective_base_url, request_payload, headers, model)
+                        effective_base_url, request_payload, headers, model,
+                        timeout=attempt_timeout)
                     if err:
                         last_error = err
                         continue
                     return None, resp, model, i > 0, None
                 else:
                     json_resp, err = await self._try_non_stream(
-                        effective_base_url, request_payload, headers, model)
+                        effective_base_url, request_payload, headers, model,
+                        timeout=attempt_timeout)
                     if err:
                         last_error = err
                         continue

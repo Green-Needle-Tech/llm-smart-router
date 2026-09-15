@@ -50,7 +50,7 @@ class _FakeProvider:
         self._resp = resp
 
     async def chat_completion(self, payload, fallback_models=None, *, stream=False,
-                              base_url=None, api_key=None):
+                              base_url=None, api_key=None, deadline=None, **kwargs):
         return None, self._resp, "test/model", False, None
 
 

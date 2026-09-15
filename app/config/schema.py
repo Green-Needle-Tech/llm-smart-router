@@ -96,6 +96,22 @@ class ProviderConfig(BaseModel):
     # Used by agent onboarding/config scripts to set client-side context_length.
     # Default: 1,000,000 (1M tokens — matches OpenRouter long-context models).
     context_window: int = 1_000_000
+    # --- Stall / hang detection (v2.19.0) -------------------------------
+    # httpx's `timeout` is a PER-OPERATION read timeout whose clock resets on
+    # every byte received.  A model that trickles one token every few seconds
+    # therefore streams forever without ever tripping it.  These three settings
+    # add the missing deadlines.
+    #
+    # Max seconds to wait for the FIRST SSE byte from upstream.  Nothing has
+    # been sent to the client yet at this point, so a breach can be recovered
+    # transparently by restreaming from a higher tier.  0 disables.
+    stream_first_token_timeout_seconds: int = 90
+    # Max seconds of silence BETWEEN SSE chunks once streaming has started.
+    # 0 disables.
+    stream_idle_timeout_seconds: int = 120
+    # Hard wall-clock budget for one client request across the WHOLE fallback
+    # chain.  Prevents 3 x timeout_seconds of cumulative hanging.  0 disables.
+    request_deadline_seconds: int = 900
 
 
 class DigestConfig(BaseModel):

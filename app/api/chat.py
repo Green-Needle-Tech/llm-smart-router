@@ -1,6 +1,7 @@
 """POST /v1/chat/completions — the primary endpoint."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -1161,6 +1162,7 @@ async def _forward_to_provider(
     payload = _build_upstream_payload(body, route, session_id, config, provider)
     fallbacks = config.routing.get_fallbacks(route.level.value)
     tier_base_url, tier_api_key = _resolve_tier_provider(config, route.level.value)
+    deadline = _provider_deadline(config)
 
     router_active_requests.inc()
     try:
@@ -1168,10 +1170,12 @@ async def _forward_to_provider(
             return await _handle_stream(
                 request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
                 redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
+                deadline=deadline,
             )
         return await _handle_non_stream(
             request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
             redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
+            deadline=deadline,
         )
     finally:
         router_active_requests.dec()
@@ -1217,15 +1221,17 @@ def _record_request_metrics(route, model_used, fallback_used, upstream_ms) -> No
 
 async def _handle_non_stream(
     request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
-    redaction_key=None, tier_base_url=None, tier_api_key=None,
+    redaction_key=None, tier_base_url=None, tier_api_key=None, deadline=None,
 ):
     """Handle non-streaming request."""
     provider = request.app.state.provider
+    if deadline is None:
+        deadline = _provider_deadline(request.app.state.config.get())
 
     upstream_start = time.monotonic()
     json_resp, _, model_used, fallback_used, error = await provider.chat_completion(
         payload, fallback_models=fallbacks, stream=False,
-        base_url=tier_base_url, api_key=tier_api_key,
+        base_url=tier_base_url, api_key=tier_api_key, deadline=deadline,
     )
     upstream_ms = int((time.monotonic() - upstream_start) * 1000)
     total_ms = int((time.monotonic() - start) * 1000)
@@ -1388,6 +1394,123 @@ def _mask_stream_flush(flush, guardrail_engine) -> str:
     return flush
 
 
+# --- Stall detection (v2.19.0) -------------------------------------------
+
+def _provider_deadline(config) -> float | None:
+    """Absolute time.monotonic() deadline for one client request, or None."""
+    provider_cfg = getattr(config, "provider", None)
+    secs = getattr(provider_cfg, "request_deadline_seconds", 0) if provider_cfg else 0
+    try:
+        secs = int(secs or 0)
+    except (TypeError, ValueError):
+        return None
+    return time.monotonic() + secs if secs > 0 else None
+
+
+def _stall_timeouts(config) -> tuple[float | None, float | None]:
+    """Return (first_token_timeout, idle_timeout) in seconds; None = disabled."""
+    provider_cfg = getattr(config, "provider", None)
+    if provider_cfg is None:
+        return None, None
+
+    def _norm(name: str) -> float | None:
+        try:
+            v = float(getattr(provider_cfg, name, 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
+    return _norm("stream_first_token_timeout_seconds"), _norm("stream_idle_timeout_seconds")
+
+
+class _StreamStalled(Exception):
+    """Upstream stopped producing SSE data within the allowed window.
+
+    ``first_token`` is True when nothing had been forwarded to the client yet,
+    which means the stall is still transparently recoverable by restreaming
+    from a different (higher) tier.
+    """
+
+    def __init__(self, waited: float, *, first_token: bool):
+        self.waited = waited
+        self.first_token = first_token
+        stage = "first token" if first_token else "chunk"
+        super().__init__(f"upstream stalled: no {stage} for {waited:.0f}s")
+
+
+async def _aiter_lines_with_stall_guard(stream_resp, first_timeout, idle_timeout):
+    """Yield SSE lines, raising _StreamStalled when upstream goes silent.
+
+    httpx's own read timeout resets on every byte, so a model that trickles
+    data slowly never trips it.  This wraps each ``__anext__`` in
+    ``asyncio.wait_for`` to enforce a real stall deadline, using a longer
+    window for the first token (upstream queueing / prompt processing) than
+    for subsequent chunks.
+    """
+    iterator = stream_resp.aiter_lines().__aiter__()
+    seen_any = False
+    while True:
+        timeout = idle_timeout if seen_any else first_timeout
+        try:
+            if timeout is None:
+                line = await iterator.__anext__()
+            else:
+                line = await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+        except StopAsyncIteration:
+            return
+        except TimeoutError as exc:
+            raise _StreamStalled(timeout or 0, first_token=not seen_any) from exc
+        seen_any = True
+        yield line
+
+
+def _next_tier_route(route, pin, config, routing_engine):
+    """Build a RouteDecision one tier above ``route``, or None if capped."""
+    if routing_engine is None:
+        return None
+    try:
+        new_level = Level.from_numeric(route.level.numeric + 1)
+    except (ValueError, AttributeError):
+        return None
+    # from_numeric clamps at L5 — at the top tier there is nowhere to escalate,
+    # and restreaming the same tier would just hit the same stalled model.
+    if new_level == route.level:
+        return None
+    try:
+        if new_level > Level.from_str(config.routing.global_max_level):
+            return None
+    except (ValueError, AttributeError):
+        return None
+    try:
+        model = routing_engine.resolve_model_for_level(new_level)
+        params = config.routing.get_params(new_level.value)
+    except (AttributeError, KeyError, ValueError):
+        return None
+    if pin is not None:
+        pin.level = new_level
+        pin.model = model
+        pin.params = params
+        if getattr(pin.escalation, "original_level", None) is None:
+            pin.escalation.original_level = route.level
+        pin.escalation.retry_count += 1
+    return RouteDecision(
+        level=new_level, model=model, params=params,
+        classification=ClassificationResult(
+            level=new_level, confidence=1.0, reason="stream_stall_recovery",
+            source=ClassificationSource.SESSION, latency_ms=0,
+        ),
+    )
+
+
+def _stall_retry_budget_left(pin, config) -> bool:
+    """True when the session may still burn a stall-recovery escalation."""
+    if pin is None:
+        return False
+    esc_cfg = getattr(config.session, "escalation", None)
+    cap = getattr(esc_cfg, "retry_on_failure_max_per_session", 2) if esc_cfg else 2
+    return pin.escalation.retry_count < cap
+
+
 def _handle_stream_error(e, route, model_used, session_id, upstream_start) -> dict:
     """Handle a mid-stream exception: log, increment metrics, return error data."""
     upstream_ms = int((time.monotonic() - upstream_start) * 1000)
@@ -1544,20 +1667,22 @@ async def _rehydrate_line(
 
 async def _handle_stream(
     request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
-    redaction_key=None, tier_base_url=None, tier_api_key=None,
+    redaction_key=None, tier_base_url=None, tier_api_key=None, deadline=None,
 ):
     """Handle streaming request — pass through SSE chunks."""
     provider = request.app.state.provider
+    config = request.app.state.config.get()
+    if deadline is None:
+        deadline = _provider_deadline(config)
 
     upstream_start = time.monotonic()
     _, stream_resp, model_used, fallback_used, error = await provider.chat_completion(
         payload, fallback_models=fallbacks, stream=True,
-        base_url=tier_base_url, api_key=tier_api_key,
+        base_url=tier_base_url, api_key=tier_api_key, deadline=deadline,
     )
 
     if error and stream_resp is None:
         # Mark the pin for next-turn escalation
-        config = request.app.state.config.get()
         _mark_upstream_failure(pin, config)
 
         # Attempt immediate retry with a higher tier if enabled (non-stream fallback)
@@ -1584,24 +1709,16 @@ async def _handle_stream(
     total_ms = int((time.monotonic() - start) * 1000)
 
     async def stream_generator():
-        """Pass through SSE chunks from upstream, adding router headers as first event."""
-        metadata = {
-            "level": route.level.value,
-            "model": f"smart-router/{route.level.value}",
-            "session_id": session_id,
-            "turn": pin.turn_count if pin else 0,
-            "classification_source": route.classification.source.value,
-            "fallback_used": fallback_used,
-        }
-        if include_metadata:
-            yield f"data: {json.dumps({'router': metadata})}\n\n"
+        """Pass through SSE chunks from upstream, adding router headers as first event.
 
-        rehydrate_engine = getattr(request.app.state, "ip_redaction", None)
-        guardrail_engine: GuardrailEngine | None = getattr(
-            request.app.state, "guardrails", None
-        )
+        A stalled upstream (no first token, or a long silence mid-stream) is
+        detected by ``_aiter_lines_with_stall_guard``.  When the stall happens
+        BEFORE any content reached the client, the request is transparently
+        restreamed from the next tier up so the task continues automatically
+        instead of hanging.
+        """
+        nonlocal stream_resp, model_used, route, fallback_used
 
-        # Stream processing helpers (module-level for reduced nesting)
         rehydrate_engine = getattr(request.app.state, "ip_redaction", None)
         guardrail_engine: GuardrailEngine | None = getattr(
             request.app.state, "guardrails", None
@@ -1618,53 +1735,145 @@ async def _handle_stream(
         _tt_show = _tt_cfg is not None and getattr(_tt_cfg, "show_in_postfix", True)
         _provider_cfg = getattr(_config, "provider", None)
         _ctx_window = getattr(_provider_cfg, "context_window", 1_000_000) if _provider_cfg else 1_000_000
+        _first_timeout, _idle_timeout = _stall_timeouts(_config)
+        _routing_engine = getattr(request.app.state, "routing_engine", None)
+
         _stream_usage: dict[str, Any] | None = None
         _stream_had_tool_calls = False
+        _emitted_to_client = False
+        metadata_sent = False
 
-        try:
+        while True:
             carry = ""
-            async for line in stream_resp.aiter_lines():
-                if line.strip() == "data: [DONE]":
-                    if carry:
-                        if _guardrail_mask_active and guardrail_engine is not None:
-                            carry = _mask_carry_flush(carry, guardrail_engine)
-                        flush_event = {"choices": [{"delta": {"content": carry}}]}
-                        yield f"data: {json.dumps(flush_event)}\n\n"
-                        carry = ""
+            stalled: _StreamStalled | None = None
+            try:
+                async for line in _aiter_lines_with_stall_guard(
+                    stream_resp, _first_timeout, _idle_timeout,
+                ):
+                    if not metadata_sent:
+                        metadata_sent = True
+                        if include_metadata:
+                            _meta = {"router": {
+                                "level": route.level.value,
+                                "model": f"smart-router/{route.level.value}",
+                                "session_id": session_id,
+                                "turn": pin.turn_count if pin else 0,
+                                "classification_source": route.classification.source.value,
+                                "fallback_used": fallback_used,
+                            }}
+                            yield f"data: {json.dumps(_meta)}\n\n"
 
-                    if _tt_enabled and _stream_usage is not None:
-                        await _finalize_stream_token_tracking(
-                            pin, route, model_used, provider, _stream_usage, request,
+                    if line.strip() == "data: [DONE]":
+                        if carry:
+                            if _guardrail_mask_active and guardrail_engine is not None:
+                                carry = _mask_carry_flush(carry, guardrail_engine)
+                            flush_event = {"choices": [{"delta": {"content": carry}}]}
+                            yield f"data: {json.dumps(flush_event)}\n\n"
+                            carry = ""
+
+                        if _tt_enabled and _stream_usage is not None:
+                            await _finalize_stream_token_tracking(
+                                pin, route, model_used, provider, _stream_usage, request,
+                            )
+                        postfix_text = _build_stream_postfix(
+                            route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window,
                         )
-                    postfix_text = _build_stream_postfix(
-                        route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window,
+                        if not _stream_had_tool_calls:
+                            postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
+                            yield f"data: {json.dumps(postfix_event)}\n\n"
+                        yield f"{line}\n"
+                        break
+                    if line.startswith("data: "):
+                        _stream_usage, _stream_had_tool_calls = _process_data_line(
+                            line, _stream_usage, _stream_had_tool_calls,
+                        )
+                    line, carry = await _rehydrate_line(
+                        line, carry,
+                        rehydrate_engine, redaction_key, guardrail_engine, _guardrail_mask_active,
                     )
-                    if not _stream_had_tool_calls:
-                        postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
-                        yield f"data: {json.dumps(postfix_event)}\n\n"
+                    _emitted_to_client = True
                     yield f"{line}\n"
-                    break
-                if line.startswith("data: "):
-                    _stream_usage, _stream_had_tool_calls = _process_data_line(
-                        line, _stream_usage, _stream_had_tool_calls,
-                    )
-                line, carry = await _rehydrate_line(
-                    line, carry,
-                    rehydrate_engine, redaction_key, guardrail_engine, _guardrail_mask_active,
-                )
-                yield f"{line}\n"
-        except Exception as e:
-            error_data = _handle_stream_error(e, route, model_used, session_id, upstream_start)
-            # Mark pin for next-turn escalation on mid-stream errors
-            _mark_upstream_failure(pin, request.app.state.config.get())
-            yield f"data: {json.dumps(error_data)}\n\n"
-        else:
-            _record_stream_success(route, model_used)
-            # Clear failure state on successful stream completion
-            _clear_upstream_failure(pin)
-        finally:
-            await stream_resp.aclose()
+            except _StreamStalled as e:
+                stalled = e
+            except Exception as e:
+                error_data = _handle_stream_error(e, route, model_used, session_id, upstream_start)
+                _mark_upstream_failure(pin, request.app.state.config.get())
+                yield f"data: {json.dumps(error_data)}\n\n"
+                await _safe_aclose(stream_resp)
+                _record_stream_finally(route, model_used, upstream_start, fallback_used)
+                return
+            else:
+                _record_stream_success(route, model_used)
+                _clear_upstream_failure(pin)
+                await _safe_aclose(stream_resp)
+                _record_stream_finally(route, model_used, upstream_start, fallback_used)
+                return
+
+            # --- stalled -------------------------------------------------
+            await _safe_aclose(stream_resp)
             _record_stream_finally(route, model_used, upstream_start, fallback_used)
+            _mark_upstream_failure(pin, _config)
+            router_stream_errors_total.labels(
+                level=route.level.value, model=model_used, kind="upstream_stalled",
+            ).inc()
+            logger.warning(
+                "router.stream.stalled",
+                level=route.level.value, model=model_used, session_id=session_id,
+                waited_s=stalled.waited, first_token=stalled.first_token,
+            )
+
+            budget_left = deadline is None or (deadline - time.monotonic()) > 5
+            recoverable = (
+                stalled.first_token
+                and not _emitted_to_client
+                and budget_left
+                and _stall_retry_budget_left(pin, _config)
+            )
+            new_route = (
+                _next_tier_route(route, pin, _config, _routing_engine)
+                if recoverable else None
+            )
+            if new_route is None:
+                error_data = _handle_stream_error(
+                    TimeoutError(str(stalled)), route, model_used, session_id, upstream_start,
+                )
+                yield f"data: {json.dumps(error_data)}\n\n"
+                return
+
+            # Restream transparently from the higher tier.
+            router_retry_on_failure_total.labels(
+                from_level=route.level.value, outcome="stall_escalated",
+            ).inc()
+            logger.info(
+                "router.stream.stall_escalated",
+                session_id=session_id,
+                from_level=route.level.value, to_level=new_route.level.value,
+            )
+            route = new_route
+            retry_payload = dict(payload)
+            retry_payload["model"] = route.model
+            retry_fallbacks = _config.routing.get_fallbacks(route.level.value)
+            r_base_url, r_api_key = _resolve_tier_provider(_config, route.level.value)
+            _, stream_resp, model_used, fallback_used, retry_error = await provider.chat_completion(
+                retry_payload, fallback_models=retry_fallbacks, stream=True,
+                base_url=r_base_url, api_key=r_api_key, deadline=deadline,
+            )
+            if retry_error or stream_resp is None:
+                _msg = (
+                    f"{stalled!s}; escalation to {route.level.value} "
+                    f"failed: {retry_error}"
+                )
+                _err = {"error": {
+                    "message": _msg,
+                    "type": "upstream_error",
+                    "code": "router_upstream_stalled",
+                }}
+                yield f"data: {json.dumps(_err)}\n\n"
+                return
+            if pin is not None:
+                await request.app.state.session_store.put(pin)
+            _stream_usage = None
+            _stream_had_tool_calls = False
 
     response = StreamingResponse(
         stream_generator(),
@@ -1672,6 +1881,18 @@ async def _handle_stream(
     )
     _add_router_headers(response, route, session_id, session_source, pin, total_ms, fallback_used)
     return response
+
+
+async def _safe_aclose(resp) -> None:
+    """Close an upstream streaming response, ignoring teardown errors."""
+    if resp is None:
+        return
+    try:
+        await resp.aclose()
+    except Exception:  # teardown must never mask the real error
+        logger.debug("router.stream.aclose_failed")
+
+
 def _add_router_headers(response, route, session_id, session_source, pin, total_ms, fallback_used):
     """Add X-Router-* headers to the response."""
     response.headers["X-Router-Level"] = route.level.value

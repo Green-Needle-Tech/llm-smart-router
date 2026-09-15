@@ -30,7 +30,10 @@
       "HTTP-Referer": "https://github.com/david6055my/llm-smart-router",
       "X-Title": "LLM-Smart-Router"
     },
-    "context_window": 1000000
+    "context_window": 1000000,
+    "stream_first_token_timeout_seconds": 90,
+    "stream_idle_timeout_seconds": 120,
+    "request_deadline_seconds": 900
   },
   "classification": {
     "enabled": true,
@@ -121,7 +124,7 @@
       "huge_context_hard_override": true,
       "shadow_classify_every_n_turns": null,
       "reclassify_every_n_turns": null,
-      "retry_on_failure": false,
+      "retry_on_failure": true,
       "retry_on_failure_max_per_session": 2
     },
     "reclassify_every_n_turns": null,
@@ -195,7 +198,7 @@
       "label": "intermediate",
       "model": "z-ai/glm-5.2",
       "fallbacks": [
-        "z-ai/glm-5.2",
+        "z-ai/glm-5.3",
         "openai/gpt-5.6-luna"
       ],
       "params": {

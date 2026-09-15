@@ -45,12 +45,15 @@ class OpenRouterAdapter(ProviderAdapter):
         stream: bool = False,
         base_url: str | None = None,
         api_key: str | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict | None, httpx.Response | None, str, bool, str | None]:
         """Execute a chat completion with fallback chain.
 
         When base_url is provided, it overrides the adapter's default provider
         base_url for this call. This enables per-tier custom providers.
         When api_key is provided, it overrides the adapter's default key.
+        When deadline is provided (an absolute time.monotonic() value), the
+        whole fallback chain is bounded by it — see FallbackExecutor.
         """
         primary_model = payload.get("model", "")
         fallbacks = fallback_models or []
@@ -67,6 +70,7 @@ class OpenRouterAdapter(ProviderAdapter):
             headers=effective_headers,
             stream=stream,
             base_url=base_url,
+            deadline=deadline,
         )
 
     async def list_models(self) -> list[dict]:

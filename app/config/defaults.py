@@ -26,6 +26,9 @@ DEFAULTS = {
             "X-Title": "Hermes Smart Router",
         },
         "context_window": 1000000,
+        "stream_first_token_timeout_seconds": 90,
+        "stream_idle_timeout_seconds": 120,
+        "request_deadline_seconds": 900,
     },
     "classification": {
         "enabled": True,
