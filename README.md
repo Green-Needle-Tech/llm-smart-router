@@ -65,7 +65,29 @@ print(r.model)  # actual model used
 
 The router classifies with `typesafe/jev-1.13`, a structured decision model, via OpenRouter's decisions API (`classification.provider_mode: "decisions"`): the prompt digest is sent as `state` and the L1–L5 rubric as a typed `choice` question, and the response arrives as a typed choice with probabilities and confidence — no free-form JSON to parse. Output tokens are free (~$0.0000144/call, 2–6x faster than chat-mode classification).
 
-The prompt below (`config/prompts/classifier.txt`) is used when `provider_mode: "chat"` (e.g. with a cheap chat model such as `google/gemini-2.5-flash-lite`). The `{{PROMPT_DIGEST}}` placeholder is replaced with a stripped digest of the conversation's opening message (system prompt scaffolding removed, tool names included, context summary appended).
+**Decisions-mode prompt (default, live classifier).** The criteria follow [TypeSafe's Choice best practices](https://docs.typesafe.ai/primitives/choice): adjacent tiers are confusable, so each option description separates itself from its neighbors with a `WHAT` / `NOT FOR` / `EXAMPLES` structure (encoded into strings — OpenRouter's endpoint accepts strings only). Override per-tier descriptions via `classification.tier_criteria`; empty `{}` uses the built-ins below.
+
+```json
+{
+  "model": "typesafe/jev-1.13",
+  "state": "<prompt digest>",
+  "questions": {
+    "tier": {
+      "type": "choice",
+      "instructions": "Which complexity tier does this user request belong to? Judge the total work the whole session will require, not just the wording of the first message. Choose the LOWEST tier whose model can reliably complete the entire task.",
+      "criteria": {
+        "L1": "WHAT: almost no reasoning - greetings, thanks, simple factual recall, counting, basic arithmetic, one-step extraction. NOT FOR: any task with multiple steps or code. EXAMPLES: hey thanks; what is 2+2; capital of France",
+        "L2": "WHAT: a small, bounded, conventional task a fast flash model completes reliably - short single-function code, simple rewrites, lookups with light formatting. NOT FOR: multi-file changes, debugging, or design decisions. EXAMPLES: write a python function to parse ISO dates; summarize this email in one line",
+        "L3": "WHAT: an intermediate multi-step task - standard coding, bug fixes with tests, data analysis, structured document drafting. NOT FOR: architecture-level design or expert-level reasoning. EXAMPLES: fix this bug and add unit tests; compare these datasets and chart differences",
+        "L4": "WHAT: advanced reasoning - complex code, system architecture, multi-file refactors, tradeoff analysis with implementation. NOT FOR: novel research beyond established practice. EXAMPLES: design a distributed rate limiter with Redis failover; refactor the auth module across services",
+        "L5": "WHAT: expert-level work - deep reasoning, novel research, large-scale system design, proof-grade analysis. NOT FOR: routine tasks a strong generalist model completes well. EXAMPLES: propose a novel formal verification approach; design a global multi-region consensus protocol"
+      }
+    }
+  }
+}
+```
+
+**Chat-mode prompt (fallback).** The prompt below (`config/prompts/classifier.txt`) is used when `provider_mode: "chat"` (e.g. with a cheap chat model such as `google/gemini-2.5-flash-lite`). The `{{PROMPT_DIGEST}}` placeholder is replaced with a stripped digest of the conversation's opening message (system prompt scaffolding removed, tool names included, context summary appended).
 
 ```text
 You classify the complexity of the OPENING user request for an LLM router.
