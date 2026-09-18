@@ -205,6 +205,7 @@ def _make_typesafe_config(provider_mode="decisions"):
     config = _make_config(provider_mode=provider_mode)
     config.classification.base_url = "https://api.typesafe.ai/v1"
     config.classification.api_key_env = "TYPESAFE_API_KEY"
+    config.classification.model = "typesafe/jev-1.13.0"
     return config
 
 
@@ -226,7 +227,7 @@ async def test_decisions_mode_typesafe_direct_uses_systemone_endpoint():
     assert call.args[0] == "https://api.typesafe.ai/v1/systemone"
     payload = call.kwargs["json"]
     # OpenRouter-namespaced model is stripped to the bare TypeSafe id
-    assert payload["model"] == "jev-1.13"
+    assert payload["model"] == "jev-1.13.0"
     assert set(payload["questions"]["tier"]["criteria"]) == {"L1", "L2", "L3", "L4", "L5"}
     assert result.level.value == "L3"
     assert result.confidence == pytest.approx(0.85)

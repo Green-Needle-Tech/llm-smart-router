@@ -63,13 +63,13 @@ print(r.model)  # actual model used
 
 ## Classifier Prompt
 
-The router classifies with `typesafe/jev-1.13`, a structured decision model, via OpenRouter's decisions API (`classification.provider_mode: "decisions"`): the prompt digest is sent as `state` and the L1–L5 rubric as a typed `choice` question, and the response arrives as a typed choice with probabilities and confidence — no free-form JSON to parse. Output tokens are free (~$0.0000144/call, 2–6x faster than chat-mode classification).
+The router classifies with `typesafe/jev-1.13.0`, a structured decision model (since v2.22.0 called directly on TypeSafe's API at `https://api.typesafe.ai/v1/systemone`, authenticated with `TYPESAFE_API_KEY` via `classification.base_url` + `classification.api_key_env`; pointing `base_url` back at OpenRouter routes via `/api/alpha/decisions` instead): the prompt digest is sent as `state` and the L1–L5 rubric as a typed `choice` question, and the response arrives as a typed choice with probabilities and confidence — no free-form JSON to parse. Output tokens are free (~$0.0000144/call, 2–6x faster than chat-mode classification).
 
 **Decisions-mode prompt (default, live classifier).** The criteria follow [TypeSafe's Choice best practices](https://docs.typesafe.ai/primitives/choice): adjacent tiers are confusable, so each option description separates itself from its neighbors with a `WHAT` / `NOT FOR` / `EXAMPLES` structure (encoded into strings — OpenRouter's endpoint accepts strings only). Override per-tier descriptions via `classification.tier_criteria`; empty `{}` uses the built-ins below.
 
 ```json
 {
-  "model": "typesafe/jev-1.13",
+  "model": "typesafe/jev-1.13.0",
   "state": "<prompt digest>",
   "questions": {
     "tier": {
@@ -254,7 +254,9 @@ Requirements:
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `model` | `typesafe/jev-1.13` | Structured decision model — output tokens free, ~$0.0000144/call |
+| `model` | `typesafe/jev-1.13.0` | Structured decision model — output tokens free, ~$0.0000144/call |
+| `base_url` | `https://api.typesafe.ai/v1` | Since v2.22.0: call TypeSafe directly (`/v1/systemone`); set to `https://openrouter.ai/api/v1` to route via OpenRouter's decisions API |
+| `api_key_env` | `TYPESAFE_API_KEY` | Env var holding the classifier API key (OpenRouter path uses `OPENROUTER_API_KEY`) |
 | `provider_mode` | `decisions` | `decisions` = OpenRouter structured decision API (`/api/alpha/decisions`), typed choice output; `chat` = standard `/v1/chat/completions` call with a cheap chat model (e.g. `google/gemini-2.5-flash-lite`) |
 | `tier_criteria` | `{}` | Decisions mode only: per-tier rubric descriptions sent as the choice criteria; empty = built-in L1–L5 rubric |
 | `temperature` | `0` | Deterministic classification |
@@ -308,7 +310,7 @@ flowchart TD
         P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags<br/>typo + grammar tolerant"]
         P2T --> TP{"Tier-prefix<br/>in prompt?"}
         TP -->|Yes| TP2["Tier-Prefix Pin<br/>L1–L5 detected<br/>prefix stripped<br/>classifier skipped"]
-        TP -->|No| D["Decision Model<br/>typesafe/jev-1.13<br/>/api/alpha/decisions<br/>Typed choice: L1–L5"]
+        TP -->|No| D["Decision Model<br/>typesafe/jev-1.13.0<br/>api.typesafe.ai/v1/systemone<br/>Typed choice: L1–L5"]
         TP2 --> D2["Route to<br/>pinned tier"]
     end
 

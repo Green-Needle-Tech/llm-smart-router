@@ -37,7 +37,7 @@
   },
   "classification": {
     "enabled": true,
-    "model": "typesafe/jev-1.13",
+    "model": "typesafe/jev-1.13.0",
     "temperature": 0,
     "max_tokens": 60,
     "timeout_seconds": 8,
@@ -47,7 +47,7 @@
     "low_confidence_action": "escalate",
     "prompt_file": "/app/config/prompts/classifier.txt",
     "rubric_version": "v1",
-    "api_key_env": "OPENROUTER_API_KEY",
+    "api_key_env": "TYPESAFE_API_KEY",
     "digest": {
       "system_chars": 500,
       "tail_chars": 2000,
@@ -79,7 +79,8 @@
       "strip_prefix": true
     },
     "provider_mode": "decisions",
-    "tier_criteria": {}
+    "tier_criteria": {},
+    "base_url": "https://api.typesafe.ai/v1"
   },
   "session": {
     "enabled": true,
