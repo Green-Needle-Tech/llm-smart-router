@@ -165,6 +165,12 @@ class ClassificationConfig(BaseModel):
     base_url: str | None = None
     # Environment variable name holding the API key for the classifier.
     api_key_env: str | None = None
+    # Provider mode: "chat" (OpenAI chat completions) or "decisions"
+    # (OpenRouter /api/alpha/decisions — structured decision models, e.g. typesafe/jev-1.13).
+    provider_mode: str = "chat"
+    # For provider_mode="decisions": tier option -> rubric description sent as
+    # choice criteria. Empty dict = use built-in default tier criteria.
+    tier_criteria: dict[str, str] = Field(default_factory=dict)
     digest: DigestConfig = Field(default_factory=DigestConfig)
     cache: ClassificationCacheConfig = Field(default_factory=ClassificationCacheConfig)
     tier_prefix: TierPrefixConfig = Field(default_factory=TierPrefixConfig)

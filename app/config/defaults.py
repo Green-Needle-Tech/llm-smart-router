@@ -40,6 +40,8 @@ DEFAULTS = {
         "min_confidence": 0.5,
         "low_confidence_action": "escalate",
         "rubric_version": "v1",
+        "provider_mode": "chat",
+        "tier_criteria": {},
         "digest": {
             "system_chars": 500,
             "tail_chars": 2000,

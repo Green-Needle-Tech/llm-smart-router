@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import time
 
@@ -209,6 +210,9 @@ class ClassifierService:
 
     async def _call_classifier_model(self, digest: str) -> str:
         """Call the classifier model via its configured provider."""
+        mode = getattr(self.config.classification, "provider_mode", "chat") or "chat"
+        if mode == "decisions":
+            return await self._call_classifier_decisions(digest)
         prompt = self.prompt_template.replace("{{PROMPT_DIGEST}}", digest)
 
         if self._http is None:
@@ -242,6 +246,71 @@ class ClassifierService:
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
+    async def _call_classifier_decisions(self, digest: str) -> str:
+        """Call a decision model via OpenRouter /api/alpha/decisions.
+
+        Returns a JSON string of the form
+        {"level": "L1".."L5", "confidence": 0.0-1.0, "reason": "..."}
+        so the existing parse_classifier_output path handles it unchanged.
+        """
+        cls_cfg = self.config.classification
+        criteria = getattr(cls_cfg, "tier_criteria", None) or {
+            "L1": "Almost no reasoning: greetings, thanks, simple extraction, counting, basic arithmetic",
+            "L2": "Small bounded conventional task suitable for a fast flash model",
+            "L3": "Intermediate multi-step task, standard coding or analysis",
+            "L4": "Advanced reasoning, complex code, architecture, multi-file work",
+            "L5": "Expert: deep reasoning, novel research, large-scale design",
+        }
+        payload = {
+            "model": cls_cfg.model,
+            "state": digest,
+            "questions": {
+                "tier": {
+                    "type": "choice",
+                    "instructions": (
+                        "Which complexity tier is this user request? "
+                        "Choose the LOWEST tier that can reliably complete the task."
+                    ),
+                    "criteria": criteria,
+                }
+            },
+        }
+
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=cls_cfg.timeout_seconds,
+                headers={"Authorization": self._classifier_auth_header},
+            )
+
+        # The decisions API lives at /api/alpha/decisions (NOT under /v1),
+        # so strip a trailing "/v1" from the configured base URL.
+        base_url = self._classifier_base_url
+        if base_url.endswith("/v1"):
+            base_url = base_url[: -len("/v1")]
+        resp = await self._http.post(
+            f"{base_url}/alpha/decisions",
+            json=payload,
+            headers={
+                "Authorization": self._classifier_auth_header,
+                "Content-Type": "application/json",
+                **self.config.provider.headers,
+            },
+            timeout=cls_cfg.timeout_seconds,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        answer = data["answers"]["tier"]
+        level = str(answer["choice"]).upper().strip()
+        if level not in {"L1", "L2", "L3", "L4", "L5"}:
+            raise ValueError(f"decision model returned invalid level: {level}")
+        return json.dumps(
+            {
+                "level": level,
+                "confidence": float(answer.get("confidence", 1.0)),
+                "reason": f"decision model ({cls_cfg.model})",
+            }
+        )
 
     async def close(self) -> None:
         if self._owns_client and self._http is not None:

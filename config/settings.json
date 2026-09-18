@@ -77,7 +77,9 @@
       "enabled": true,
       "pattern": "^(L[1-5])[\\s:.\\-]*",
       "strip_prefix": true
-    }
+    },
+    "provider_mode": "chat",
+    "tier_criteria": {}
   },
   "session": {
     "enabled": true,
@@ -196,7 +198,7 @@
     },
     "L3": {
       "label": "intermediate",
-      "model": "z-ai/glm-5.2",
+      "model": "z-ai/glm-5.3",
       "fallbacks": [
         "z-ai/glm-5.3",
         "openai/gpt-5.6-luna"
