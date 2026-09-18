@@ -1,13 +1,13 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-| **Version:** 2.19.0 (Stream stall detection and automatic tier escalation)
-| **Date:** 2026-09-15
+| **Version:** 2.20.0 (Decisions-mode classifier via OpenRouter structured decision API)
+| **Date:** 2026-09-18
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
 **Changes from 1.0:** classification moved from per-request to once-per-session; added the session store, session-id resolution, pin lifecycle, and first-turn race protocol (§4.7–§4.13); session management endpoints (§3.2); Hermes session-id contract (§7.2).
 
-**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta + v2.8.0 + v2.9.0 + v2.15.0 + v2.16.0 + v2.17.0 + v2.17.1 + v2.17.2 + v2.17.3 + v2.18.0 + v2.19.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection (§9.3.5–§9.3.9); P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection (§9.3.10–§9.3.12); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; input-side PII & secret masking — all PII types (email, phone, SSN, CC, IBAN, passport, driver's license) + 11 provider credential types masked in input before forwarding upstream (§9.3.13); tier-prefix session pinning — detect tier label at start of first prompt, pin directly without classifier LLM call, strip prefix before forwarding; 500 unit & integration tests; temporal awareness dot-separated time fix (3.37pm crash), obfuscation false-positive fix (word-list prose); v2.18.0 context window tracking — Ctx:{last_prompt_tokens}/{context_window} in postfix format; v2.19.0 stream stall detection & auto-escalation — first-token (90s) and idle (120s) SSE stall guards, request deadline (900s) bounding the whole fallback chain, stall recovery transparently restreams at the next higher tier (L5 clamp fix: no escalation above L5), session retry budget caps escalations per session, retry_on_failure enabled by default; 528 unit & integration tests.
+**Changes from 1.1 (v2.0.0-beta + v2.1.0 + v2.3.0 + v2.4.0 + v2.5.0 + v2.6.0-beta + v2.8.0 + v2.9.0 + v2.15.0 + v2.16.0 + v2.17.0 + v2.17.1 + v2.17.2 + v2.17.3 + v2.18.0 + v2.19.0 + v2.20.0):** IP redaction & re-hydration (§9.2); LLM guardrails — injection detection + secret masking (§9.3); Phase 1 guardrail enhancements — invisible text detection, PII masking, malicious URL detection, configurable banned substrings, refusal detection (§9.3.5–§9.3.9); P0 guardrail architecture improvements — validator abstraction layer, error spans on all findings, system prompt leak detection (§9.3.10–§9.3.12); upstream prompt caching / KV cache optimization (§9.4); streaming secret-leak hardening — 3 vectors fixed (§9.3.4); whitespace-interleaved evasion countermeasure; pipeline reorder (split-first); [DONE] carry flush masking; per-tier custom provider support — `base_url` + `api_key_env` on tiers and classifier (§9.5); temporal awareness — temporal expression normalization (§9.6); temporal awareness full pattern coverage — all 17 pattern types from `rules.py` resolved, system role + multimodal content support (§9.6); temporal awareness comprehensive coverage — 104 patterns / 91 tags with typo + grammar tolerance, time awareness, military time, seasons, quarters, weekends, colloquial expressions, end/beginning of period (§9.6); RoutingEngine hot-reload fix; input-side PII & secret masking — all PII types (email, phone, SSN, CC, IBAN, passport, driver's license) + 11 provider credential types masked in input before forwarding upstream (§9.3.13); tier-prefix session pinning — detect tier label at start of first prompt, pin directly without classifier LLM call, strip prefix before forwarding; 500 unit & integration tests; temporal awareness dot-separated time fix (3.37pm crash), obfuscation false-positive fix (word-list prose); v2.18.0 context window tracking — Ctx:{last_prompt_tokens}/{context_window} in postfix format; v2.19.0 stream stall detection & auto-escalation — first-token (90s) and idle (120s) SSE stall guards, request deadline (900s) bounding the whole fallback chain, stall recovery transparently restreams at the next higher tier (L5 clamp fix: no escalation above L5), session retry budget caps escalations per session, retry_on_failure enabled by default; v2.20.0 decisions-mode classifier — `classification.provider_mode` "chat" (default) or "decisions", structured decision models (e.g. `typesafe/jev-1.13`) called via `https://openrouter.ai/api/alpha/decisions` (§4.14), `classification.tier_criteria` per-tier rubric overrides, decisions output tokens free (~$0.0000144/call); 534 unit & integration tests.
 
 ---
 
@@ -351,7 +351,7 @@ REQUEST TO CLASSIFY:
 {{PROMPT_DIGEST}}
 ```
 
-**Parameters:** `temperature: 0`, `max_tokens: 60`, `response_format: {"type":"json_object"}` when the classifier model supports it. Parsing is tolerant: strip fences, regex-extract the first `L[1-5]` if JSON parsing fails, then fall back to `default_level`.
+**Parameters:** `temperature: 0`, `max_tokens: 60`, `response_format: {"type":"json_object"}` when the classifier model supports it. (These apply to `provider_mode: "chat"`, the default; in `provider_mode: "decisions"` no prompt is formatted at all — the digest and rubric are sent natively, see §4.14.) Parsing is tolerant: strip fences, regex-extract the first `L[1-5]` if JSON parsing fails, then fall back to `default_level`.
 
 **`UNKNOWN` handling.** An `UNKNOWN` label means "the opening message carries no signal." The router then serves the turn at `classification.default_level` but **does not pin the session**, marking it `provisional`. The next turn re-attempts classification. This prevents an entire hard session from being pinned to L1 because it opened with "hey, ready?" — a failure mode that per-turn routing never had. Provisional sessions give up after `session.max_provisional_turns` (default 3) and pin `default_level`.
 
@@ -391,7 +391,7 @@ With session pinning, this cache is no longer the main cost saver — the sessio
 
 - **Key:** `sha256(classifier_model + rubric_version + prompt_digest)`, first 32 hex chars.
 - **Value:** `{level, confidence, source, created_at}`.
-- **TTL:** `classification.cache_ttl_seconds` (default 3600).
+- **TTL:** `classification.cache_ttl_seconds` (default 86400, 24h since v2.11.3).
 - **Backend:** in-process TTL LRU (`max_entries`, default 10 000) or Redis when `cache.backend: "redis"`.
 - **Bypass:** `X-Router-Bypass-Cache: true` or `router.bypass_cache`.
 - **Not consulted at all** when the session store already holds a pin.
@@ -817,6 +817,40 @@ Stated plainly so the choice is deliberate:
 
 Two of these deserve emphasis. **Model consistency is a genuine quality win**, not just a side effect: per-turn routing can hand a conversation to a different model mid-task, producing visible shifts in voice, formatting, and tool-calling style. Pinning eliminates that. **Blast radius is the corresponding real cost**: one bad label now degrades an entire session, which is exactly why §4.4's escalation floors are applied at pin time, why the rubric asks the classifier to forecast the whole task, why `UNKNOWN` refuses to pin on an uninformative opener, and why §4.11 exists. Escalation bounds the blast radius to the turns before the drift is detected, rather than the whole session — but it never fully eliminates it, so pin quality still matters most.
 
+### 4.14 Classifier provider modes (v2.20.0)
+
+The classifier supports two call modes, selected by `classification.provider_mode`:
+
+| Mode | Value | Mechanism |
+|---|---|---|
+| Chat (default) | `"chat"` | Standard `/v1/chat/completions` call with the rubric prompt (§4.2); expects JSON output parsed by `parse_classifier_output()` |
+| Decisions | `"decisions"` | OpenRouter **structured decision API** — POST `https://openrouter.ai/api/alpha/decisions` (note: no `/v1` in the path; the router strips a trailing `/v1` from `classification.base_url`) |
+
+In decisions mode the prompt digest is sent as the `state` field, and the tier rubric is sent natively as a choice question:
+
+```json
+{
+  "model": "typesafe/jev-1.13",
+  "state": "<prompt digest>",
+  "questions": {
+    "tier": {
+      "type": "choice",
+      "instructions": "Which complexity tier is this user request? Choose the LOWEST tier that can reliably complete the task.",
+      "criteria": { "L1": "...", "L2": "...", "L3": "...", "L4": "...", "L5": "..." }
+    }
+  }
+}
+```
+
+The response arrives as a **typed choice** — `answers.tier.choice` plus `probabilities` and `confidence` — instead of free-form JSON that must be parsed. The router converts it to the same internal `{level, confidence, reason}` shape, so parsing, confidence policy (§4.6), heuristics (§4.4), caching (§4.5), and injection guards are all unchanged.
+
+Key properties:
+
+- **`classification.tier_criteria`** (default `{}`) — optional per-tier rubric descriptions sent as the choice criteria; empty uses the built-in L1–L5 rubric summaries.
+- **Invalid choice** (e.g. `L9`) raises internally and falls back to `default_level` with `source=DEFAULT`, exactly like a chat-mode parse failure.
+- **Cost:** decision models bill input only (~$0.0000144/call for `typesafe/jev-1.13`); output tokens are free. Live A/B vs `google/gemini-2.5-flash-lite`: 4/5 tier agreement on 5-prompt suite, 300–370 ms vs 630–2270 ms latency.
+- Decisions mode is **hot-reloadable** — switching modes is a settings change + reload, no restart.
+
 ---
 
 ## 5. Configuration
@@ -863,6 +897,8 @@ Secrets (API keys) come **only** from environment variables or Docker secrets. `
   "classification": {
     "enabled": true,
     "model": "mistralai/mistral-small-3.2-24b-instruct",
+    "provider_mode": "chat",
+    "tier_criteria": {},
     "temperature": 0,
     "max_tokens": 60,
     "timeout_seconds": 8,
@@ -2041,6 +2077,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M23 — Tier-Prefix Session Pinning (v2.16.0)** | Users can prefix their first message with a tier label (e.g. `L4 explain quantum computing`) to pin the session directly to that tier, bypassing the classifier LLM entirely. `_detect_tier_prefix()` in `chat.py` checks the first user message for a configurable regex pattern (default `^(L[1-5])[\s:.\-]*`), and if matched, creates an override classification with `source=OVERRIDE, reason="tier-prefix pin"`. The prefix is stripped from the message content before forwarding upstream (configurable via `strip_prefix`). New `TierPrefixConfig` under `classification.tier_prefix` (`enabled`, `pattern`, `strip_prefix`). New `router_tier_prefix_pins_total{level}` Prometheus counter. Only fires on session-miss (turn 1); forced_level via model directive (`smart-router/L4`) takes precedence. | 500 unit & integration tests pass (23 new tier_prefix tests); container rebuilt and live-verified — L1/L4 prefixes pin correctly, classifier bypassed, prefix stripped, metrics increment correctly. |
 | **M24 — Context Window Tracking in Postfix (v2.18.0)** | Added Ctx:{last_prompt_tokens}/{context_window} suffix to the token-tracking postfix. `render_postfix()` and `build_postfix()` accept `last_ctx_tokens` and `context_window` parameters. `_add_model_postfix()` passes the last prompt token count and the provider/tier `context_window` setting. `_MODEL_POSTFIX_RE` updated to parse and carry-forward the new format from assistant history. Postfix format: `[smart-router/L1-In:9|Out:66/Ctx:9/1M]`. | 519 unit & integration tests pass (19 new context window tests); container rebuilt and live-verified. |
 | **M25 — Stream Stall Detection & Auto-Escalation (v2.19.0)** | Upstream hangs no longer wedge requests. `_aiter_lines_with_stall_guard()` enforces `stream_first_token_timeout_seconds` (90s, first SSE byte) and `stream_idle_timeout_seconds` (120s, silence between chunks) via `asyncio.wait_for`; `request_deadline_seconds` (900s) bounds the whole fallback chain (each attempt's timeout clamped to remaining budget in `FallbackExecutor._attempt_timeout`). On stall the request is transparently restreamed at the next tier via `_next_tier_route()` (records `pin.escalation`, reason `stream_stall_recovery`, honors per-session retry budget). L5-aware: `Level.from_numeric` clamp means no escalation above L5 — restreaming the same stalled tier is skipped. `routing.retry_on_failure` enabled by default. New config: three provider timeout keys, hot-reloadable. | 528 unit & integration tests pass (12 new stall-recovery tests incl. L5-clamp, deadline clamp, first-token vs idle timeout, retry budget); container rebuilt and live-verified. |
+| **M26 — Decisions-Mode Classifier (v2.20.0)** | New `classification.provider_mode` setting (`"chat"` default | `"decisions"`) plus `classification.tier_criteria` rubric overrides. In decisions mode `_call_classifier_decisions()` in `classifier.py` posts to OpenRouter's structured decision API `https://openrouter.ai/api/alpha/decisions` (trailing `/v1` stripped from `classification.base_url` — the decisions API is not under `/v1`), sending the digest as `state` and the L1–L5 rubric as a typed `choice` question. The typed choice + probabilities + confidence response is converted to the internal `{level, confidence, reason}` shape, so `parse_classifier_output()`, confidence policy, heuristics, caching, and injection guards are unchanged. Invalid choices and HTTP errors fall back to `default_level` identically to chat-mode parse failures. Live A/B vs `google/gemini-2.5-flash-lite`: 4/5 tier agreement, 300–370 ms vs 630–2270 ms, ~$0.0000144/call (output tokens free). Production router switched to `typesafe/jev-1.13` decisions mode. | 534 unit & integration tests pass (6 new: payload shape, custom criteria, invalid-level fallback, HTTP-error fallback, parser compat, chat-mode unchanged); container rebuilt on 2.20.0 and live-verified — decisions classification pins L4 correctly, tiny-prompt heuristic still short-circuits to L1. |
 
 
 ---

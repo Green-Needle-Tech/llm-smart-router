@@ -231,6 +231,8 @@ Requirements:
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | `model` | `google/gemini-2.5-flash-lite` | Fast, cheap, non-reasoning model |
+| `provider_mode` | `chat` | `chat` = standard /v1/chat/completions call; `decisions` = OpenRouter structured decision API (`/api/alpha/decisions`) with typed choice output (e.g. `typesafe/jev-1.13`) |
+| `tier_criteria` | `{}` | Decisions mode only: per-tier rubric descriptions sent as the choice criteria; empty = built-in L1–L5 rubric |
 | `temperature` | `0` | Deterministic classification |
 | `max_tokens` | `60` | JSON output only, no prose |
 | `timeout_seconds` | `8` | Fail fast → `default_level` |
@@ -238,10 +240,12 @@ Requirements:
 | `unknown_level` | `L1` | For greetings/vague prompts |
 | `min_confidence` | `0.5` | Below → escalate to `default_level` |
 | `cache.enabled` | `true` | Avoid re-classifying identical prompts |
-| `cache.ttl_seconds` | `3600` | 1-hour prompt cache |
+| `cache.ttl_seconds` | `86400` | 24-hour prompt cache (since v2.11.3) |
 | `tier_prefix.enabled` | `true` | Detect tier label at start of first prompt |
 | `tier_prefix.pattern` | `^(L[1-5])[\s:.\-]*` | Regex (group 1 = level) |
 | `tier_prefix.strip_prefix` | `true` | Remove prefix from message before forwarding |
+
+**Classifier provider modes (v2.20.0):** set `classification.provider_mode` to `"decisions"` to use a structured decision model (e.g. `typesafe/jev-1.13`) instead of a chat model. The router posts to OpenRouter's `/api/alpha/decisions` endpoint, sending the prompt digest as `state` and the L1–L5 rubric as a typed `choice` question; the response arrives as a typed choice with probabilities and confidence — no JSON parsing of free-form model output. Output tokens are free (~$0.0000144/call), latency is 2–6x lower than chat-mode classification, and all downstream machinery (confidence policy, heuristics, caching, injection guards) is unchanged. Mode switching is hot-reloadable — no restart needed.
 
 
 ## Configuration
