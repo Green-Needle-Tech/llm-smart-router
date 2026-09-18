@@ -249,6 +249,8 @@ Requirements:
 
 **Classifier provider modes (v2.20.0):** set `classification.provider_mode` to `"decisions"` to use a structured decision model (e.g. `typesafe/jev-1.13`) instead of a chat model. The router posts to OpenRouter's `/api/alpha/decisions` endpoint, sending the prompt digest as `state` and the L1–L5 rubric as a typed `choice` question; the response arrives as a typed choice with probabilities and confidence — no JSON parsing of free-form model output. Output tokens are free (~$0.0000144/call), latency is 2–6x lower than chat-mode classification, and all downstream machinery (confidence policy, heuristics, caching, injection guards) is unchanged. Mode switching is hot-reloadable — no restart needed.
 
+Since v2.21.0 the default criteria follow [TypeSafe's Choice best practices](https://docs.typesafe.ai/primitives/choice): adjacent tiers are confusable, so each option description separates itself from its neighbors with a `WHAT` / `NOT FOR` / `EXAMPLES` structure, and the instructions judge the whole session's required work. Live 5-prompt suite: 5/5 correct tiers, all at confidence 1.00. Custom `tier_criteria` overrides should keep the same format.
+
 
 ## Configuration
 

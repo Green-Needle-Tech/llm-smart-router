@@ -150,6 +150,30 @@ async def test_decisions_mode_http_error_falls_back_to_default():
     assert result.source == ClassificationSource.DEFAULT
 
 
+def test_decisions_default_criteria_follow_typesafe_best_practice_format():
+    """Default criteria use WHAT / NOT FOR / EXAMPLES per TypeSafe's Choice docs."""
+    config = _make_config()
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = MagicMock(return_value=_decisions_response("L1", 0.9))
+    mock_http = MagicMock()
+    mock_http.post = AsyncMock(return_value=mock_resp)
+
+    import asyncio
+    svc = ClassifierService(config, openrouter_api_key="test-key", http_client=mock_http)
+    asyncio.run(svc.classify([ChatMessage(role="user", content="hello")]))
+
+    payload = mock_http.post.call_args.kwargs["json"]
+    instructions = payload["questions"]["tier"]["instructions"]
+    assert "total work the whole session will require" in instructions
+    assert "LOWEST tier" in instructions
+    for level in ("L1", "L2", "L3", "L4", "L5"):
+        desc = payload["questions"]["tier"]["criteria"][level]
+        assert desc.startswith("WHAT:"), level
+        assert "NOT FOR:" in desc, level
+        assert "EXAMPLES:" in desc, level
+
+
 def test_decisions_json_output_parses_via_existing_parser():
     raw = json.dumps({"level": "L3", "confidence": 0.72, "reason": "decision model (typesafe/jev-1.13)"})
     result = parse_classifier_output(raw, source=ClassificationSource.MODEL)

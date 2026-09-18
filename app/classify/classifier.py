@@ -255,12 +255,42 @@ class ClassifierService:
         so the existing parse_classifier_output path handles it unchanged.
         """
         cls_cfg = self.config.classification
+        # Criteria strings follow TypeSafe's Choice best practices (docs.typesafe.ai
+        # /primitives/choice): option descriptions must separate confusable options
+        # with WHAT / NOT FOR / EXAMPLES. OpenRouter's decisions endpoint accepts
+        # strings only (its Zod schema rejects the structured object form).
         criteria = getattr(cls_cfg, "tier_criteria", None) or {
-            "L1": "Almost no reasoning: greetings, thanks, simple extraction, counting, basic arithmetic",
-            "L2": "Small bounded conventional task suitable for a fast flash model",
-            "L3": "Intermediate multi-step task, standard coding or analysis",
-            "L4": "Advanced reasoning, complex code, architecture, multi-file work",
-            "L5": "Expert: deep reasoning, novel research, large-scale design",
+            "L1": (
+                "WHAT: almost no reasoning - greetings, thanks, simple factual recall, "
+                "counting, basic arithmetic, one-step extraction. "
+                "NOT FOR: any task with multiple steps or code. "
+                "EXAMPLES: hey thanks; what is 2+2; capital of France"
+            ),
+            "L2": (
+                "WHAT: a small, bounded, conventional task a fast flash model completes "
+                "reliably - short single-function code, simple rewrites, lookups with "
+                "light formatting. "
+                "NOT FOR: multi-file changes, debugging, or design decisions. "
+                "EXAMPLES: write a python function to parse ISO dates; summarize this email in one line"
+            ),
+            "L3": (
+                "WHAT: an intermediate multi-step task - standard coding, bug fixes with "
+                "tests, data analysis, structured document drafting. "
+                "NOT FOR: architecture-level design or expert-level reasoning. "
+                "EXAMPLES: fix this bug and add unit tests; compare these datasets and chart differences"
+            ),
+            "L4": (
+                "WHAT: advanced reasoning - complex code, system architecture, multi-file "
+                "refactors, tradeoff analysis with implementation. "
+                "NOT FOR: novel research beyond established practice. "
+                "EXAMPLES: design a distributed rate limiter with Redis failover; refactor the auth module across services"
+            ),
+            "L5": (
+                "WHAT: expert-level work - deep reasoning, novel research, large-scale "
+                "system design, proof-grade analysis. "
+                "NOT FOR: routine tasks a strong generalist model completes well. "
+                "EXAMPLES: propose a novel formal verification approach; design a global multi-region consensus protocol"
+            ),
         }
         payload = {
             "model": cls_cfg.model,
@@ -269,8 +299,10 @@ class ClassifierService:
                 "tier": {
                     "type": "choice",
                     "instructions": (
-                        "Which complexity tier is this user request? "
-                        "Choose the LOWEST tier that can reliably complete the task."
+                        "Which complexity tier does this user request belong to? "
+                        "Judge the total work the whole session will require, not just "
+                        "the wording of the first message. Choose the LOWEST tier whose "
+                        "model can reliably complete the entire task."
                     ),
                     "criteria": criteria,
                 }
