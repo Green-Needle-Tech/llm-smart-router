@@ -248,7 +248,7 @@ class ClassifierService:
         return data["choices"][0]["message"]["content"]
 
     async def _call_classifier_decisions(self, digest: str) -> str:
-        """Call a decision model via OpenRouter /api/alpha/decisions.
+        """Call a decision model (OpenRouter /api/alpha/decisions or TypeSafe /v1/systemone).
 
         Returns a JSON string of the form
         {"level": "L1".."L5", "confidence": 0.0-1.0, "reason": "..."}
@@ -292,8 +292,14 @@ class ClassifierService:
                 "EXAMPLES: propose a novel formal verification approach; design a global multi-region consensus protocol"
             ),
         }
+        base_url = self._classifier_base_url
+        model_name = cls_cfg.model
+        # Direct TypeSafe calls use the bare model id (e.g. jev-1.13.0),
+        # not the OpenRouter-namespaced "typesafe/jev-1.13" form.
+        if "typesafe.ai" in base_url and model_name.startswith("typesafe/"):
+            model_name = model_name.split("/", 1)[1]
         payload = {
-            "model": cls_cfg.model,
+            "model": model_name,
             "state": digest,
             "questions": {
                 "tier": {
@@ -315,13 +321,26 @@ class ClassifierService:
                 headers={"Authorization": self._classifier_auth_header},
             )
 
-        # The decisions API lives at /api/alpha/decisions (NOT under /v1),
-        # so strip a trailing "/v1" from the configured base URL.
+        # Endpoint selection by base URL:
+        # - TypeSafe direct (api.typesafe.ai): POST /v1/systemone
+        # - OpenRouter (default): POST /api/alpha/decisions (NOT under /v1,
+        #   so a trailing "/v1" is stripped from the configured base URL).
         base_url = self._classifier_base_url
-        if base_url.endswith("/v1"):
-            base_url = base_url[: -len("/v1")]
+        if "typesafe.ai" in base_url:
+            url = base_url.rstrip("/")
+            if not url.endswith("/v1"):
+                url += "/v1"
+            url += "/systemone"
+            # Direct TypeSafe calls use the bare model id (e.g. jev-1.13.0),
+            # not the OpenRouter-namespaced "typesafe/jev-1.13" form.
+            if model_name.startswith("typesafe/"):
+                model_name = model_name.split("/", 1)[1]
+        else:
+            if base_url.endswith("/v1"):
+                base_url = base_url[: -len("/v1")]
+            url = f"{base_url}/alpha/decisions"
         resp = await self._http.post(
-            f"{base_url}/alpha/decisions",
+            url,
             json=payload,
             headers={
                 "Authorization": self._classifier_auth_header,
@@ -340,7 +359,7 @@ class ClassifierService:
             {
                 "level": level,
                 "confidence": float(answer.get("confidence", 1.0)),
-                "reason": f"decision model ({cls_cfg.model})",
+                "reason": f"decision model ({model_name})",
             }
         )
 

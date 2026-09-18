@@ -199,3 +199,56 @@ async def test_chat_mode_unchanged_when_provider_mode_chat():
     call = mock_http.post.call_args
     assert call.args[0].endswith("/chat/completions")
     assert result.level.value == "L1"
+
+
+def _make_typesafe_config(provider_mode="decisions"):
+    config = _make_config(provider_mode=provider_mode)
+    config.classification.base_url = "https://api.typesafe.ai/v1"
+    config.classification.api_key_env = "TYPESAFE_API_KEY"
+    return config
+
+
+@pytest.mark.asyncio
+async def test_decisions_mode_typesafe_direct_uses_systemone_endpoint():
+    """TypeSafe direct base_url routes to POST /v1/systemone with the bare model id."""
+    config = _make_typesafe_config()
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = MagicMock(return_value=_decisions_response("L3", 0.85))
+    mock_http = MagicMock()
+    mock_http.post = AsyncMock(return_value=mock_resp)
+
+    svc = ClassifierService(config, openrouter_api_key="test-key", http_client=mock_http)
+    messages = [ChatMessage(role="user", content="Fix this bug and add tests")]
+    result, _ = await svc.classify(messages)
+
+    call = mock_http.post.call_args
+    assert call.args[0] == "https://api.typesafe.ai/v1/systemone"
+    payload = call.kwargs["json"]
+    # OpenRouter-namespaced model is stripped to the bare TypeSafe id
+    assert payload["model"] == "jev-1.13"
+    assert set(payload["questions"]["tier"]["criteria"]) == {"L1", "L2", "L3", "L4", "L5"}
+    assert result.level.value == "L3"
+    assert result.confidence == pytest.approx(0.85)
+
+
+@pytest.mark.asyncio
+async def test_decisions_mode_typesafe_direct_uses_typesafe_api_key():
+    """With a typesafe.ai base_url, the TYPESAFE_API_KEY env var is used for auth."""
+    config = _make_typesafe_config()
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = MagicMock(return_value=_decisions_response("L2", 0.9))
+    mock_http = MagicMock()
+    mock_http.post = AsyncMock(return_value=mock_resp)
+
+    import os
+    os.environ["TYPESAFE_API_KEY"] = "ts-test-key-123"
+    try:
+        svc = ClassifierService(config, openrouter_api_key="openrouter-key", http_client=mock_http)
+        await svc.classify([ChatMessage(role="user", content="hello")])
+    finally:
+        del os.environ["TYPESAFE_API_KEY"]
+
+    headers = mock_http.post.call_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer ts-test-key-123"

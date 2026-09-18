@@ -166,7 +166,8 @@ class ClassificationConfig(BaseModel):
     # Environment variable name holding the API key for the classifier.
     api_key_env: str | None = None
     # Provider mode: "chat" (OpenAI chat completions) or "decisions"
-    # (OpenRouter /api/alpha/decisions — structured decision models, e.g. typesafe/jev-1.13).
+    # (structured decision models — OpenRouter /api/alpha/decisions or
+    # TypeSafe direct /v1/systemone, e.g. typesafe/jev-1.13).
     provider_mode: str = "chat"
     # For provider_mode="decisions": tier option -> rubric description sent as
     # choice criteria. Empty dict = use built-in default tier criteria.

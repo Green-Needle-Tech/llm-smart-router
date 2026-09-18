@@ -18,6 +18,7 @@ services:
       L4_API_KEY: ${L4_API_KEY:-}
       L5_API_KEY: ${L5_API_KEY:-}
       CLASSIFIER_API_KEY: ${CLASSIFIER_API_KEY:-}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       SETTINGS_PATH: /app/config/settings.json
       CACHE_BACKEND: ${CACHE_BACKEND:-memory}
       REDIS_URL: redis://redis:6379/0
