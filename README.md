@@ -63,7 +63,9 @@ print(r.model)  # actual model used
 
 ## Classifier Prompt
 
-The classifier uses `google/gemini-2.5-flash-lite` with the following prompt (`config/prompts/classifier.txt`). The `{{PROMPT_DIGEST}}` placeholder is replaced with a stripped digest of the conversation's opening message (system prompt scaffolding removed, tool names included, context summary appended).
+The router classifies with `typesafe/jev-1.13`, a structured decision model, via OpenRouter's decisions API (`classification.provider_mode: "decisions"`): the prompt digest is sent as `state` and the L1–L5 rubric as a typed `choice` question, and the response arrives as a typed choice with probabilities and confidence — no free-form JSON to parse. Output tokens are free (~$0.0000144/call, 2–6x faster than chat-mode classification).
+
+The prompt below (`config/prompts/classifier.txt`) is used when `provider_mode: "chat"` (e.g. with a cheap chat model such as `google/gemini-2.5-flash-lite`). The `{{PROMPT_DIGEST}}` placeholder is replaced with a stripped digest of the conversation's opening message (system prompt scaffolding removed, tool names included, context summary appended).
 
 ```text
 You classify the complexity of the OPENING user request for an LLM router.
@@ -230,8 +232,8 @@ Requirements:
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `model` | `google/gemini-2.5-flash-lite` | Fast, cheap, non-reasoning model |
-| `provider_mode` | `chat` | `chat` = standard /v1/chat/completions call; `decisions` = OpenRouter structured decision API (`/api/alpha/decisions`) with typed choice output (e.g. `typesafe/jev-1.13`) |
+| `model` | `typesafe/jev-1.13` | Structured decision model — output tokens free, ~$0.0000144/call |
+| `provider_mode` | `decisions` | `decisions` = OpenRouter structured decision API (`/api/alpha/decisions`), typed choice output; `chat` = standard `/v1/chat/completions` call with a cheap chat model (e.g. `google/gemini-2.5-flash-lite`) |
 | `tier_criteria` | `{}` | Decisions mode only: per-tier rubric descriptions sent as the choice criteria; empty = built-in L1–L5 rubric |
 | `temperature` | `0` | Deterministic classification |
 | `max_tokens` | `60` | JSON output only, no prose |
@@ -282,7 +284,7 @@ flowchart TD
         P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags<br/>typo + grammar tolerant"]
         P2T --> TP{"Tier-prefix<br/>in prompt?"}
         TP -->|Yes| TP2["Tier-Prefix Pin<br/>L1–L5 detected<br/>prefix stripped<br/>classifier skipped"]
-        TP -->|No| D["Classifier LLM<br/>gemini-2.5-flash-lite<br/>Rates task: L1–L5"]
+        TP -->|No| D["Decision Model<br/>typesafe/jev-1.13<br/>/api/alpha/decisions<br/>Typed choice: L1–L5"]
         TP2 --> D2["Route to<br/>pinned tier"]
     end
 

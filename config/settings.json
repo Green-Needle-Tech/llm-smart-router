@@ -37,7 +37,7 @@
   },
   "classification": {
     "enabled": true,
-    "model": "google/gemini-2.5-flash-lite",
+    "model": "typesafe/jev-1.13",
     "temperature": 0,
     "max_tokens": 60,
     "timeout_seconds": 8,
@@ -78,7 +78,7 @@
       "pattern": "^(L[1-5])[\\s:.\\-]*",
       "strip_prefix": true
     },
-    "provider_mode": "chat",
+    "provider_mode": "decisions",
     "tier_criteria": {}
   },
   "session": {
