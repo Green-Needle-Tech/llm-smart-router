@@ -10,8 +10,7 @@ via provider_mode="chat") a single strictly-typed question:
 "no"   -> the router halts execution and returns a standardized rejection.
 
 The evaluation prompt is fully user-customizable (telemetry.guardrails.custom
-in settings.json), and the guardrail is opt-in: disabled by default, and can
-be enabled/disabled per agent (via X-Router-Agent header or API-key identity).
+in settings.json), and the guardrail is opt-in: disabled by default.
 
 All failures (timeout, HTTP error, unparseable output) honor the configured
 on_error policy ("pass" = fail-open by default, or "reject" = fail-closed)
@@ -65,13 +64,6 @@ class CustomGuardrailDecision(BaseModel):
     source: str = Field(default="model")  # "model" | "error" | "disabled"
 
 
-class CustomGuardrailAgentRule(BaseModel):
-    """Per-agent toggle (and optional prompt override)."""
-    agent: str
-    enabled: bool = True
-    prompt: str | None = None  # None = use the global prompt
-
-
 class CustomGuardrailSettings(BaseModel):
     """telemetry.guardrails.custom — all opt-in, disabled by default."""
     enabled: bool = False
@@ -92,32 +84,16 @@ class CustomGuardrailSettings(BaseModel):
     # Optional prompt file on disk; when set and readable it overrides
     # `prompt`. Edit the file + POST /admin/settings/reload to apply.
     prompt_file: str | None = None
-    # Per-agent rules. An empty list = guardrail applies to ALL clients
-    # (when enabled). Non-empty = only matching agents with enabled=true.
-    # Agents match on the X-Router-Agent header value or API-key identity.
-    agents: list[CustomGuardrailAgentRule] = Field(default_factory=list)
 
-    # --- Agent gating --------------------------------------------------------
-
-    def is_enabled_for(self, agent_id: str | None) -> bool:
-        """Global toggle gates everything; agents list narrows per client."""
-        if not self.enabled:
-            return False
-        if not self.agents:
-            return True
-        if not agent_id:
-            return False
-        return any(rule.agent == agent_id and rule.enabled for rule in self.agents)
+    def is_enabled(self) -> bool:
+        """Single global opt-in toggle."""
+        return self.enabled
 
     def applies_to_phase(self, phase: str) -> bool:
         return self.apply_on == "both" or self.apply_on == phase
 
-    def resolve_prompt(self, agent_id: str | None = None) -> str:
-        """Agent-specific prompt override > prompt_file > global prompt."""
-        if self.agents and agent_id:
-            for rule in self.agents:
-                if rule.agent == agent_id and rule.prompt:
-                    return rule.prompt
+    def resolve_prompt(self) -> str:
+        """prompt_file > inline prompt > built-in default."""
         if self.prompt_file:
             try:
                 with open(self.prompt_file) as f:
@@ -163,24 +139,20 @@ class CustomGuardrailEngine:
     def _api_key(self) -> str:
         return os.environ.get(self.settings.api_key_env, "")
 
-    async def evaluate(
-        self,
-        payload_text: str,
-        agent_id: str | None = None,
-    ) -> CustomGuardrailDecision:
+    async def evaluate(self, payload_text: str) -> CustomGuardrailDecision:
         """Evaluate payload; returns a strictly typed yes/no decision.
 
         Never raises — all failures map to the on_error policy.
         """
         start = time.monotonic()
         s = self.settings
-        if not self.settings.is_enabled_for(agent_id):
+        if not self.settings.is_enabled():
             return CustomGuardrailDecision(
                 decision="yes", reason="custom guardrail disabled",
                 latency_ms=0, source="disabled",
             )
         try:
-            raw = await self._call_decision_model(payload_text, agent_id)
+            raw = await self._call_decision_model(payload_text)
             decision = self._parse_decision(raw)
             decision.latency_ms = int((time.monotonic() - start) * 1000)
             return decision
@@ -227,7 +199,7 @@ class CustomGuardrailEngine:
                 f"guardrail output is not strictly 'yes'/'no': {choice!r}"
             ) from e
 
-    async def _call_decision_model(self, state_text: str, agent_id: str | None) -> str:
+    async def _call_decision_model(self, state_text: str) -> str:
         """POST to the TypeSafe /v1/systemone choice endpoint."""
         s = self.settings
         model_name = s.model
@@ -250,7 +222,7 @@ class CustomGuardrailEngine:
             )
         if url.endswith("/chat/completions"):
             prompt = (
-                f"{self.settings.resolve_prompt(agent_id)}\n\n"
+                f"{self.settings.resolve_prompt()}\n\n"
                 'Answer ONLY with a JSON object: {"decision": "yes" | "no", "reason": "<short>"}\n\n'
                 f"PAYLOAD:\n{state_text}"
             )
@@ -268,7 +240,7 @@ class CustomGuardrailEngine:
                 "questions": {
                     "guardrail": {
                         "type": "choice",
-                        "instructions": self.settings.resolve_prompt(agent_id),
+                        "instructions": self.settings.resolve_prompt(),
                         "criteria": DECISION_CRITERIA,
                     }
                 },
@@ -308,7 +280,6 @@ def _stringify_systemone_answer(data: dict) -> str:
 __all__ = [
     "DEFAULT_PROMPT",
     "DECISION_CRITERIA",
-    "CustomGuardrailAgentRule",
     "CustomGuardrailDecision",
     "CustomGuardrailEngine",
     "CustomGuardrailSettings",

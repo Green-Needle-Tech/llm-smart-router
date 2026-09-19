@@ -180,24 +180,6 @@ def _custom_guardrail_settings(config) -> CustomGuardrailSettings | None:
     return CustomGuardrailSettings(**vars(cfg))
 
 
-def _resolve_agent_id(request) -> str | None:
-    """Agent identity: X-Router-Agent header, else API-key identity.
-
-    Tolerates request fakes without a headers mapping (unit tests).
-    """
-    headers = getattr(request, "headers", None)
-    if headers is None:
-        return None
-    try:
-        agent = headers.get("X-Router-Agent")
-    except AttributeError:
-        return None
-    if agent:
-        return agent
-    auth = headers.get("Authorization", "")
-    return _get_api_key_identity(auth) if auth else None
-
-
 def _custom_guardrail_rejection(reason: str, phase: str) -> JSONResponse:
     """Standardized rejection envelope returned to the client."""
     return JSONResponse(
@@ -218,26 +200,23 @@ async def _custom_guardrail_check_input(request, body, config) -> JSONResponse |
     settings = _custom_guardrail_settings(config)
     if settings is None or not settings.applies_to_phase("input"):
         return None
-    agent_id = _resolve_agent_id(request)
-    if not settings.is_enabled_for(agent_id):
+    if not settings.is_enabled():
         return None
     messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
     payload_text = build_payload_text(messages, settings.max_payload_chars)
     if not payload_text:
         return None
     engine = CustomGuardrailEngine(settings)
-    decision = await engine.evaluate(payload_text, agent_id)
+    decision = await engine.evaluate(payload_text)
     router_custom_guardrail_evals_total.labels(
         decision=decision.decision, phase="input", source=decision.source,
     ).inc()
     if decision.decision == "yes":
         return None  # pass — request proceeds untouched
-    router_custom_guardrail_blocks_total.labels(
-        phase="input", agent=agent_id or "unknown",
-    ).inc()
+    router_custom_guardrail_blocks_total.labels(phase="input").inc()
     logger.warning(
         "router.custom_guardrail.rejected",
-        phase="input", agent=agent_id, reason=decision.reason,
+        phase="input", reason=decision.reason,
     )
     return _custom_guardrail_rejection(decision.reason, "input")
 
@@ -248,8 +227,7 @@ async def _custom_guardrail_check_output(request, json_resp, config) -> str | No
     settings = _custom_guardrail_settings(config)
     if settings is None or not settings.applies_to_phase("output"):
         return None
-    agent_id = _resolve_agent_id(request)
-    if not settings.is_enabled_for(agent_id):
+    if not settings.is_enabled():
         return None
     texts = []
     for choice in json_resp.get("choices", []):
@@ -266,31 +244,29 @@ async def _custom_guardrail_check_output(request, json_resp, config) -> str | No
     if not payload_text:
         return None
     return await _custom_guardrail_evaluate_output_text(
-        request, settings, agent_id, payload_text,
+        settings, payload_text,
     )
 
 
 async def _custom_guardrail_evaluate_output_text(
-    request, settings, agent_id, payload_text,
+    settings, payload_text,
 ) -> str | None:
     """Evaluate output text against the custom guardrail. Returns reason | None."""
     if not payload_text:
         return None
     engine = CustomGuardrailEngine(settings)
     decision = await engine.evaluate(
-        payload_text[: settings.max_payload_chars], agent_id,
+        payload_text[: settings.max_payload_chars],
     )
     router_custom_guardrail_evals_total.labels(
         decision=decision.decision, phase="output", source=decision.source,
     ).inc()
     if decision.decision == "yes":
         return None
-    router_custom_guardrail_blocks_total.labels(
-        phase="output", agent=agent_id or "unknown",
-    ).inc()
+    router_custom_guardrail_blocks_total.labels(phase="output").inc()
     logger.warning(
         "router.custom_guardrail.rejected",
-        phase="output", agent=agent_id, reason=decision.reason,
+        phase="output", reason=decision.reason,
     )
     return decision.reason
 
@@ -1936,12 +1912,11 @@ async def _handle_stream(
                         _cg_active = (
                             _cg_settings is not None
                             and _cg_settings.applies_to_phase("output")
-                            and _cg_settings.is_enabled_for(_resolve_agent_id(request))
+                            and _cg_settings.is_enabled()
                         )
                         if _cg_active:
                             _cg_reason = await _custom_guardrail_evaluate_output_text(
-                                request, _cg_settings, _resolve_agent_id(request),
-                                "".join(_stream_content_parts),
+                                _cg_settings, "".join(_stream_content_parts),
                             )
                             if _cg_reason is not None:
                                 _cg_err = {"error": {

@@ -1,4 +1,4 @@
-"""Unit tests for the opt-in custom guardrail (typesafe yes/no, v2.23.0)."""
+"""Unit tests for the opt-in custom guardrail (typesafe yes/no, v2.23.x)."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.guardrails.custom import (
-    CustomGuardrailAgentRule,
     CustomGuardrailDecision,
     CustomGuardrailEngine,
     CustomGuardrailSettings,
@@ -66,7 +65,6 @@ class TestParseDecision:
     async def test_raw_yes(self):
         s = CustomGuardrailSettings(enabled=True, base_url="https://x/v1")
         engine = CustomGuardrailEngine(s, http_client=_mock_http({"choices": [{"message": {"content": "yes"}}]}))
-        # via evaluate on generic chat endpoint path
         decision = await engine.evaluate("payload")
         assert decision.decision == "yes"
 
@@ -120,45 +118,22 @@ class TestParseDecision:
         assert CustomGuardrailDecision(decision="yes").decision == "yes"
 
 
-# --- agent gating & prompt customization ---------------------------------------
+# --- global toggle & prompt customization ------------------------------------
 
 
-class TestAgentGating:
+class TestToggleAndPrompt:
     def test_disabled_by_default(self):
         s = CustomGuardrailSettings()
         assert s.enabled is False
-        assert not s.is_enabled_for("any-agent")
+        assert not s.is_enabled()
 
-    def test_enabled_applies_to_all_when_no_agent_rules(self):
-        s = CustomGuardrailSettings(enabled=True)
-        assert s.is_enabled_for(None)
-        assert s.is_enabled_for("agent-a")
-
-    def test_agent_list_restricts(self):
-        s = CustomGuardrailSettings(
-            enabled=True,
-            agents=[
-                CustomGuardrailAgentRule(agent="iris", enabled=True),
-                CustomGuardrailAgentRule(agent="codex", enabled=False),
-            ],
-        )
-        assert s.is_enabled_for("iris")
-        assert not s.is_enabled_for("codex")
-        assert not s.is_enabled_for("other")
-        assert not s.is_enabled_for(None)
+    def test_enabled_global_toggle(self):
+        assert CustomGuardrailSettings(enabled=True).is_enabled()
 
     def test_apply_on_phase(self):
         assert CustomGuardrailSettings(apply_on="input").applies_to_phase("input")
         assert not CustomGuardrailSettings(apply_on="input").applies_to_phase("output")
         assert CustomGuardrailSettings(apply_on="both").applies_to_phase("output")
-
-    def test_per_agent_prompt_override(self):
-        s = CustomGuardrailSettings(
-            enabled=True, prompt="GLOBAL",
-            agents=[CustomGuardrailAgentRule(agent="iris", prompt="IRIS POLICY")],
-        )
-        assert s.resolve_prompt("iris") == "IRIS POLICY"
-        assert s.resolve_prompt("other") == "GLOBAL"
 
     def test_prompt_file_override(self, tmp_path):
         f = tmp_path / "policy.txt"
@@ -169,13 +144,18 @@ class TestAgentGating:
         s2 = CustomGuardrailSettings(enabled=True, prompt="INLINE", prompt_file="/nonexistent/x.txt")
         assert s2.resolve_prompt() == "INLINE"
 
+    def test_inline_prompt_and_default(self):
+        s = CustomGuardrailSettings(enabled=True, prompt="MY POLICY")
+        assert s.resolve_prompt() == "MY POLICY"
+        assert CustomGuardrailSettings().resolve_prompt()  # built-in default non-empty
+
     @pytest.mark.asyncio
-    async def test_disabled_agent_gets_pass_without_http_call(self):
+    async def test_disabled_returns_pass_without_http_call(self):
         s = CustomGuardrailSettings(enabled=False)
         mock_http = MagicMock()
         mock_http.post = AsyncMock()
         engine = CustomGuardrailEngine(s, http_client=mock_http)
-        decision = await engine.evaluate("payload", "iris")
+        decision = await engine.evaluate("payload")
         assert decision.decision == "yes"
         assert decision.source == "disabled"
         mock_http.post.assert_not_awaited()
@@ -188,12 +168,9 @@ class TestPayloadShape:
     @pytest.mark.asyncio
     async def test_systemone_payload_structure(self):
         mock_http = _mock_http(_systemone_response("yes"))
-        s = CustomGuardrailSettings(
-            enabled=True,
-            agents=[CustomGuardrailAgentRule(agent="iris", prompt="MY CUSTOM PROMPT")],
-        )
+        s = CustomGuardrailSettings(enabled=True, prompt="MY CUSTOM PROMPT")
         engine = CustomGuardrailEngine(s, http_client=mock_http)
-        decision = await engine.evaluate("the payload text", "iris")
+        decision = await engine.evaluate("the payload text")
         assert decision.decision == "yes"
         url = mock_http.post.await_args.args[0]
         payload = mock_http.post.await_args.kwargs["json"]

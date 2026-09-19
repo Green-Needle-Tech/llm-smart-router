@@ -33,13 +33,6 @@ class PromptCachingConfig(BaseModel):
     min_tokens: int = 1024
 
 
-class CustomGuardrailAgentSchema(BaseModel):
-    """Per-agent custom-guardrail toggle + optional prompt override."""
-    agent: str
-    enabled: bool = True
-    prompt: str | None = None
-
-
 class CustomGuardrailSchema(BaseModel):
     """Opt-in custom LLM guardrail (typesafe yes/no decision) — disabled by default."""
     enabled: bool = False
@@ -54,7 +47,6 @@ class CustomGuardrailSchema(BaseModel):
     max_payload_chars: int = 8000
     prompt: str = ""
     prompt_file: str | None = None
-    agents: list[CustomGuardrailAgentSchema] = Field(default_factory=list)
 
 
 class GuardrailsConfig(BaseModel):

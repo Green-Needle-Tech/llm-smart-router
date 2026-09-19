@@ -228,7 +228,7 @@ router_custom_guardrail_evals_total = Counter(
 router_custom_guardrail_blocks_total = Counter(
     "router_custom_guardrail_blocks_total",
     "Requests/responses rejected by the custom guardrail",
-    ["phase", "agent"],
+    ["phase"],
 )
 
 # Info
