@@ -1,7 +1,7 @@
 # LLM Smart Router — Project Specification
 
 **Project codename:** `llm-smart-router`
-| **Version:** 2.23.1 (custom guardrail: per-agent gating removed)
+| **Version:** 2.24.0 (custom guardrail: TypeSafe Noul primitive, input only)
 | **Date:** 2026-09-19
 **Deliverable:** Self-hosted Docker application exposing an OpenAI-compatible API that classifies the **first prompt of each chat session** by task complexity (L1–L5), pins that session to the matching OpenRouter model, and routes every subsequent turn of the session straight to the pinned model without re-classifying.
 
@@ -42,8 +42,8 @@ flowchart TD
     A[AI Agent] -->|"OpenAI-format request + X-Session-Id"| B["LLM-Smart-Router<br/>Docker :8080"]
     B -->|"OpenAI-format response<br/>+ X-Router-* headers"| A
     B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/log<br/>+ PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
-    G --> CG{"CUSTOM GUARDRAIL<br/>(opt-in, disabled by default)"}
-    CG -->|"enabled: TypeSafe yes/no decision<br/>custom policy prompt<br/>no → HTTP 400 reject"| P["IP REDACTION<br/>raw IPs → placeholders"]
+    G --> CG{"CUSTOM GUARDRAIL<br/>(opt-in, disabled by default,<br/>input only)"}
+    CG -->|"enabled: TypeSafe Noul question<br/>P(comply) >= 0.5 → pass<br/>P(comply) < 0.5 → HTTP 400 reject"| P["IP REDACTION<br/>raw IPs → placeholders"]
     CG -->|disabled| P
     P --> P2T["TEMPORAL AWARENESS\ntoday → 2026-08-26\nnow → 2026-08-26T08:35+08:00\n104 patterns / 91 tags\ntypo + grammar tolerant"]
     P2T --> S["Session Store<br/>session_id → level, model, turn, expires"]
@@ -66,9 +66,7 @@ flowchart TD
     M5 --> PC
     PC --> RH["IP RE-HYDRATE<br/>placeholders → original IPs"]
     RH --> OM["GUARDRAIL OUTPUT MASK<br/>secrets in LLM output → redacted"]
-    OM --> CGO{"CUSTOM GUARDRAIL output<br/>(opt-in, apply_on=output/both)"}
-    CGO -->|"no → 400 reject (non-stream)<br/>or SSE error event (stream)"| PF["POSTFIX<br/>append &#91;smart-router/Ln&#93;"]
-    CGO -->|yes / disabled| PF
+    OM --> PF["POSTFIX<br/>append &#91;smart-router/Ln&#93;"]
     PF --> B
 ```
 
@@ -119,7 +117,7 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
 flowchart TD
     R1[1. RECEIVE<br/>POST /v1/chat/completions] --> R2[2. AUTHENTICATE<br/>Bearer token check]
     R2 --> R2G[2b. GUARDRAIL INPUT SCAN<br/>injection/jailbreak detection<br/>block → HTTP 400]
-    R2G --> R2CG{"2b-2. CUSTOM GUARDRAIL<br/>(opt-in, disabled by default)<br/>TypeSafe yes/no decision on payload<br/>no → HTTP 400 reject<br/>yes → pass untouched"}
+    R2G --> R2CG{"2b-2. CUSTOM GUARDRAIL<br/>(opt-in, disabled by default, input only)<br/>TypeSafe Noul: P(comply) on payload<br/>&lt; 0.5 threshold → HTTP 400 reject"}
     R2CG --> R2P["2c. IP REDACTION<br/>redact raw IPs → placeholders<br/>session-scoped SQLite map"]
     R2P --> R2T[2d. TEMPORAL AWARENESS<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags from rules.py<br/>typo + grammar tolerant]
     R2T --> R3[3. RESOLVE<br/>Derive session_id]
@@ -139,8 +137,7 @@ flowchart TD
     R9 --> R10[10. FORWARD<br/>prompt-cache features → POST OpenRouter<br/>retryable error → fallback chain]
     R10 --> R10P[10b. IP RE-HYDRATE<br/>placeholders → original IPs<br/>carry buffer for split tokens]
     R10P --> R10G[10c. GUARDRAIL OUTPUT MASK<br/>secrets in LLM output → redacted<br/>streaming: split-first carry pipeline]
-    R10G --> R10CG["10c-2. CUSTOM GUARDRAIL output<br/>(opt-in, apply_on=output/both)<br/>decision no → 400 reject (non-stream)<br/>or SSE error event (stream)"]
-    R10CG --> R10F["10d. POSTFIX<br/>append &#91;smart-router/Ln&#93; marker"]
+    R10G --> R10F["10d. POSTFIX<br/>append &#91;smart-router/Ln&#93; marker"]
     R10F --> R11["11. RESPOND<br/>Stream or JSON + X-Router-* headers"]
     R11 --> R12[12. RECORD<br/>Log route, session, latency, usage, cost<br/>prompt-cache metrics]
 ```
@@ -2092,7 +2089,7 @@ Drift remediation follows the layer order in §4.11.1: confirm layers 1–2 are 
 | **M26 — Decisions-Mode Classifier (v2.20.0)** | New `classification.provider_mode` setting (`"chat"` default | `"decisions"`) plus `classification.tier_criteria` rubric overrides. In decisions mode `_call_classifier_decisions()` in `classifier.py` posts to OpenRouter's structured decision API `https://openrouter.ai/api/alpha/decisions` (trailing `/v1` stripped from `classification.base_url` — the decisions API is not under `/v1`), sending the digest as `state` and the L1–L5 rubric as a typed `choice` question. The typed choice + probabilities + confidence response is converted to the internal `{level, confidence, reason}` shape, so `parse_classifier_output()`, confidence policy, heuristics, caching, and injection guards are unchanged. Invalid choices and HTTP errors fall back to `default_level` identically to chat-mode parse failures. Live A/B vs `google/gemini-2.5-flash-lite`: 4/5 tier agreement, 300–370 ms vs 630–2270 ms, ~$0.0000144/call (output tokens free). Production router switched to `typesafe/jev-1.13` decisions mode. | 534 unit & integration tests pass (6 new: payload shape, custom criteria, invalid-level fallback, HTTP-error fallback, parser compat, chat-mode unchanged); container rebuilt on 2.20.0 and live-verified — decisions classification pins L4 correctly, tiny-prompt heuristic still short-circuits to L1. |
 | **M27 — Decisions Criteria per TypeSafe Best Practices (v2.21.0)** | Rewrote the decisions-mode classifier `instructions` and default `tier_criteria` in `classifier.py` following TypeSafe's Choice documentation (docs.typesafe.ai/primitives/choice): adjacent tiers are confusable, so each criterion is a string encoding WHAT / NOT FOR / EXAMPLES (the structured-object form from TypeSafe's own API is rejected by OpenRouter's Zod schema — verified by live 400), and instructions judge the whole session's required work. Live 5-prompt suite: 5/5 correct tiers, all at confidence 1.00 (was 4/5, 0.66–1.00). | 535 unit & integration tests pass (1 new format-guard test); container rebuilt and live-verified. |
 | **M28 — TypeSafe Direct API Classifier (v2.22.0)** | When `classification.base_url` points at `typesafe.ai`, the decisions-mode classifier calls `POST https://api.typesafe.ai/v1/systemone` directly with the bare model id (namespace prefix `typesafe/` stripped — note the direct API requires the fully-qualified id, e.g. `jev-1.13.0`, not the OpenRouter alias `jev-1.13`) and authenticates with `TYPESAFE_API_KEY` (`classification.api_key_env`, passed into the container via docker-compose). OpenRouter path unchanged when base_url is OpenRouter. | 537 unit & integration tests pass (2 new: systemone endpoint routing + key selection); container rebuilt and live-verified end-to-end — fresh session classified `source=model, L4 @ 0.85, reason=decision model (jev-1.13.0)` through the direct endpoint. |
-| **M29 — Opt-in Custom Guardrail (v2.23.1)** | `telemetry.guardrails.custom` (disabled by default; single global `enabled` toggle). When enabled, the router evaluates request (and optionally response) payloads with a structured decision call — TypeSafe `POST /v1/systemone` choice question with two strictly separated options, or any OpenAI-compatible chat endpoint when base_url is non-TypeSafe. The answer is parsed into a Pydantic `Literal["yes","no"]`; `yes` → pass untouched, `no` → standardized 400 rejection (`code: router_custom_guardrail_rejected`) with reason logged + counted. User-customizable prompt (`prompt` string or `prompt_file`, hot-reloadable); `on_error: pass` (fail-open default) / `reject` (fail-closed); `apply_on: input|output|both` (streaming output emits a coded SSE error event at end-of-stream). Metrics: `router_custom_guardrail_evals_total{decision,phase,source}`, `router_custom_guardrail_blocks_total{phase}`. Per-agent gating (X-Router-Agent / agents[]) was removed in v2.23.1 at David's request. | 554 tests pass; container rebuilt and live-verified (pass + reject, global toggle). |
+| **M29 — Opt-in Custom Guardrail (v2.24.0)** | `telemetry.guardrails.custom` (disabled by default; single global `enabled` toggle). When enabled, the router evaluates the REQUEST payload only (input path, after the standard injection guardrails, before IP redaction) with a TypeSafe **Noul** question (`POST /v1/systemone`, `type: "noul"`, instructions = the user-customizable prompt phrased as a yes/no question, optional `{true, false}` criteria built in) — the documented TypeSafe primitive for binary judgments. The response `noul` (probability-of-compliance, 0–1) is range-checked and thresholded (`yes_threshold`, default 0.5) into a Pydantic `Literal["yes","no"]`; pass → request continues untouched, below threshold → standardized 400 rejection (`code: router_custom_guardrail_rejected`) with the probability logged + counted. Prompt hot-reloadable (`prompt` / `prompt_file` + admin reload); `on_error: pass` (fail-open default) / `reject` (fail-closed); non-TypeSafe base_url falls back to any OpenAI-compatible chat endpoint. Metrics: `router_custom_guardrail_evals_total{decision,source}`, `router_custom_guardrail_blocks_total`. Per-agent gating was removed in v2.23.1; output-phase evaluation was removed in v2.24.0 (input only). | 555 tests pass; container rebuilt and live-verified (pass + reject via Noul probability). |
 
 
 ---

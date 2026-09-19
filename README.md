@@ -306,8 +306,8 @@ flowchart TD
 
     subgraph Router [Request Pipeline]
         C --> P1["🛡️ Guardrails Input<br/>Injection detection 26 rules (log/block)<br/>+ Homoglyph normalization<br/>Cyrillic/Greek/Full-width lookalikes<br/>+ Obfuscation & entropy scanning<br/>Base64/Hex/URL-encoded payloads<br/>+ Invisible text stripping<br/>+ Banned substrings scan<br/>+ Input PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
-        P1 --> CG{"🧭 Custom Guardrail<br/>enabled? (opt-in,<br/>disabled by default)"}
-        CG -->|yes| CG2["🧭 TypeSafe yes/no decision<br/>typesafe/jev-1.13.0<br/>custom policy prompt<br/>no → HTTP 400 reject<br/>yes → pass untouched"]
+        P1 --> CG{"🧭 Custom Guardrail<br/>enabled? (opt-in,<br/>disabled by default,<br/>input only)"}
+        CG -->|yes| CG2["🧭 TypeSafe Noul question<br/>typesafe/jev-1.13.0<br/>P(comply) >= 0.5 → pass<br/>P(comply) < 0.5 → HTTP 400 reject"]
         CG2 --> P2
         CG -->|disabled| P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
         P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags<br/>typo + grammar tolerant"]
@@ -334,8 +334,7 @@ flowchart TD
     F3 --> C
     H --> C
 
-    C --> CGO["🧭 Custom Guardrail output check<br/>(opt-in, apply_on=output/both)<br/>no → 400 reject (non-stream)<br/>or SSE error event (stream)"]
-    CGO -->|"🔒 Secrets masked (11 provider types)<br/>🔒 PII masked<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Token tracking accumulated<br/>📋 Postfix [smart-router/Ln-In:…|Out:…/Ctx:…/1M]<br/>suppressed on tool-call turns<br/>📊 Refusal logged"| B
+    C -->|"🔒 Secrets masked (11 provider types)<br/>🔒 PII masked<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Token tracking accumulated<br/>📋 Postfix [smart-router/Ln-In:…|Out:…/Ctx:…/1M]<br/>suppressed on tool-call turns<br/>📊 Refusal logged"| B
     B --> A
 ```
 
@@ -374,12 +373,13 @@ Turn 2+ skips the classifier: the session pin routes straight to the tier model,
 
 See the [full specification](./llm-smart-router-spec.md) for complete details.
 
-### Custom Guardrail — opt-in typesafe yes/no check (v2.23.1)
+### Custom Guardrail — opt-in TypeSafe Noul check, input only (v2.24.0)
 
-An optional, user-configurable guardrail under `telemetry.guardrails.custom` — **disabled by default** (a single global `enabled` toggle). When enabled, the router asks a structured decision model (TypeSafe `/v1/systemone` by default, or any OpenAI-compatible chat endpoint) a single strictly-typed question about the request/response payload:
+An optional, user-configurable guardrail under `telemetry.guardrails.custom` — **disabled by default** (a single global `enabled` toggle), evaluated on the **request (input) path only**. It asks a TypeSafe **Noul** question (the documented primitive for binary judgments, `docs.typesafe.ai/primitives/noul`) against the payload:
 
-- `yes` → **Pass**: the request continues through the router pipeline untouched
-- `no` → **Reject**: execution halts; the client receives a standardized `400` envelope with `code: "router_custom_guardrail_rejected"` and the rejection reason (also logged + counted in metrics)
+- The model returns `noul` = probability the payload **complies** (0–1)
+- `P(yes) >= yes_threshold` (default 0.5) → **Pass**: the request continues through the router pipeline untouched
+- `P(yes) < yes_threshold` → **Reject**: execution halts; the client receives a standardized `400` envelope with `code: "router_custom_guardrail_rejected"` and the probability in the reason (also logged + counted in metrics)
 
 ```json
 "custom": {
@@ -387,17 +387,17 @@ An optional, user-configurable guardrail under `telemetry.guardrails.custom` —
   "model": "typesafe/jev-1.13.0",
   "base_url": "https://api.typesafe.ai/v1",
   "api_key_env": "TYPESAFE_API_KEY",
-  "apply_on": "input",        // "input" | "output" | "both"
-  "on_error": "pass",         // fail-open ("pass") or fail-closed ("reject")
+  "yes_threshold": 0.5,        // P(yes) >= threshold -> pass
+  "on_error": "pass",          // fail-open ("pass") or fail-closed ("reject")
   "max_payload_chars": 8000,
-  "prompt": "You are a policy guardrail ... choose 'yes' or 'no'."
+  "prompt": "Does the payload comply with the deployment's safety policy and may it proceed to the LLM?"
 }
 ```
 
-- **Customizable typesafe prompt**: the `prompt` string (or a `prompt_file` on disk) is the question sent to the decision model; edit it for your agent's safety policy and `POST /admin/settings/reload` to apply — no restart.
-- **Strict output validation**: the decision model's answer is parsed into a Pydantic `Literal["yes", "no"]` — anything else is treated as an evaluation error and follows `on_error` (default fail-open), so a misbehaving decision model can never break routing.
-- **Metrics**: `router_custom_guardrail_evals_total{decision,phase,source}`, `router_custom_guardrail_blocks_total{phase}`.
-- Note: for streaming responses with `apply_on` including `"output"`, content has already been delivered when the end-of-stream check runs — the router emits a coded SSE error event and records the rejection rather than rewriting the stream.
+- **Customizable typesafe prompt**: the `prompt` string (or a `prompt_file` on disk) becomes the Noul `instructions`; best practice is a clear yes/no question phrased so high probability = yes. Edit it + `POST /admin/settings/reload` to apply — no restart. Optional `{true, false}` criteria are built in to pin the yes/no boundary.
+- **Strict output validation**: the Noul probability is range-checked ([0,1]) and thresholded into a Pydantic `Literal["yes", "no"]` — anything unparseable follows `on_error` (default fail-open), so a misbehaving decision model can never break routing.
+- **Input only**: the check runs in `_preprocess_request`, after the standard injection guardrails and before IP redaction. Responses are never evaluated.
+- **Metrics**: `router_custom_guardrail_evals_total{decision,source}`, `router_custom_guardrail_blocks_total`.
 
 ## License
 

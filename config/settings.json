@@ -294,12 +294,12 @@
       "input_pii_masking_enabled": true,
       "custom": {
         "enabled": false,
-        "_doc": "Opt-in typesafe yes/no guardrail (v2.23.1). Single global toggle: set enabled=true to apply to all clients.",
+        "_doc": "Opt-in TypeSafe Noul guardrail (v2.24.0), input path only. Set enabled=true to apply to all clients.",
         "model": "typesafe/jev-1.13.0",
         "base_url": "https://api.typesafe.ai/v1",
         "api_key_env": "TYPESAFE_API_KEY",
-        "apply_on": "input",
-        "on_error": "pass"
+        "on_error": "pass",
+        "yes_threshold": 0.5
       }
     },
     "temporal_awareness": {

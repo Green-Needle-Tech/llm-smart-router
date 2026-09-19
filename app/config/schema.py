@@ -40,10 +40,10 @@ class CustomGuardrailSchema(BaseModel):
     base_url: str = "https://api.typesafe.ai/v1"
     api_key_env: str = "TYPESAFE_API_KEY"
     timeout_seconds: int = 10
-    # "input" | "output" | "both"
-    apply_on: str = "input"
     # "pass" (fail-open) | "reject" (fail-closed) on evaluation errors
     on_error: str = "pass"
+    # Noul decision threshold: P(yes) >= yes_threshold -> pass. Default 0.5.
+    yes_threshold: float = 0.5
     max_payload_chars: int = 8000
     prompt: str = ""
     prompt_file: str | None = None
