@@ -101,6 +101,9 @@ async def test_fallback_serves_turn_without_repinning(app_client):
 
     rmock.post(UPSTREAM).mock(
         side_effect=[
+            # primary is retried max_retries (2) times before advancing
+            httpx.Response(429, json={"error": "rate limited"}),
+            httpx.Response(429, json={"error": "rate limited"}),
             httpx.Response(429, json={"error": "rate limited"}),
             httpx.Response(200, json=_completion(L3_FALLBACK)),
         ]
@@ -142,7 +145,11 @@ async def test_pin_survives_two_consecutive_fallback_turns(app_client):
     rmock.post(UPSTREAM).mock(
         side_effect=[
             httpx.Response(503),
+            httpx.Response(503),
+            httpx.Response(503),
             httpx.Response(200, json=_completion(L3_FALLBACK)),
+            httpx.Response(503),
+            httpx.Response(503),
             httpx.Response(503),
             httpx.Response(200, json=_completion(L3_FALLBACK)),
         ]
@@ -175,8 +182,15 @@ async def test_deep_fallback_does_not_repin(app_client):
 
     rmock.post(UPSTREAM).mock(
         side_effect=[
+            # primary: 3 attempts (initial + 2 retries), all fail
             httpx.Response(429),
             httpx.Response(500),
+            httpx.Response(429),
+            # fallback 1: 3 attempts, all fail
+            httpx.Response(500),
+            httpx.Response(500),
+            httpx.Response(500),
+            # fallback 2 answers
             httpx.Response(200, json=_completion(L3_FALLBACK_2)),
         ]
     )
@@ -231,6 +245,8 @@ async def test_streaming_fallback_does_not_repin(app_client):
 
     rmock.post(UPSTREAM).mock(
         side_effect=[
+            httpx.Response(429, json={"error": "rate limited"}),
+            httpx.Response(429, json={"error": "rate limited"}),
             httpx.Response(429, json={"error": "rate limited"}),
             httpx.Response(
                 200,

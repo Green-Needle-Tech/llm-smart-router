@@ -126,6 +126,12 @@ router_fallbacks_total = Counter(
     ["level", "from_model", "to_model", "reason"],
 )
 
+router_provider_retries_total = Counter(
+    "router_provider_retries_total",
+    "Per-model provider retries (same model retried before advancing to next fallback)",
+    ["model", "reason"],
+)
+
 # Token and cost metrics
 router_tokens_total = Counter(
     "router_tokens_total",

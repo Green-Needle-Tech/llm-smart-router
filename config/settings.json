@@ -293,7 +293,7 @@
       "entropy_threshold": 4.5,
       "input_pii_masking_enabled": true,
       "custom": {
-        "enabled": true,
+        "enabled": false,
         "_doc": "Fully settings-driven TypeSafe guardrail (input path only). question_type/question_id/prompt/criteria/rejection_message all customizable here \u2014 no code changes needed. Scope: EAT Cafe analytics/ops + F&B only; criteria mirror the prompt (Jev failure mode 7).",
         "model": "typesafe/jev-1.13.0",
         "base_url": "https://api.typesafe.ai/v1",

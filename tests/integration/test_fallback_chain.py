@@ -45,7 +45,12 @@ def _completion(model: str) -> dict:
 
 @pytest.fixture
 def config():
-    return ConfigManager(settings_path="/nonexistent").load()
+    cfg = ConfigManager(settings_path="/nonexistent").load()
+    # Existing tests assert one-try-per-model semantics; disable retries
+    # so they remain valid. Retry behaviour is covered by the dedicated
+    # tests below (test_provider_retry_*).
+    cfg.provider.max_retries = 0
+    return cfg
 
 
 @pytest.fixture
@@ -478,3 +483,162 @@ async def test_headers_are_forwarded_on_every_attempt(executor, payload):
     for call in route.calls:
         assert call.request.headers["authorization"] == "Bearer test-key"
         assert call.request.headers["x-title"] == "Hermes Smart Router"
+
+
+# ── Per-model provider retries (max_retries=2) ─────────────────────────────
+
+
+@pytest.fixture
+def retry_config():
+    """Config with max_retries=2 and zero backoff for fast tests."""
+    cfg = ConfigManager(settings_path="/nonexistent").load()
+    cfg.provider.max_retries = 2
+    cfg.provider.retry_backoff_seconds = 0.0
+    return cfg
+
+
+@pytest.fixture
+def retry_executor(retry_config, http_client):
+    return FallbackExecutor(retry_config, http_client)
+
+
+@respx.mock
+async def test_provider_retry_succeeds_on_second_try(retry_executor, payload):
+    """Primary fails once (429), then succeeds on retry 1 — no fallback."""
+    route = respx.post(UPSTREAM).mock(
+        side_effect=[
+            httpx.Response(429, json={"error": "rate limited"}),
+            httpx.Response(200, json=_completion(PRIMARY)),
+        ]
+    )
+
+    body, _raw, model_used, fallback_used, error = await retry_executor.execute_with_fallback(
+        PRIMARY, [FALLBACK_1], payload, {}
+    )
+
+    assert error is None
+    assert fallback_used is False, "retry success on the same model is not a fallback"
+    assert model_used == PRIMARY
+    assert route.call_count == 2, "1 initial + 1 retry = 2 calls to primary"
+
+
+@respx.mock
+async def test_provider_retry_exhausted_then_fallback(retry_executor, payload):
+    """Primary retried 3 times (1+2), all fail; fallback succeeds on first try."""
+    route = respx.post(UPSTREAM).mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(200, json=_completion(FALLBACK_1)),
+        ]
+    )
+
+    body, _raw, model_used, fallback_used, error = await retry_executor.execute_with_fallback(
+        PRIMARY, [FALLBACK_1], payload, {}
+    )
+
+    assert error is None
+    assert fallback_used is True
+    assert model_used == FALLBACK_1
+    assert route.call_count == 4, "3 retries on primary + 1 on fallback"
+
+
+@respx.mock
+async def test_provider_retry_timeout_then_fallback(retry_executor, payload):
+    """Timeouts are retried on the same model before advancing."""
+    respx.post(UPSTREAM).mock(
+        side_effect=[
+            httpx.TimeoutException("timed out"),
+            httpx.TimeoutException("timed out"),
+            httpx.TimeoutException("timed out"),
+            httpx.Response(200, json=_completion(FALLBACK_1)),
+        ]
+    )
+
+    _body, _raw, model_used, fallback_used, error = await retry_executor.execute_with_fallback(
+        PRIMARY, [FALLBACK_1], payload, {}
+    )
+
+    assert error is None
+    assert fallback_used is True
+    assert model_used == FALLBACK_1
+
+
+@respx.mock
+async def test_provider_retry_exception_then_fallback(retry_executor, payload):
+    """Generic exceptions are retried on the same model before advancing."""
+    respx.post(UPSTREAM).mock(
+        side_effect=[
+            httpx.ConnectError("connection refused"),
+            httpx.ConnectError("connection refused"),
+            httpx.ConnectError("connection refused"),
+            httpx.Response(200, json=_completion(FALLBACK_1)),
+        ]
+    )
+
+    _body, _raw, model_used, fallback_used, error = await retry_executor.execute_with_fallback(
+        PRIMARY, [FALLBACK_1], payload, {}
+    )
+
+    assert error is None
+    assert fallback_used is True
+    assert model_used == FALLBACK_1
+
+
+@respx.mock
+async def test_provider_retry_streaming_success_on_retry(retry_executor, payload):
+    """Streaming: primary 429 once, then succeeds on retry — no fallback."""
+    respx.post(UPSTREAM).mock(
+        side_effect=[
+            httpx.Response(429, json={"error": "rate limited"}),
+            httpx.Response(200, content=b"data: [DONE]\n\n"),
+        ]
+    )
+
+    _body, raw, model_used, fallback_used, error = await retry_executor.execute_with_fallback(
+        PRIMARY, [FALLBACK_1], payload, {}, stream=True
+    )
+
+    assert error is None
+    assert fallback_used is False
+    assert model_used == PRIMARY
+    assert raw is not None
+    await raw.aclose()
+
+
+@respx.mock
+async def test_provider_retry_metric_incremented(retry_executor, payload):
+    """The router_provider_retries_total counter is incremented on each retry."""
+    from app.telemetry.metrics import router_provider_retries_total
+
+    before = router_provider_retries_total.labels(
+        model=PRIMARY, reason="retryable_status")._value.get()
+
+    respx.post(UPSTREAM).mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(200, json=_completion(FALLBACK_1)),
+        ]
+    )
+
+    await retry_executor.execute_with_fallback(PRIMARY, [FALLBACK_1], payload, {})
+
+    after = router_provider_retries_total.labels(
+        model=PRIMARY, reason="retryable_status")._value.get()
+    assert after - before == 2, "2 retries on primary before advancing"
+
+
+@respx.mock
+async def test_provider_retry_all_models_all_retries_exhausted(retry_executor, payload):
+    """Every model retried max_retries times — total calls = 3 models * 3 attempts = 9."""
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(503))
+
+    _body, _raw, _model, _fb, error = await retry_executor.execute_with_fallback(
+        PRIMARY, [FALLBACK_1, FALLBACK_2], payload, {}
+    )
+
+    assert error is not None
+    assert route.call_count == 9, "3 models × (1 + 2 retries) = 9 attempts"
