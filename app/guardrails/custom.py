@@ -146,22 +146,49 @@ class CustomGuardrailSettings(BaseModel):
 
 
 def build_payload_text(messages: list, max_chars: int = 8000) -> str:
-    """Flatten messages into a bounded role-tagged payload string."""
+    """Flatten messages into a bounded role-tagged payload string.
+
+    The LAST user message is always preserved: when the flattened text
+    exceeds max_chars, earlier messages are truncated (keeping their head)
+    so the final user message — the input the guardrail must actually
+    judge — survives inside the budget. Without this, a large system
+    prompt (e.g. an agent's 27k-char identity prompt) consumes the whole
+    budget and the guardrail never sees the user's question.
+    """
     parts: list[str] = []
+    last_user_idx: int | None = None
     for msg in messages:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role", "?")
         content = msg.get("content")
+        if role == "user":
+            last_user_idx = len(parts)
         if isinstance(content, str):
             parts.append(f"[{role}] {content}")
         elif isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and isinstance(block.get("text"), str):
                     parts.append(f"[{role}] {block['text']}")
-    text = "\n".join(parts)
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n...[truncated]"
+    # Reserve room for the last user message (plus joining newline).
+    if last_user_idx is not None:
+        tail = parts[last_user_idx]
+        if len(tail) > max_chars:
+            # The user message alone blows the budget: tail-truncate it so
+            # the end (usually where the actual question sits) is kept.
+            marker = "...[truncated]\n"
+            keep = max(1, max_chars - len(marker) - 1)
+            tail = marker + tail[-keep:]
+            parts[last_user_idx] = tail
+        head_budget = max(0, max_chars - len(tail) - 1)
+        head = "\n".join(parts[:last_user_idx])
+        if len(head) > head_budget:
+            head = (head[:head_budget] + "\n...[truncated]") if head_budget > 0 else ""
+        text = (head + "\n" + tail) if head else tail
+    else:
+        text = "\n".join(parts)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n...[truncated]"
     return text
 
 

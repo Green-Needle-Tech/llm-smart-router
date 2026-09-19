@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.version import APPLICATION_VERSION
+
 from app.api.chat import (
     _add_model_postfix,
     _forward_to_provider,
@@ -36,7 +38,7 @@ def test_add_model_postfix_appends_upstream_model():
     _add_model_postfix(body, "google/gemini-2.5-flash", _route())
 
     assert body["choices"][0]["message"]["content"] == (
-        "Hello\n\n[smart-router/L1|v2.26.0]"
+        f"Hello\n\n[smart-router/L1|v{APPLICATION_VERSION}]"
     )
 
 
@@ -45,7 +47,7 @@ def test_add_model_postfix_handles_null_content():
 
     _add_model_postfix(body, "z-ai/glm-5.2", _route())
 
-    assert body["choices"][0]["message"]["content"] == "[smart-router/L1|v2.26.0]"
+    assert body["choices"][0]["message"]["content"] == f"[smart-router/L1|v{APPLICATION_VERSION}]"
 
 
 def test_add_model_postfix_does_not_mutate_non_assistant_choices():
@@ -87,14 +89,14 @@ def test_add_model_postfix_appends_to_text_response_with_tool_calls_in_other_cho
 
     _add_model_postfix(body, "z-ai/glm-5.2", _route())
 
-    assert body["choices"][0]["message"]["content"] == "Here is the answer\n\n[smart-router/L1|v2.26.0]"
+    assert body["choices"][0]["message"]["content"] == f"Here is the answer\n\n[smart-router/L1|v{APPLICATION_VERSION}]"
     assert body["choices"][1]["message"]["content"] is None
 
 
 def test_strip_model_postfix_removes_new_format_before_forwarding():
     messages = [
         {"role": "user", "content": "First question"},
-        {"role": "assistant", "content": "First answer\n\n[smart-router/L1|v2.26.0]"},
+        {"role": "assistant", "content": f"First answer\n\n[smart-router/L1|v{APPLICATION_VERSION}]"},
         {"role": "user", "content": "Follow-up"},
     ]
 
@@ -127,7 +129,7 @@ def test_strip_model_postfix_handles_structured_assistant_content():
     messages = [{
         "role": "assistant",
         "content": [
-            {"type": "text", "text": "Answer\n\n[smart-router/L1|v2.26.0]"},
+            {"type": "text", "text": f"Answer\n\n[smart-router/L1|v{APPLICATION_VERSION}]"},
             {"type": "image_url", "image_url": {"url": "https://example.test/a.png"}},
         ],
     }]

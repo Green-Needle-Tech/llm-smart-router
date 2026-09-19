@@ -56,6 +56,36 @@ class TestBuildPayloadText:
         assert len(out) < 40
         assert "[truncated]" in out
 
+    def test_last_user_message_survives_head_truncation(self):
+        # A large system prompt must not push the user question out of budget.
+        messages = [
+            {"role": "system", "content": "s" * 20_000},
+            {"role": "user", "content": "What is last week sales?"},
+        ]
+        out = build_payload_text(messages, max_chars=8_000)
+        assert "What is last week sales?" in out
+        assert "[truncated]" in out
+        assert len(out) <= 8_000 + 100
+
+    def test_last_user_message_preferred_over_earlier_user(self):
+        # In multi-turn traffic only the LAST user message is guaranteed.
+        messages = [
+            {"role": "user", "content": "first question " + "a" * 9_000},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "second question"},
+        ]
+        out = build_payload_text(messages, max_chars=500)
+        assert "second question" in out
+
+    def test_oversized_user_message_tail_truncated(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "y" * 9_000 + " THE QUESTION"},
+        ]
+        out = build_payload_text(messages, max_chars=200)
+        assert "THE QUESTION" in out
+        assert out.startswith("...[truncated]")
+
 
 # --- Noul probability parsing & thresholding -----------------------------------
 
