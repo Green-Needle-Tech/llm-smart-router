@@ -299,17 +299,36 @@ def _scan_base64_payloads(
 
 
 def _scan_hex_payloads(text: str) -> list[tuple[str, str, int, int]]:
-    """Detect hex-encoded tokens and attempt decoded preview."""
+    """Detect hex-encoded tokens and attempt decoded preview.
+
+    Only flags tokens that decode to predominantly readable text — actual
+    encoded injection payloads. Hex hashes, UUIDs, Docker container IDs, and
+    git commit hashes decode to binary garbage (low printable-ASCII ratio)
+    and are skipped, eliminating false-positive guardrail blocks on legitimate
+    infrastructure references in system prompts and tool output.
+    """
     findings: list[tuple[str, str, int, int]] = []
     for m in _HEX_TOKEN_RE.finditer(text):
         token = m.group(0)
         clean_hex = token.removeprefix("0x")
         if len(clean_hex) % 2 != 0:
             continue
-        def _hex_decode(t: str, _hex: str = clean_hex) -> bytes:
-            return bytes.fromhex(_hex)
-        decoded = _try_decode(token, _hex_decode)
-        findings.append(("obfuscation-hex", decoded or token[:40], m.start(), m.end()))
+        try:
+            raw = bytes.fromhex(clean_hex)
+        except Exception:
+            continue
+        if len(raw) < 8:
+            continue
+        # Only flag if decoded content is predominantly printable ASCII text.
+        # Real encoded payloads (injection strings, commands) decode to >70%
+        # printable text; hashes/UUIDs/IDs decode to binary garbage.
+        printable = sum(1 for b in raw if 32 <= b <= 126)
+        if printable / len(raw) < 0.7:
+            continue
+        decoded = raw.decode("utf-8", errors="ignore")
+        if not any(c.isalpha() for c in decoded):
+            continue
+        findings.append(("obfuscation-hex", decoded[:60], m.start(), m.end()))
     return findings
 
 
