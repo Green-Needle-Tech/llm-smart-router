@@ -373,7 +373,7 @@ Turn 2+ skips the classifier: the session pin routes straight to the tier model,
 
 See the [full specification](./llm-smart-router-spec.md) for complete details.
 
-### Custom Guardrail — opt-in TypeSafe question check, input only (v2.24.0)
+### Custom Guardrail — opt-in TypeSafe question check, input only (v2.25.0)
 
 An optional, user-configurable guardrail under `telemetry.guardrails.custom` — **disabled by default** (a single global `enabled` toggle), evaluated on the **request (input) path only**. It asks a TypeSafe question against the payload — **the entire question is defined in settings, no code changes needed**:
 
@@ -402,6 +402,39 @@ An optional, user-configurable guardrail under `telemetry.guardrails.custom` —
 - **Strict output validation**: the probability is range-checked ([0,1]) and thresholded into a Pydantic `Literal["yes", "no"]` — anything unparseable follows `on_error` (default fail-open), so a misbehaving decision model can never break routing.
 - **Input only**: the check runs in `_preprocess_request`, after the standard injection guardrails and before IP redaction. Responses are never evaluated.
 - **Metrics**: `router_custom_guardrail_evals_total{decision,source}`, `router_custom_guardrail_blocks_total`.
+
+#### Worked example — topic-scope guardrail (live-tested)
+
+A real deployment scopes a support channel to one product domain: only questions about that product's analytics, operations, or general industry topic may reach the LLM; anything else is rejected with a scoped message. The full guardrail is a settings block — `question_type: "noul"`, a prompt enumerating the on-topic and off-topic lists explicitly (decision models read scope words literally), and criteria mirroring the prompt:
+
+```json
+"custom": {
+  "enabled": true,
+  "model": "typesafe/jev-1.13.0",
+  "question_id": "scope",
+  "question_type": "noul",
+  "yes_threshold": 0.5,
+  "prompt": "Is the user message related to <domain>? Answer yes only if it concerns <domain analytics>, <domain operations>, or <general topic>. Answer no for any other topic, including <explicit off-topic list>.",
+  "criteria": {
+    "true": "The message is on-domain — it may proceed to the agent.",
+    "false": "The message is off-topic — it should be rejected as out of scope."
+  },
+  "rejection_message": "This channel is scoped to <domain>. Please ask <domain> questions. ({reason})"
+}
+```
+
+Live test results through the router (jev-1.13.0, input path, 2026-09-19) — clean separation at the default 0.5 threshold, ~0.6 s per decision:
+
+| Test message | noul P(yes) | Router result |
+| --- | --- | --- |
+| On-domain analytics ("revenue at counter X last Friday, which items were dead weight") | 0.96 | PASS → routed to LLM |
+| On-domain operations ("order stuck in preparing; errors in service logs") | 0.97 | PASS → routed to LLM |
+| On-topic general ("typical food cost percentage; how does GST apply") | 0.99 | PASS → routed to LLM |
+| On-topic general ("recommend a recipe"; "latte vs flat white") | 0.99 | PASS → routed to LLM |
+| Off-topic ("which sports car should I buy") | 0.01 | 400 `router_custom_guardrail_rejected` |
+| Off-topic ("how's the weather; want to chat about football") | 0.01 | 400 `router_custom_guardrail_rejected` |
+
+The `choice` and `score` question types were verified against the same live payload: a Choice with a yes/no options map returned P(yes) = 1.00 on the on-domain message, and a 3-level Score ("unrelated / somewhat / directly") returned 1.99 of 2 → normalized P(yes) = 0.995 — both threshold to the same decision as the Noul. Unit coverage for all three parsers: `tests/unit/test_custom_guardrail_settings.py` (11 tests) alongside the existing `tests/unit/test_custom_guardrail.py` (18 tests).
 
 ## License
 
