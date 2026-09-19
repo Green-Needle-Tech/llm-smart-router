@@ -64,7 +64,11 @@ class CustomGuardrailDecision(BaseModel):
 
 
 class CustomGuardrailSettings(BaseModel):
-    """telemetry.guardrails.custom — all opt-in, disabled by default."""
+    """telemetry.guardrails.custom — all opt-in, disabled by default.
+
+    The guardrail question is fully defined here: type, id, instructions
+    (prompt) and criteria. No code changes are needed to customize it.
+    """
     enabled: bool = False
     # Decision model. Direct TypeSafe calls use the bare model id
     # (e.g. "jev-1.13.0"); OpenRouter-aliased ids keep the namespace.
@@ -74,12 +78,28 @@ class CustomGuardrailSettings(BaseModel):
     timeout_seconds: int = 10
     # Failure policy: "pass" (fail-open, default) or "reject" (fail-closed).
     on_error: str = "pass"
-    # Noul decision threshold: P(yes) >= yes_threshold -> pass. Default 0.5.
+    # Decision threshold: P(yes) >= yes_threshold -> pass. Default 0.5.
+    # For question_type "score", P(yes) = score normalized by the level count.
     yes_threshold: float = 0.5
     # Max payload chars sent to the decision model.
     max_payload_chars: int = 8000
+    # Question id in the systemone request/response (your routing key).
+    question_id: str = "guardrail"
+    # Question type: "noul" (P(yes) in [0,1]), "choice" (P of the "yes"
+    # option), or "score" (score normalized across levels).
+    question_type: Literal["noul", "choice", "score"] = "noul"
     # User-customizable prompt template (hot-reloadable via admin reload).
     prompt: str = DEFAULT_PROMPT
+    # Optional criteria override, shape depends on question_type:
+    # noul -> {"true": ..., "false": ...}; choice -> {option: description};
+    # score -> [level descriptions, ordered, >=2]. Must stay aligned with
+    # `prompt` (docs.typesafe.ai/model-jaggedness/jev-1.13: contradictory
+    # instructions and criteria degrade accuracy). Defaults to the built-in
+    # Noul criteria for noul questions, none otherwise.
+    criteria: dict[str, str] | list[str] | None = None
+    # Optional custom rejection message shown to the client. Supports a
+    # "{reason}" placeholder. Empty -> built-in default message.
+    rejection_message: str = ""
     # Optional prompt file on disk; when set and readable it overrides
     # `prompt`. Edit the file + POST /admin/settings/reload to apply.
     prompt_file: str | None = None
@@ -99,6 +119,25 @@ class CustomGuardrailSettings(BaseModel):
             except OSError:
                 pass
         return self.prompt or DEFAULT_PROMPT
+
+    def resolve_criteria(self) -> dict[str, str] | list[str] | None:
+        """criteria override > built-in NOUL_CRITERIA (noul only) > None."""
+        if self.criteria is not None:
+            return self.criteria
+        if self.question_type == "noul":
+            return NOUL_CRITERIA
+        return None
+
+    def build_question(self) -> dict:
+        """The full systemone question object, built entirely from settings."""
+        question: dict = {
+            "type": self.question_type,
+            "instructions": self.resolve_prompt(),
+        }
+        criteria = self.resolve_criteria()
+        if criteria is not None:
+            question["criteria"] = criteria
+        return question
 
 
 def build_payload_text(messages: list, max_chars: int = 8000) -> str:
@@ -149,7 +188,7 @@ class CustomGuardrailEngine:
             )
         try:
             raw = await self._call_decision_model(payload_text)
-            decision = self._parse_decision(raw, s.yes_threshold)
+            decision = self._parse_decision(raw, s.yes_threshold, s.question_type)
             decision.latency_ms = int((time.monotonic() - start) * 1000)
             return decision
         except Exception as e:  # noqa: BLE001 — guardrail must never break routing
@@ -163,16 +202,32 @@ class CustomGuardrailEngine:
         finally:
             await self.close()
 
-    def _parse_decision(self, raw: str, threshold: float = 0.5) -> CustomGuardrailDecision:
+    def _parse_decision(
+        self, raw: str, threshold: float = 0.5, question_type: str = "noul"
+    ) -> CustomGuardrailDecision:
         """Strictly enforce the yes/no constraint on the parsed output.
 
-        TypeSafe Noul answers: {"answers": {"guardrail": {"type": "noul",
-        "noul": <0..1>}} — P(yes), thresholded here into the binary decision.
-        Fallback forms (raw "yes"/"no" string, JSON {"decision": "yes"|"no"})
-        are also accepted for the chat-endpoint path. Anything else is a
-        validation error.
+        TypeSafe systemone answers (docs.typesafe.ai/api):
+        - noul:   {"type": "noul", "noul": <0..1>}              -> P(yes) = noul
+        - choice: {"choice": <opt>, "probabilities": {...}}     -> P(yes) =
+                   probabilities["yes"] when a "yes" option exists, else
+                   1.0/0.0 by the selected option
+        - score:  {"score": <num>, "legend": {...}}            -> P(yes) =
+                   score / (len(legend) - 1), normalized across levels
+        Thresholded here into the binary decision. Fallback forms (raw
+        "yes"/"no" string, JSON {"decision": "yes"|"no"}) are also accepted
+        for the chat-endpoint path. Anything else is a validation error.
         """
         import json as _json
+
+        def _threshold(p_yes: float, label: str) -> CustomGuardrailDecision:
+            if not 0.0 <= p_yes <= 1.0:
+                raise ValueError(f"guardrail {label} out of range [0,1]: {p_yes}")
+            decision = "yes" if p_yes >= threshold else "no"
+            reason = f"policy compliance probability {p_yes:.2f} (threshold {threshold})"
+            return CustomGuardrailDecision(
+                decision=decision, reason=reason, probability_yes=p_yes,
+            )
 
         text = (raw or "").strip()
         if text.startswith("{"):
@@ -186,19 +241,32 @@ class CustomGuardrailEngine:
                     p_yes = float(answer["noul"])
                 except (TypeError, ValueError) as e:
                     raise ValueError(f"guardrail noul is not a number: {answer['noul']!r}") from e
-                if not 0.0 <= p_yes <= 1.0:
-                    raise ValueError(f"guardrail noul out of range [0,1]: {p_yes}")
-                decision = "yes" if p_yes >= threshold else "no"
-                reason = (
-                    f"policy compliance probability {p_yes:.2f} "
-                    f"(threshold {threshold})"
-                )
-                return CustomGuardrailDecision(
-                    decision=decision, reason=reason, probability_yes=p_yes,
-                )
-            choice = answer.get("choice", answer.get("decision"))
-            reason = str(answer.get("reason", ""))[:500]
-            p_yes = 1.0 if str(choice).strip().lower() == "yes" else 0.0
+                return _threshold(p_yes, "noul")
+            if "score" in answer and "legend" in answer:
+                try:
+                    score = float(answer["score"])
+                    n_levels = len(answer["legend"])
+                except (TypeError, ValueError) as e:
+                    raise ValueError(f"guardrail score/legend invalid: {answer!r}") from e
+                if n_levels < 2:
+                    raise ValueError(f"guardrail score legend has <2 levels: {answer['legend']!r}")
+                return _threshold(score / (n_levels - 1), "score")
+            if "choice" in answer:
+                choice = answer["choice"]
+                reason = str(answer.get("reason", ""))[:500]
+                probabilities = answer.get("probabilities") or {}
+                if "yes" in probabilities:
+                    try:
+                        return _threshold(float(probabilities["yes"]), "choice P(yes)")
+                    except (TypeError, ValueError) as e:
+                        raise ValueError(
+                            f"guardrail choice probability invalid: {probabilities['yes']!r}"
+                        ) from e
+                p_yes = 1.0 if str(choice).strip().lower() == "yes" else 0.0
+            else:
+                choice = answer.get("choice", answer.get("decision"))
+                reason = str(answer.get("reason", ""))[:500]
+                p_yes = 1.0 if str(choice).strip().lower() == "yes" else 0.0
         else:
             choice = text
             reason = ""
@@ -253,11 +321,7 @@ class CustomGuardrailEngine:
                 "model": model_name,
                 "state": state_text,
                 "questions": {
-                    "guardrail": {
-                        "type": "noul",
-                        "instructions": self.settings.resolve_prompt(),
-                        "criteria": NOUL_CRITERIA,
-                    }
+                    self.settings.question_id: self.settings.build_question(),
                 },
             }
         resp = await self._http.post(
@@ -273,7 +337,7 @@ class CustomGuardrailEngine:
         data = resp.json()
         if url.endswith("/chat/completions"):
             return data["choices"][0]["message"]["content"] or ""
-        return _stringify_systemone_answer(data)
+        return _stringify_systemone_answer(data, self.settings.question_id)
 
     async def close(self) -> None:
         if self._owns_client and self._http is not None:
@@ -281,12 +345,14 @@ class CustomGuardrailEngine:
             self._http = None
 
 
-def _stringify_systemone_answer(data: dict) -> str:
-    """Convert a systemone response to the JSON object form the parser accepts."""
+def _stringify_systemone_answer(data: dict, question_id: str = "guardrail") -> str:
+    """Convert a systemone answer to the JSON object form the parser accepts."""
     import json as _json
 
-    answer = (data.get("answers") or {}).get("guardrail") or {}
-    return _json.dumps({"noul": answer.get("noul")})
+    answer = (data.get("answers") or {}).get(question_id) or {}
+    # Drop the "type" key so the parser dispatches on value fields, not type.
+    answer = {k: v for k, v in answer.items() if k != "type"}
+    return _json.dumps(answer)
 
 
 __all__ = [

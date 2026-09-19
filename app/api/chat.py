@@ -180,12 +180,22 @@ def _custom_guardrail_settings(config) -> CustomGuardrailSettings | None:
     return CustomGuardrailSettings(**vars(cfg))
 
 
-def _custom_guardrail_rejection(reason: str) -> JSONResponse:
-    """Standardized rejection envelope returned to the client."""
+def _custom_guardrail_rejection(reason: str, settings: CustomGuardrailSettings | None = None) -> JSONResponse:
+    """Standardized rejection envelope returned to the client.
+
+    Message is configurable via telemetry.guardrails.custom.rejection_message
+    (supports a "{reason}" placeholder); falls back to the built-in default.
+    """
+    template = (
+        settings.rejection_message
+        if settings and settings.rejection_message.strip()
+        else "Request rejected by custom guardrail: {reason}"
+    )
+    message = template.format(reason=reason) if "{reason}" in template else template
     return JSONResponse(
         status_code=400,
         content={"error": {
-            "message": f"Request rejected by custom guardrail: {reason}",
+            "message": message,
             "type": "guardrail_violation",
             "param": None,
             "code": "router_custom_guardrail_rejected",
@@ -219,7 +229,7 @@ async def _custom_guardrail_check_input(request, body, config) -> JSONResponse |
         "router.custom_guardrail.rejected",
         reason=decision.reason,
     )
-    return _custom_guardrail_rejection(decision.reason)
+    return _custom_guardrail_rejection(decision.reason, settings)
 
 
 @router.post("/v1/chat/completions", responses={400: {"description": "Bad request"}})

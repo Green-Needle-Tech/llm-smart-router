@@ -373,11 +373,11 @@ Turn 2+ skips the classifier: the session pin routes straight to the tier model,
 
 See the [full specification](./llm-smart-router-spec.md) for complete details.
 
-### Custom Guardrail — opt-in TypeSafe Noul check, input only (v2.24.0)
+### Custom Guardrail — opt-in TypeSafe question check, input only (v2.24.0)
 
-An optional, user-configurable guardrail under `telemetry.guardrails.custom` — **disabled by default** (a single global `enabled` toggle), evaluated on the **request (input) path only**. It asks a TypeSafe **Noul** question (the documented primitive for binary judgments, `docs.typesafe.ai/primitives/noul`) against the payload:
+An optional, user-configurable guardrail under `telemetry.guardrails.custom` — **disabled by default** (a single global `enabled` toggle), evaluated on the **request (input) path only**. It asks a TypeSafe question against the payload — **the entire question is defined in settings, no code changes needed**:
 
-- The model returns `noul` = probability the payload **complies** (0–1)
+- The model returns a probability-of-yes: `noul` (0–1) for `question_type: "noul"`, `probabilities["yes"]` for `"choice"`, or the `score` normalized across levels for `"score"`
 - `P(yes) >= yes_threshold` (default 0.5) → **Pass**: the request continues through the router pipeline untouched
 - `P(yes) < yes_threshold` → **Reject**: execution halts; the client receives a standardized `400` envelope with `code: "router_custom_guardrail_rejected"` and the probability in the reason (also logged + counted in metrics)
 
@@ -390,12 +390,16 @@ An optional, user-configurable guardrail under `telemetry.guardrails.custom` —
   "yes_threshold": 0.5,        // P(yes) >= threshold -> pass
   "on_error": "pass",          // fail-open ("pass") or fail-closed ("reject")
   "max_payload_chars": 8000,
-  "prompt": "Does the payload comply with the deployment's safety policy and may it proceed to the LLM?"
+  "question_id": "guardrail",  // routing key for the answer in the response map
+  "question_type": "noul",     // "noul" | "choice" | "score"
+  "prompt": "Does the payload comply with the deployment's safety policy and may it proceed to the LLM?",
+  "criteria": {"true": "...", "false": "..."},   // optional; shape depends on question_type
+  "rejection_message": "..."   // optional client-facing message; supports "{reason}"
 }
 ```
 
-- **Customizable typesafe prompt**: the `prompt` string (or a `prompt_file` on disk) becomes the Noul `instructions`; best practice is a clear yes/no question phrased so high probability = yes. Edit it + `POST /admin/settings/reload` to apply — no restart. Optional `{true, false}` criteria are built in to pin the yes/no boundary.
-- **Strict output validation**: the Noul probability is range-checked ([0,1]) and thresholded into a Pydantic `Literal["yes", "no"]` — anything unparseable follows `on_error` (default fail-open), so a misbehaving decision model can never break routing.
+- **Fully settings-driven question**: `question_type` picks the TypeSafe primitive — `noul` (probability-of-yes, `{true, false}` criteria), `choice` (options map; P(yes) = the `yes` option's probability), or `score` (ordered levels list; P(yes) = score / (levels − 1)). `question_id` is your routing key in the request/response map. The `prompt` string (or a `prompt_file` on disk) becomes the question `instructions`; best practice is a clear yes/no phrasing where high probability = yes, with `criteria` kept aligned to the prompt. `rejection_message` customizes the client-facing rejection text (`{reason}` placeholder; empty = built-in default). Edit settings + `POST /admin/settings/reload` to apply — no restart, no rebuild.
+- **Strict output validation**: the probability is range-checked ([0,1]) and thresholded into a Pydantic `Literal["yes", "no"]` — anything unparseable follows `on_error` (default fail-open), so a misbehaving decision model can never break routing.
 - **Input only**: the check runs in `_preprocess_request`, after the standard injection guardrails and before IP redaction. Responses are never evaluated.
 - **Metrics**: `router_custom_guardrail_evals_total{decision,source}`, `router_custom_guardrail_blocks_total`.
 

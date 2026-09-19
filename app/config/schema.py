@@ -34,7 +34,12 @@ class PromptCachingConfig(BaseModel):
 
 
 class CustomGuardrailSchema(BaseModel):
-    """Opt-in custom LLM guardrail (typesafe yes/no decision) — disabled by default."""
+    """Opt-in custom LLM guardrail (TypeSafe question, input path) — disabled by default.
+
+    The guardrail question is fully defined here; no code changes needed:
+    question_type (noul/choice/score), question_id, prompt (instructions),
+    criteria, and rejection_message are all settings-driven.
+    """
     enabled: bool = False
     model: str = "typesafe/jev-1.13.0"
     base_url: str = "https://api.typesafe.ai/v1"
@@ -42,10 +47,18 @@ class CustomGuardrailSchema(BaseModel):
     timeout_seconds: int = 10
     # "pass" (fail-open) | "reject" (fail-closed) on evaluation errors
     on_error: str = "pass"
-    # Noul decision threshold: P(yes) >= yes_threshold -> pass. Default 0.5.
+    # Decision threshold: P(yes) >= yes_threshold -> pass. Default 0.5.
     yes_threshold: float = 0.5
     max_payload_chars: int = 8000
+    # Question id used in the systemone request/response map.
+    question_id: str = "guardrail"
+    # "noul" (P(yes) in [0,1]) | "choice" (P of "yes" option) | "score" (normalized)
+    question_type: str = "noul"
     prompt: str = ""
+    # Criteria shape: noul -> {"true":..,"false":..}; choice -> {opt:..}; score -> [levels]
+    criteria: dict | list | None = None
+    # Custom client-facing rejection message; supports "{reason}". Empty -> default.
+    rejection_message: str = ""
     prompt_file: str | None = None
 
 

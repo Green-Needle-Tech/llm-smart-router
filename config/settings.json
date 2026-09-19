@@ -259,10 +259,10 @@
     },
     "guardrails": {
       "input_enabled": true,
-      "input_action": "log",
-      "block_on_severity": "HIGH",
+      "input_action": "block",
+      "block_on_severity": "MEDIUM",
       "output_enabled": true,
-      "output_action": "mask",
+      "output_action": "block",
       "_doc": "Router-layer guardrails: injection detection on input, secret masking on output",
       "invisible_text_detection": true,
       "pii_masking_enabled": true,
@@ -293,13 +293,21 @@
       "entropy_threshold": 4.5,
       "input_pii_masking_enabled": true,
       "custom": {
-        "enabled": false,
-        "_doc": "Opt-in TypeSafe Noul guardrail (v2.24.0), input path only. Set enabled=true to apply to all clients.",
+        "enabled": true,
+        "_doc": "Fully settings-driven TypeSafe guardrail (input path only). question_type/question_id/prompt/criteria/rejection_message all customizable here \u2014 no code changes needed. Scope: EAT Cafe analytics/ops + F&B only; criteria mirror the prompt (Jev failure mode 7).",
         "model": "typesafe/jev-1.13.0",
         "base_url": "https://api.typesafe.ai/v1",
         "api_key_env": "TYPESAFE_API_KEY",
         "on_error": "pass",
-        "yes_threshold": 0.5
+        "yes_threshold": 0.5,
+        "prompt": "Is the user message related to EAT Cafe or to food-and-beverage (F&B) work? Answer yes only if the message concerns: EAT Cafe data analytics (revenue, tokens, sales, menu items, inventory, counters, preorder sessions, timeslots, order or refund data); EAT platform operations (POS system, orders, app pickup, incidents, monitoring, CloudWatch, Sentry, infrastructure); or any food-and-beverage question, including food, dishes, recipes, ingredients, drinks, pricing, GST, food cost, industry benchmarks, and F&B business practices. Answer no for any other topic, including cars, weather, general chat, sports, coding help unrelated to EAT, and personal requests.",
+        "criteria": {
+          "true": "The message is about EAT Cafe analytics, EAT operations, or food-and-beverage topics \u2014 it may proceed to the agent.",
+          "false": "The message is about some other topic \u2014 cars, weather, sports, general chat, or anything not related to EAT Cafe or food and beverage \u2014 it should be rejected as out of scope."
+        },
+        "question_id": "eat_scope",
+        "question_type": "noul",
+        "rejection_message": "This channel is scoped to EAT Cafe operations and F&B topics. Please ask EAT analytics, preorder, menu, inventory, or F&B questions. ({reason})"
       }
     },
     "temporal_awareness": {
