@@ -53,9 +53,9 @@ class FallbackExecutor:
         resp = await self.http.send(req, stream=True)
         try:
             if resp.status_code in self.config.provider.retry_on_status:
-                await resp.aread()
+                body = (await resp.aread()).decode("utf-8", "replace")[:500]
                 await resp.aclose()
-                return None, f"upstream {resp.status_code} for {model}"
+                return None, f"upstream {resp.status_code} for {model}: {body}"
             resp.raise_for_status()
             return resp, None
         except Exception:
@@ -70,7 +70,8 @@ class FallbackExecutor:
             timeout=timeout if timeout is not None else self.config.provider.timeout_seconds,
         )
         if resp.status_code in self.config.provider.retry_on_status:
-            return None, f"upstream {resp.status_code} for {model}"
+            body = resp.text[:500]
+            return None, f"upstream {resp.status_code} for {model}: {body}"
         resp.raise_for_status()
         return resp.json(), None
 
