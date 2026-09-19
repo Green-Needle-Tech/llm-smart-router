@@ -12,6 +12,11 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.guardrails.custom import (
+    CustomGuardrailEngine,
+    CustomGuardrailSettings,
+    build_payload_text,
+)
 from app.guardrails.rules import strip_invisible_text
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
 from app.guardrails.streaming import secret_carry_split
@@ -37,6 +42,8 @@ from app.telemetry.metrics import (
     router_active_requests,
     router_cache_events_total,
     router_cost_usd_total,
+    router_custom_guardrail_blocks_total,
+    router_custom_guardrail_evals_total,
     router_escalation_signals_total,
     router_escalation_turn,
     router_escalations_total,
@@ -152,7 +159,140 @@ async def _preprocess_request(request, body, config) -> JSONResponse | None:
     if guardrail_block is not None:
         return guardrail_block
 
+    custom_block = await _custom_guardrail_check_input(request, body, config)
+    if custom_block is not None:
+        return custom_block
+
     return None
+
+
+# --- Opt-in custom guardrail (typesafe yes/no) ------------------------------
+
+
+def _custom_guardrail_settings(config) -> CustomGuardrailSettings | None:
+    """Snapshot the live custom-guardrail config for this request."""
+    cfg = getattr(getattr(config, "telemetry", None), "guardrails", None)
+    cfg = getattr(cfg, "custom", None) if cfg is not None else None
+    if cfg is None:
+        return None
+    if hasattr(cfg, "model_dump"):
+        return CustomGuardrailSettings(**cfg.model_dump())
+    return CustomGuardrailSettings(**vars(cfg))
+
+
+def _resolve_agent_id(request) -> str | None:
+    """Agent identity: X-Router-Agent header, else API-key identity.
+
+    Tolerates request fakes without a headers mapping (unit tests).
+    """
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return None
+    try:
+        agent = headers.get("X-Router-Agent")
+    except AttributeError:
+        return None
+    if agent:
+        return agent
+    auth = headers.get("Authorization", "")
+    return _get_api_key_identity(auth) if auth else None
+
+
+def _custom_guardrail_rejection(reason: str, phase: str) -> JSONResponse:
+    """Standardized rejection envelope returned to the client."""
+    return JSONResponse(
+        status_code=400,
+        content={"error": {
+            "message": f"Request rejected by custom guardrail: {reason}",
+            "type": "guardrail_violation",
+            "param": None,
+            "code": "router_custom_guardrail_rejected",
+            "guardrail": {"decision": "no", "phase": phase, "reason": reason},
+        }},
+    )
+
+
+async def _custom_guardrail_check_input(request, body, config) -> JSONResponse | None:
+    """Opt-in custom guardrail: evaluate the request payload with a typesafe
+    yes/no decision call. None = pass (or disabled); JSONResponse = reject."""
+    settings = _custom_guardrail_settings(config)
+    if settings is None or not settings.applies_to_phase("input"):
+        return None
+    agent_id = _resolve_agent_id(request)
+    if not settings.is_enabled_for(agent_id):
+        return None
+    messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
+    payload_text = build_payload_text(messages, settings.max_payload_chars)
+    if not payload_text:
+        return None
+    engine = CustomGuardrailEngine(settings)
+    decision = await engine.evaluate(payload_text, agent_id)
+    router_custom_guardrail_evals_total.labels(
+        decision=decision.decision, phase="input", source=decision.source,
+    ).inc()
+    if decision.decision == "yes":
+        return None  # pass — request proceeds untouched
+    router_custom_guardrail_blocks_total.labels(
+        phase="input", agent=agent_id or "unknown",
+    ).inc()
+    logger.warning(
+        "router.custom_guardrail.rejected",
+        phase="input", agent=agent_id, reason=decision.reason,
+    )
+    return _custom_guardrail_rejection(decision.reason, "input")
+
+
+async def _custom_guardrail_check_output(request, json_resp, config) -> str | None:
+    """Evaluate the response content (non-streaming). Returns the rejection
+    reason on reject, None on pass/disabled."""
+    settings = _custom_guardrail_settings(config)
+    if settings is None or not settings.applies_to_phase("output"):
+        return None
+    agent_id = _resolve_agent_id(request)
+    if not settings.is_enabled_for(agent_id):
+        return None
+    texts = []
+    for choice in json_resp.get("choices", []):
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        texts.append(block["text"])
+    payload_text = "\n".join(texts)
+    if not payload_text:
+        return None
+    return await _custom_guardrail_evaluate_output_text(
+        request, settings, agent_id, payload_text,
+    )
+
+
+async def _custom_guardrail_evaluate_output_text(
+    request, settings, agent_id, payload_text,
+) -> str | None:
+    """Evaluate output text against the custom guardrail. Returns reason | None."""
+    if not payload_text:
+        return None
+    engine = CustomGuardrailEngine(settings)
+    decision = await engine.evaluate(
+        payload_text[: settings.max_payload_chars], agent_id,
+    )
+    router_custom_guardrail_evals_total.labels(
+        decision=decision.decision, phase="output", source=decision.source,
+    ).inc()
+    if decision.decision == "yes":
+        return None
+    router_custom_guardrail_blocks_total.labels(
+        phase="output", agent=agent_id or "unknown",
+    ).inc()
+    logger.warning(
+        "router.custom_guardrail.rejected",
+        phase="output", agent=agent_id, reason=decision.reason,
+    )
+    return decision.reason
 
 
 @router.post("/v1/chat/completions", responses={400: {"description": "Bad request"}})
@@ -1276,6 +1416,12 @@ async def _handle_non_stream(
         request, json_resp, route, model_used, pin, provider,
         prompt_tokens, completion_tokens, session_id, redaction_key, upstream_ms, fallback_used)
 
+    # Opt-in custom guardrail (output phase): replace the response with a
+    # standardized rejection envelope when the decision is "no".
+    rejection_reason = await _custom_guardrail_check_output(request, json_resp, config)
+    if rejection_reason is not None:
+        return _custom_guardrail_rejection(rejection_reason, "output")
+
     if include_metadata:
         json_resp["router"] = {
             "level": route.level.value,
@@ -1590,7 +1736,8 @@ def _record_stream_finally(route, model_used, upstream_start, fallback_used) -> 
 
 
 def _process_data_line(line, stream_usage, had_tool_calls) -> tuple:
-    """Extract usage and tool-call signals from a data SSE line."""
+    """Extract usage, tool-call signals, and delta content from a data SSE line."""
+    content = None
     try:
         _chunk = json.loads(line[6:])
         _holder = {"usage": None, "had_tool_calls": had_tool_calls}
@@ -1599,9 +1746,13 @@ def _process_data_line(line, stream_usage, had_tool_calls) -> tuple:
             stream_usage = _holder["usage"]
         if _holder.get("had_tool_calls"):
             had_tool_calls = True
+        for ch in _chunk.get("choices", []):
+            delta = ch.get("delta") or {}
+            if isinstance(delta.get("content"), str):
+                content = delta["content"]
     except (ValueError, TypeError):
         pass
-    return stream_usage, had_tool_calls
+    return stream_usage, had_tool_calls, content
 
 
 
@@ -1742,6 +1893,7 @@ async def _handle_stream(
         _stream_had_tool_calls = False
         _emitted_to_client = False
         metadata_sent = False
+        _stream_content_parts: list[str] = []
 
         while True:
             carry = ""
@@ -1775,6 +1927,30 @@ async def _handle_stream(
                             await _finalize_stream_token_tracking(
                                 pin, route, model_used, provider, _stream_usage, request,
                             )
+                        # Opt-in custom guardrail (output phase, streaming):
+                        # content has already been streamed; on "no" the
+                        # router emits a coded error event + metric and
+                        # suppresses the postfix. Mid-flight rejection is not
+                        # possible once bytes reached the client.
+                        _cg_settings = _custom_guardrail_settings(_config)
+                        _cg_active = (
+                            _cg_settings is not None
+                            and _cg_settings.applies_to_phase("output")
+                            and _cg_settings.is_enabled_for(_resolve_agent_id(request))
+                        )
+                        if _cg_active:
+                            _cg_reason = await _custom_guardrail_evaluate_output_text(
+                                request, _cg_settings, _resolve_agent_id(request),
+                                "".join(_stream_content_parts),
+                            )
+                            if _cg_reason is not None:
+                                _cg_err = {"error": {
+                                    "message": f"Response rejected by custom guardrail: {_cg_reason}",
+                                    "type": "guardrail_violation",
+                                    "code": "router_custom_guardrail_rejected",
+                                    "guardrail": {"decision": "no", "phase": "output", "reason": _cg_reason},
+                                }}
+                                yield f"data: {json.dumps(_cg_err)}\n\n"
                         postfix_text = _build_stream_postfix(
                             route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window,
                         )
@@ -1784,9 +1960,11 @@ async def _handle_stream(
                         yield f"{line}\n"
                         break
                     if line.startswith("data: "):
-                        _stream_usage, _stream_had_tool_calls = _process_data_line(
+                        _stream_usage, _stream_had_tool_calls, _delta_content = _process_data_line(
                             line, _stream_usage, _stream_had_tool_calls,
                         )
+                        if _delta_content:
+                            _stream_content_parts.append(_delta_content)
                     line, carry = await _rehydrate_line(
                         line, carry,
                         rehydrate_engine, redaction_key, guardrail_engine, _guardrail_mask_active,

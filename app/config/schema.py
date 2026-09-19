@@ -33,6 +33,30 @@ class PromptCachingConfig(BaseModel):
     min_tokens: int = 1024
 
 
+class CustomGuardrailAgentSchema(BaseModel):
+    """Per-agent custom-guardrail toggle + optional prompt override."""
+    agent: str
+    enabled: bool = True
+    prompt: str | None = None
+
+
+class CustomGuardrailSchema(BaseModel):
+    """Opt-in custom LLM guardrail (typesafe yes/no decision) — disabled by default."""
+    enabled: bool = False
+    model: str = "typesafe/jev-1.13.0"
+    base_url: str = "https://api.typesafe.ai/v1"
+    api_key_env: str = "TYPESAFE_API_KEY"
+    timeout_seconds: int = 10
+    # "input" | "output" | "both"
+    apply_on: str = "input"
+    # "pass" (fail-open) | "reject" (fail-closed) on evaluation errors
+    on_error: str = "pass"
+    max_payload_chars: int = 8000
+    prompt: str = ""
+    prompt_file: str | None = None
+    agents: list[CustomGuardrailAgentSchema] = Field(default_factory=list)
+
+
 class GuardrailsConfig(BaseModel):
     """LLM guardrails: input injection detection + output secret/PII masking."""
     input_enabled: bool = True
@@ -68,6 +92,8 @@ class GuardrailsConfig(BaseModel):
     obfuscation_detection: bool = True
     # Shannon entropy threshold for payload token detection
     entropy_threshold: float = 4.5
+    # Opt-in custom LLM guardrail (typesafe yes/no decision, per-agent)
+    custom: CustomGuardrailSchema = Field(default_factory=CustomGuardrailSchema)
 
 
 class PrivacyConfig(BaseModel):

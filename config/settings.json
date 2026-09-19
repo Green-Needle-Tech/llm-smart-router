@@ -291,7 +291,16 @@
       "homoglyph_normalization": true,
       "obfuscation_detection": true,
       "entropy_threshold": 4.5,
-      "input_pii_masking_enabled": true
+      "input_pii_masking_enabled": true,
+      "custom": {
+        "enabled": false,
+        "_doc": "Opt-in typesafe yes/no guardrail (v2.23.0). Set enabled=true, add agents[] with per-agent prompts. See README section Custom Guardrail.",
+        "model": "typesafe/jev-1.13.0",
+        "base_url": "https://api.typesafe.ai/v1",
+        "api_key_env": "TYPESAFE_API_KEY",
+        "apply_on": "input",
+        "on_error": "pass"
+      }
     },
     "temporal_awareness": {
       "enabled": true,

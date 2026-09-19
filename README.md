@@ -370,6 +370,35 @@ Turn 2+ skips the classifier: the session pin routes straight to the tier model,
 
 See the [full specification](./llm-smart-router-spec.md) for complete details.
 
+### Custom Guardrail — opt-in typesafe yes/no check (v2.23.0)
+
+An optional, user-configurable guardrail under `telemetry.guardrails.custom` — **disabled by default**. When enabled, the router asks a structured decision model (TypeSafe `/v1/systemone` by default, or any OpenAI-compatible chat endpoint) a single strictly-typed question about the request/response payload:
+
+- `yes` → **Pass**: the request continues through the router pipeline untouched
+- `no` → **Reject**: execution halts; the client receives a standardized `400` envelope with `code: "router_custom_guardrail_rejected"` and the rejection reason (also logged + counted in metrics)
+
+```json
+"custom": {
+  "enabled": true,
+  "model": "typesafe/jev-1.13.0",
+  "base_url": "https://api.typesafe.ai/v1",
+  "api_key_env": "TYPESAFE_API_KEY",
+  "apply_on": "input",        // "input" | "output" | "both"
+  "on_error": "pass",         // fail-open ("pass") or fail-closed ("reject")
+  "max_payload_chars": 8000,
+  "prompt": "You are a policy guardrail ... choose 'yes' or 'no'.",
+  "agents": [                  // per-agent toggles; empty = all clients
+    {"agent": "iris", "enabled": true, "prompt": "IRIS-specific policy prompt"}
+  ]
+}
+```
+
+- **Customizable typesafe prompt**: the `prompt` string (or a `prompt_file` on disk) is the question sent to the decision model; edit it for your agent's safety policy and `POST /admin/settings/reload` to apply — no restart.
+- **Per-agent gating**: agents are identified by the `X-Router-Agent` request header (or the API-key identity when absent). A non-empty `agents` list restricts the check to matching enabled agents; each entry can carry its own prompt override.
+- **Strict output validation**: the decision model's answer is parsed into a Pydantic `Literal["yes", "no"]` — anything else is treated as an evaluation error and follows `on_error` (default fail-open), so a misbehaving decision model can never break routing.
+- **Metrics**: `router_custom_guardrail_evals_total{decision,phase,source}`, `router_custom_guardrail_blocks_total{phase,agent}`.
+- Note: for streaming responses with `apply_on` including `"output"`, content has already been delivered when the end-of-stream check runs — the router emits a coded SSE error event and records the rejection rather than rewriting the stream.
+
 ## License
 
 This project is dual-licensed:

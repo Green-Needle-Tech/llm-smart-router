@@ -219,6 +219,18 @@ router_guardrail_secret_masks_total = Counter(
     ["rule_id"],
 )
 
+router_custom_guardrail_evals_total = Counter(
+    "router_custom_guardrail_evals_total",
+    "Custom guardrail evaluations by decision (yes/no) and phase",
+    ["decision", "phase", "source"],
+)
+
+router_custom_guardrail_blocks_total = Counter(
+    "router_custom_guardrail_blocks_total",
+    "Requests/responses rejected by the custom guardrail",
+    ["phase", "agent"],
+)
+
 # Info
 router_info = Info(
     "router",
