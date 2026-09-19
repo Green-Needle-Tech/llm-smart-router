@@ -138,3 +138,34 @@ def test_last_user_scope_selects_final_user_message():
     assert "What is last week sales?" in out
     assert "old question" not in out
     assert "system" not in out
+
+
+def test_conversation_scope_keeps_history_drops_system():
+    from app.guardrails.custom import build_payload_text
+
+    messages = [
+        {"role": "system", "content": "s" * 20_000},
+        {"role": "user", "content": "What is last week's inventory details"},
+        {"role": "assistant", "content": "Historical inventory details aren't available."},
+        {"role": "user", "content": "Yes"},
+    ]
+    non_system = [m for m in messages if m.get("role") != "system"]
+    out = build_payload_text(non_system, 8000)
+    assert "Yes" in out
+    assert "inventory" in out  # conversation topic visible for the follow-up
+    assert "system" not in out  # large agent system prompt excluded
+
+
+def test_conversation_scope_budget_preserves_last_user():
+    from app.guardrails.custom import build_payload_text
+
+    messages = [
+        {"role": "system", "content": "s" * 20_000},
+        {"role": "user", "content": "u" * 9000},
+        {"role": "assistant", "content": "a" * 9000},
+        {"role": "user", "content": "Generate html"},
+    ]
+    non_system = [m for m in messages if m.get("role") != "system"]
+    out = build_payload_text(non_system, 8000)
+    assert "Generate html" in out
+    assert len(out) <= 8000 + len("\n...[truncated]")

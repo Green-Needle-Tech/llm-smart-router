@@ -230,7 +230,7 @@ wheels = [
 
 [[package]]
 name = "llm-smart-router"
-version = "1.0.0"
+version = "2.26.3"
 source = { editable = "." }
 dependencies = [
     { name = "cachetools" },

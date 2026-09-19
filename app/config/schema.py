@@ -51,7 +51,8 @@ class CustomGuardrailSchema(BaseModel):
     yes_threshold: float = 0.5
     max_payload_chars: int = 8000
     # "all" (system + history + user, budgeted) | "last_user" (only the last
-    # user message — recommended for topic-scope guardrails).
+    # user message) | "conversation" (all non-system messages — recommended
+    # for topic-scope guardrails: keeps topic visible for short follow-ups).
     payload_scope: str = "all"
     # Question id used in the systemone request/response map.
     question_id: str = "guardrail"

@@ -307,7 +307,9 @@
         },
         "question_id": "eat_scope",
         "question_type": "noul",
-        "rejection_message": "This channel is scoped to EAT Cafe operations and F&B topics. Please ask EAT analytics, preorder, menu, inventory, or F&B questions. ({reason})"
+        "rejection_message": "This channel is scoped to EAT Cafe operations and F&B topics. Please ask EAT analytics, preorder, menu, inventory, or F&B questions. ({reason})",
+        "rejection_delivery": "reply",
+        "payload_scope": "conversation"
       }
     },
     "temporal_awareness": {

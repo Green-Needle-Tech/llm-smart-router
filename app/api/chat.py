@@ -288,6 +288,11 @@ async def _custom_guardrail_check_input(request, body, config) -> JSONResponse |
         user_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "user"]
         if user_msgs:
             messages = [user_msgs[-1]]
+    elif settings.payload_scope == "conversation":
+        # Keep user + assistant history, drop the (large) system prompt.
+        non_system = [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
+        if non_system:
+            messages = non_system
     payload_text = build_payload_text(messages, settings.max_payload_chars)
     if not payload_text:
         return None

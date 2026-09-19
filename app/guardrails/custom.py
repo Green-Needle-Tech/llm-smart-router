@@ -84,15 +84,24 @@ class CustomGuardrailSettings(BaseModel):
     # Max payload chars sent to the decision model.
     max_payload_chars: int = 8000
     # Which messages feed the decision model:
-    #   "all"        — every message (system + history + user), head-truncated
-    #                  to max_payload_chars with the last user message preserved
-    #                  (build_payload_text).
-    #   "last_user"  — ONLY the last user message. Recommended for topic-scope
-    #                  guardrails: agent system prompts are large and their
-    #                  partial/truncated text destabilizes the classifier
-    #                  (measured: user-only 0.84-0.86 vs ~0.5 with a partial
-    #                  system prompt prepended, same on-topic question).
-    payload_scope: Literal["all", "last_user"] = "all"
+    #   "all"           — every message (system + history + user), head-truncated
+    #                     to max_payload_chars with the last user message preserved
+    #                     (build_payload_text).
+    #   "last_user"     — ONLY the last user message. Good for topic-scope
+    #                     guardrails: agent system prompts are large and their
+    #                     partial/truncated text destabilizes the classifier
+    #                     (measured: user-only 0.84-0.86 vs ~0.5 with a partial
+    #                     system prompt prepended, same on-topic question).
+    #                     Weakness: short context-free follow-ups ("Yes",
+    #                     "Generate html") carry no topic signal and get
+    #                     wrongly rejected.
+    #   "conversation"  — all NON-system messages (user + assistant history +
+    #                     last user), head-truncated to max_payload_chars with
+    #                     the last user message preserved. Recommended for
+    #                     topic-scope guardrails on persistent chat sessions:
+    #                     keeps the conversation topic visible for follow-ups
+    #                     while still excluding the large agent system prompt.
+    payload_scope: Literal["all", "last_user", "conversation"] = "all"
     # Question id in the systemone request/response (your routing key).
     question_id: str = "guardrail"
     # Question type: "noul" (P(yes) in [0,1]), "choice" (P of the "yes"
