@@ -290,7 +290,6 @@
       "malicious_url_detection": true,
       "homoglyph_normalization": true,
       "obfuscation_detection": true,
-      "entropy_threshold": 4.5,
       "input_pii_masking_enabled": true,
       "custom": {
         "enabled": false,

@@ -305,7 +305,7 @@ flowchart TD
     B --> C[LLM-Smart-Router]
 
     subgraph Router [Request Pipeline]
-        C --> P1["🛡️ Guardrails Input<br/>Injection detection 26 rules (log/block)<br/>+ Homoglyph normalization<br/>Cyrillic/Greek/Full-width lookalikes<br/>+ Obfuscation & entropy scanning<br/>Base64/Hex/URL-encoded payloads<br/>+ Invisible text stripping<br/>+ Banned substrings scan<br/>+ Input PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
+        C --> P1["🛡️ Guardrails Input<br/>Injection detection 26 rules (log/block)<br/>+ Homoglyph normalization<br/>Cyrillic/Greek/Full-width lookalikes<br/>+ Obfuscation scanning (Hex/URL-encoded payloads)<br/>+ Invisible text stripping<br/>+ Banned substrings scan<br/>+ Input PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
         P1 --> CG{"🧭 Custom Guardrail<br/>enabled? (opt-in,<br/>disabled by default,<br/>input only)"}
         CG -->|yes| CG2["🧭 TypeSafe Noul question<br/>typesafe/jev-1.13.0<br/>P(comply) >= 0.5 → pass<br/>P(comply) < 0.5 → HTTP 400 reject"]
         CG2 --> P2

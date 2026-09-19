@@ -414,7 +414,6 @@ def _build_guardrail_engine(cfg) -> GuardrailEngine:
         system_prompt_leak_threshold=getattr(cfg, "system_prompt_leak_threshold", 0.85),
         homoglyph_normalization=getattr(cfg, "homoglyph_normalization", True),
         obfuscation_detection=getattr(cfg, "obfuscation_detection", True),
-        entropy_threshold=getattr(cfg, "entropy_threshold", 4.5),
     ))
 
 

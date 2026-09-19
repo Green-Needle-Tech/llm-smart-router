@@ -9,9 +9,7 @@ Refusal patterns detect model refusals for monitoring.
 """
 from __future__ import annotations
 
-import base64
 import contextlib
-import math
 import re
 import urllib.parse
 
@@ -223,79 +221,10 @@ def normalize_homoglyphs(text: str) -> str:
     return text.translate(_HOMOGLYPH_TRANS)
 
 
-# --- Shannon Entropy & Obfuscation Detection (v2.12.0) ----------------------
+# --- Obfuscation Detection (hex, URL-encoding; Base64 removed v2.13.0) -------
 
-def calculate_shannon_entropy(data: str) -> float:
-    """Compute Shannon entropy in bits per character for a string."""
-    if not data:
-        return 0.0
-    entropy = 0.0
-    length = len(data)
-    counts: dict[str, int] = {}
-    for ch in data:
-        counts[ch] = counts.get(ch, 0) + 1
-    for count in counts.values():
-        p = count / length
-        entropy -= p * math.log2(p)
-    return entropy
-
-
-_B64_TOKEN_RE = re.compile(r"\b[A-Za-z0-9+/]{24,}={0,2}\b")
 _HEX_TOKEN_RE = re.compile(r"\b(?:0x)?[0-9a-fA-F]{32,}\b")
 _URL_ENCODED_TOKEN_RE = re.compile(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_.-]){10,}")
-
-
-def _try_decode(token: str, decoder) -> str:
-    """Attempt to decode a token and return a preview if it looks like text."""
-    decoded_snippet = ""
-    with contextlib.suppress(Exception):
-        raw_bytes = decoder(token)
-        decoded_str = raw_bytes.decode("utf-8", errors="ignore")
-        if len(decoded_str) >= 8 and any(ch.isalpha() for ch in decoded_str):
-            decoded_snippet = decoded_str[:60]
-    return decoded_snippet
-
-
-_WORDLIKE_RE = re.compile(r"^[a-z][a-z0-9_-]{2,}$", re.IGNORECASE)
-
-
-def _looks_like_prose(token: str) -> bool:
-    """Heuristic: reject tokens that are slash/underscore-separated readable words.
-
-    Real base64 secrets never decode to readable ASCII, and slash-joined prose
-    word lists (e.g. 'consumption/purchase/waste/recovery/adjustment') are
-    documentation, not encoded payloads. This eliminates the dominant class of
-    false positives from natural-language skill/document text.
-    """
-    segments = re.split(r"[/\\_]", token)
-    if len(segments) < 2:
-        return False
-    wordlike = sum(1 for s in segments if _WORDLIKE_RE.match(s))
-    return wordlike >= 2
-
-
-def _scan_base64_payloads(
-    text: str, entropy_threshold: float,
-) -> list[tuple[str, str, int, int]]:
-    """Detect high-entropy Base64 tokens and attempt decoded preview."""
-    findings: list[tuple[str, str, int, int]] = []
-    for m in _B64_TOKEN_RE.finditer(text):
-        token = m.group(0)
-        if _looks_like_prose(token):
-            continue
-        ent = calculate_shannon_entropy(token)
-        if ent < entropy_threshold and len(token) < 40:
-            continue
-        def _b64_decode(t: str, _token: str = token) -> bytes:
-            pad = len(_token) % 4
-            padded = _token + ("=" * (4 - pad) if pad else "")
-            return base64.b64decode(padded)
-        decoded = _try_decode(token, _b64_decode)
-        # A token that decodes to readable ASCII words is documentation, not a secret.
-        if decoded and _looks_like_prose(re.sub(r"[^A-Za-z0-9/_-]", "", decoded)):
-            continue
-        findings.append(("obfuscation-base64", decoded or token[:40], m.start(), m.end()))
-    return findings
 
 
 def _scan_hex_payloads(text: str) -> list[tuple[str, str, int, int]]:
@@ -355,17 +284,18 @@ def _scan_url_encoded_payloads(text: str) -> list[tuple[str, str, int, int]]:
 
 def scan_obfuscated_payloads(
     text: str,
-    entropy_threshold: float = 4.5,
     min_length: int = 20,
 ) -> list[tuple[str, str, int, int]]:
-    """Scan for high-entropy tokens and obfuscated/encoded payloads (Base64, Hex, URL).
+    """Scan for obfuscated/encoded payloads (Hex, URL).
 
+    Base64 scanning was removed in v2.13.0 — it caused persistent false
+    positives on legitimate base64 content (JWT segments, data URIs, hashes)
+    and its entropy heuristic never reliably separated payloads from prose.
     Returns a list of tuples: (scan_type, decoded_preview_or_snippet, start, end).
     """
     if not text or len(text) < min_length:
         return []
     findings: list[tuple[str, str, int, int]] = []
-    findings.extend(_scan_base64_payloads(text, entropy_threshold))
     findings.extend(_scan_hex_payloads(text))
     findings.extend(_scan_url_encoded_payloads(text))
     return findings

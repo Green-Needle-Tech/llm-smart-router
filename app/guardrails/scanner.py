@@ -118,10 +118,8 @@ class GuardrailConfig:
     system_prompt_leak_threshold: float = 0.85
     # Homoglyph normalization (input) — normalize Cyrillic/Greek lookalikes before scan
     homoglyph_normalization: bool = True
-    # Obfuscation and high-entropy detection (input) — Base64, Hex, URL-encoding
+    # Obfuscation detection (input) — Hex, URL-encoding (Base64 removed v2.13.0)
     obfuscation_detection: bool = True
-    # Shannon entropy threshold for payload token detection
-    entropy_threshold: float = 4.5
 
 
 @dataclass
@@ -278,21 +276,18 @@ class GuardrailEngine:
     # --- Obfuscation & Entropy detection (input) -----------------------------
 
     def scan_obfuscation(self, text: str) -> list[GuardrailFinding]:
-        """Scan text for high-entropy tokens and obfuscated/encoded payloads (Base64, Hex, URL).
+        """Scan text for obfuscated/encoded payloads (Hex, URL).
 
-        Returns findings with HIGH/MEDIUM severity and error spans.
+        Returns findings with MEDIUM severity and error spans.
         """
         if not text or not self.config.obfuscation_detection:
             return []
         findings: list[GuardrailFinding] = []
-        payloads = scan_obfuscated_payloads(
-            text,
-            entropy_threshold=self.config.entropy_threshold,
-        )
+        payloads = scan_obfuscated_payloads(text)
         for scan_type, snippet, start, end in payloads:
             findings.append(GuardrailFinding(
                 rule_id=scan_type,
-                severity="HIGH" if scan_type == "obfuscation-base64" else "MEDIUM",
+                severity="MEDIUM",
                 snippet=snippet[:60],
                 start=start,
                 end=end,
