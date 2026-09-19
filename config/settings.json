@@ -201,8 +201,8 @@
       "label": "intermediate",
       "model": "z-ai/glm-5.3",
       "fallbacks": [
-        "z-ai/glm-5.3",
-        "openai/gpt-5.6-luna"
+        "openai/gpt-5.6-luna",
+        "z-ai/glm-5.2"
       ],
       "params": {
         "temperature": 0.6
@@ -293,7 +293,7 @@
       "input_pii_masking_enabled": true,
       "custom": {
         "enabled": false,
-        "_doc": "Fully settings-driven TypeSafe guardrail (input path only). question_type/question_id/prompt/criteria/rejection_message all customizable here \u2014 no code changes needed. Scope: EAT Cafe analytics/ops + F&B only; criteria mirror the prompt (Jev failure mode 7).",
+        "_doc": "Fully settings-driven TypeSafe guardrail (input path only). question_type/question_id/prompt/criteria/rejection_message all customizable here — no code changes needed. Scope: EAT Cafe analytics/ops + F&B only; criteria mirror the prompt (Jev failure mode 7).",
         "model": "typesafe/jev-1.13.0",
         "base_url": "https://api.typesafe.ai/v1",
         "api_key_env": "TYPESAFE_API_KEY",
@@ -301,8 +301,8 @@
         "yes_threshold": 0.5,
         "prompt": "Is the user message related to EAT Cafe or to food-and-beverage (F&B) work? Answer yes only if the message concerns: EAT Cafe data analytics (revenue, tokens, sales, menu items, inventory, counters, preorder sessions, timeslots, order or refund data); EAT platform operations (POS system, orders, app pickup, incidents, monitoring, CloudWatch, Sentry, infrastructure); or any food-and-beverage question, including food, dishes, recipes, ingredients, drinks, pricing, GST, food cost, industry benchmarks, and F&B business practices. Answer no for any other topic, including cars, weather, general chat, sports, coding help unrelated to EAT, and personal requests.",
         "criteria": {
-          "true": "The message is about EAT Cafe analytics, EAT operations, or food-and-beverage topics \u2014 it may proceed to the agent.",
-          "false": "The message is about some other topic \u2014 cars, weather, sports, general chat, or anything not related to EAT Cafe or food and beverage \u2014 it should be rejected as out of scope."
+          "true": "The message is about EAT Cafe analytics, EAT operations, or food-and-beverage topics — it may proceed to the agent.",
+          "false": "The message is about some other topic — cars, weather, sports, general chat, or anything not related to EAT Cafe or food and beverage — it should be rejected as out of scope."
         },
         "question_id": "eat_scope",
         "question_type": "noul",

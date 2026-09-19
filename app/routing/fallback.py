@@ -266,7 +266,23 @@ class FallbackExecutor:
                             continue
                         break
                     except httpx.HTTPStatusError as e:
-                        last_error = f"upstream {e.response.status_code} for {model}"
+                        raw = ""
+                        try:
+                            raw = e.response.text or ""
+                        except Exception:
+                            raw = ""
+                        if not raw:
+                            try:
+                                raw = (await e.response.aread()).decode("utf-8", "replace")
+                                await e.response.aclose()
+                            except Exception:
+                                raw = ""
+                        body = raw[:300].strip().replace("\n", " ")
+                        last_error = (
+                            f"upstream {e.response.status_code} for {model}: {body}"
+                            if body
+                            else f"upstream {e.response.status_code} for {model}"
+                        )
                         attempt_record["outcome"] = "http_status_error"
                         attempt_record["error"] = last_error
                         attempts.append(attempt_record)
