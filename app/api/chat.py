@@ -37,6 +37,7 @@ from app.schemas.router import (
 from app.session.lifecycle import check_expiry, check_turn_cap
 from app.session.locks import acquire_or_wait
 from app.session.resolver import _get_api_key_identity, resolve_session_id
+from app.telemetry import langfuse_tracing
 from app.telemetry.logging import get_logger
 from app.telemetry.metrics import (
     router_active_requests,
@@ -324,6 +325,22 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     redaction_key = await _redact_incoming(request, body)
     _process_temporal_awareness(request, body)
 
+    # Langfuse: set an explicit, sanitized trace input (not raw function
+    # args). Messages are post-redaction/post-PII-masking at this point.
+    langfuse_tracing.note_trace_input({
+        "model_directive": body.model,
+        "stream": bool(body.stream),
+        "messages": [
+            {
+                "role": getattr(m, "role", None),
+                "content": langfuse_tracing._truncate(
+                    m.content if isinstance(getattr(m, "content", None), str) else "[non-text content]"
+                ),
+            }
+            for m in body.messages[-12:]
+        ],
+    })
+
     routing_engine = request.app.state.routing_engine
     directive = routing_engine.parse_model_directive(body.model)
 
@@ -491,6 +508,12 @@ def _guardrail_scan_input(request, body):
     config = request.app.state.config.get()
     cfg = config.telemetry.guardrails
     engine = _build_guardrail_engine(cfg)
+    # Langfuse: real `with` block so the OTEL context nests the span.
+    with langfuse_tracing.span_cm("guardrail-input-scan"):
+        return _guardrail_scan_input_impl(request, body, engine, cfg)
+
+
+def _guardrail_scan_input_impl(request, body, engine, cfg):
     messages = [
         (m.model_dump() if hasattr(m, "model_dump") else m) for m in body.messages
     ]
@@ -1309,32 +1332,46 @@ async def _forward_to_provider(
     config = request.app.state.config.get()
     provider = request.app.state.provider
 
-    budget_result = await _check_budget(request, body, route, session_id, config)
-    if budget_result is not None:
-        if isinstance(budget_result, JSONResponse):
-            return budget_result
-        route = budget_result  # downgraded route
+    # Langfuse: attach session/route context to the trace (propagated to
+    # all spans, including the upstream generation observations).
+    # propagate_attributes is a context manager — entered with `with` so
+    # all spans created below (guardrails, generations) carry the attrs.
+    with langfuse_tracing.note_route(
+        session_id=session_id,
+        level=getattr(getattr(route, "level", None), "value", None),
+        model=getattr(route, "model", None),
+        metadata={
+            "classification_source": getattr(getattr(route, "classification", None), "source", None) and route.classification.source.value,
+            "session_source": session_source.value if session_source else None,
+            "router_version": getattr(request.app.state, "version", None),
+        },
+    ):
+        budget_result = await _check_budget(request, body, route, session_id, config)
+        if budget_result is not None:
+            if isinstance(budget_result, JSONResponse):
+                return budget_result
+            route = budget_result  # downgraded route
 
-    payload = _build_upstream_payload(body, route, session_id, config, provider)
-    fallbacks = config.routing.get_fallbacks(route.level.value)
-    tier_base_url, tier_api_key = _resolve_tier_provider(config, route.level.value)
-    deadline = _provider_deadline(config)
+        payload = _build_upstream_payload(body, route, session_id, config, provider)
+        fallbacks = config.routing.get_fallbacks(route.level.value)
+        tier_base_url, tier_api_key = _resolve_tier_provider(config, route.level.value)
+        deadline = _provider_deadline(config)
 
-    router_active_requests.inc()
-    try:
-        if body.stream:
-            return await _handle_stream(
+        router_active_requests.inc()
+        try:
+            if body.stream:
+                return await _handle_stream(
+                    request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
+                    redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
+                    deadline=deadline,
+                )
+            return await _handle_non_stream(
                 request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
                 redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
                 deadline=deadline,
             )
-        return await _handle_non_stream(
-            request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
-            redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
-            deadline=deadline,
-        )
-    finally:
-        router_active_requests.dec()
+        finally:
+            router_active_requests.dec()
 
 
 def _record_cache_usage(json_resp, route, model_used) -> None:

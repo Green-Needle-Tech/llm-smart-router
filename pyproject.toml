@@ -1,6 +1,6 @@
 [project]
 name = "llm-smart-router"
-version = "2.26.3"
+version = "2.27.0"
 description = "Session-pinned LLM smart router with OpenAI-compatible API"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.11"
@@ -15,6 +15,7 @@ dependencies = [
     "structlog>=24.4.0",
     "redis>=5.2.0",
     "pendulum>=3.0.0",
+    "langfuse>=4.15.4",
 ]
 
 [project.optional-dependencies]
@@ -53,5 +54,5 @@ ignore = [
 # Single source of truth for application version.
 # config/settings.json "version" field is the CONFIG SCHEMA version (separate).
 [tool.llm-smart-router]
-application_version = "2.26.3"
+application_version = "2.27.0"
 config_schema_version = 1

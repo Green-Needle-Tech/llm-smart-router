@@ -1469,6 +1469,58 @@ Pricing is read from OpenRouter's `/api/v1/models` at startup and refreshed ever
 
 Cost is additionally accumulated **per session** on the pin, so `/v1/router/sessions/{id}` and `/admin/sessions` show spend per conversation. The key derived metric is the **classification amortization ratio** — `router_classifier_calls_total / router_requests_total`. On healthy agent traffic this should sit near `1/mean(router_session_turns)`; a ratio close to 1 means session ids are not being propagated and pinning is not engaging.
 
+### 8.4 Langfuse tracing
+
+Optional LLM observability via Langfuse (Python SDK v4, OpenTelemetry-based). Enabled purely by environment variables — no `settings.json` change. When `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are unset, the `langfuse` package is missing, or the Langfuse endpoint is unreachable, every tracing call degrades to a no-op: request handling, latency, and error behavior are identical with tracing on or off (all SDK calls are wrapped in `try/except`).
+
+Environment:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LANGFUSE_PUBLIC_KEY` | unset (disabled) | Langfuse project public key |
+| `LANGFUSE_SECRET_KEY` | unset (disabled) | Langfuse project secret key |
+| `LANGFUSE_HOST` | `https://cloud.langfuse.com` | Cloud region or self-hosted URL |
+
+Trace model — one trace per `POST /v1/chat/completions`:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant MW as LangfuseTraceMiddleware (ASGI)
+    participant R as Request pipeline
+    participant U as Upstream (OpenRouter)
+
+    C->>MW: POST /v1/chat/completions
+    MW->>MW: start root span "chat-completions" (with block)
+    MW->>R: forward (wrapped_send captures status + body excerpt)
+    R->>R: SPAN "guardrail-input-scan" (input pipeline)
+    R->>R: SPAN "classify-request" (cache misses only, @observe)
+    R->>R: propagate_attributes(session_id, tags level:Lx, metadata)
+    loop one GENERATION per fallback attempt
+        R->>U: openrouter-<model> attempt
+        U-->>R: response / error
+        R->>R: GENERATION update: usage_details, output — or ERROR + statusMessage
+    end
+    R-->>MW: response (stream chunks until more_body falsy)
+    MW->>MW: end root span (output: status + excerpt; ERROR on exception)
+    MW-->>C: response
+```
+
+Observation semantics:
+
+| Observation | Type | Produced by | Notes |
+|-------------|------|-------------|-------|
+| `chat-completions` | SPAN (root) | `LangfuseTraceMiddleware` | Wraps the entire downstream ASGI call in a real `with` block — ends only when the response body fully completes, so streaming requests get accurate end-to-end latency. Input: sanitized message list (post PII/secret redaction, last 12 messages, 2 000 chars/message cap). Output: `{status, response_excerpt}` (4 096-byte cap). Exceptions set `level: ERROR`. |
+| `guardrail-input-scan` | SPAN | chat input pipeline | Invisible-text / PII / secret scanning stage. |
+| `classify-request` | SPAN | `ClassifierService.classify` | `@observe(capture_input=false)`; emitted only on digest-cache misses (pinned turns skip classification by design). |
+| `openrouter-<model>` | GENERATION | `FallbackExecutor.execute_with_fallback` | One per upstream model attempt, siblings under the root — fallback chains are visible step by step. Success: output excerpt + `usage_details` (`input`/`output`/`total` from upstream usage). Failure: `level: ERROR`, upstream error as `status_message`. |
+
+Session and route attribution: immediately before the upstream call, `propagate_attributes` (an OTEL baggage context manager, entered with `with`) stamps `session_id`, `tags: [level:Lx]`, and metadata (`classification_source`, `session_source`, `router_version`) onto the trace, so all downstream generations carry session attribution for per-session cost analytics. Spans created earlier in the request (guardrails, classification) precede session resolution in the pipeline and therefore do not carry `session_id`.
+
+Implementation constraint (verified empirically against SDK 4.15.4): Langfuse observations must be created inside real `with` blocks — calling `context_manager.__enter__()` manually does not attach the OTEL context and produces orphaned spans on separate traces. All helpers in `app/telemetry/langfuse_tracing.py` return context managers and are only used with `with`. The same applies to `propagate_attributes`, which must wrap the code creating the spans it should attribute.
+
+On shutdown, `lifespan` calls `client.flush()` so pending traces are delivered before exit.
+
 ---
 
 ## 9. Security

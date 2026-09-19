@@ -1,7 +1,7 @@
 services:
   smart-router:
     build: .
-    image: llm-smart-router:2.26.3
+    image: llm-smart-router:2.27.0
     pull_policy: never
     container_name: smart-router
     restart: unless-stopped
@@ -27,6 +27,10 @@ services:
       SESSION_IDLE_TTL_SECONDS: ${SESSION_IDLE_TTL_SECONDS:-7200}
       SESSION_FINGERPRINT_SALT: ${SESSION_FINGERPRINT_SALT:-}
       WORKERS: ${WORKERS:-1}
+      # Langfuse tracing (optional — all no-ops when unset)
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
     volumes:
       - ./config:/app/config:ro
       - router-data:/app/data

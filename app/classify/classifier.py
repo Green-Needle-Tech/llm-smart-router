@@ -101,6 +101,37 @@ class ClassifierService:
 
         Returns (result, digest_info).
         """
+        # Langfuse: traced as a span when the SDK is configured; input
+        # capture disabled (the sanitized trace input already carries the
+        # messages), output captures the classification decision.
+        try:
+            from langfuse import observe
+
+            @observe(name="classify-request", as_type="span", capture_input=False)
+            async def _classify(*a, **kw):
+                return await self._classify_inner(*a, **kw)
+
+            return await _classify(
+                messages, tools, response_format,
+                task_text=task_text, ignore_system=ignore_system,
+                bypass_cache=bypass_cache,
+            )
+        except Exception:
+            return await self._classify_inner(
+                messages, tools, response_format,
+                task_text=task_text, ignore_system=ignore_system,
+                bypass_cache=bypass_cache,
+            )
+
+    async def _classify_inner(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict] | None = None,
+        response_format: dict | None = None,
+        task_text: str | None = None,
+        ignore_system: bool = False,
+        bypass_cache: bool = False,
+    ) -> tuple[ClassificationResult, dict]:
         start = time.monotonic()
 
         # Build digest

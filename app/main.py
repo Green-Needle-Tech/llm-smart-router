@@ -29,6 +29,7 @@ from app.routing.engine import RoutingEngine
 from app.session.memory_store import MemorySessionStore
 from app.session.redis_store import RedisSessionStore
 from app.telemetry.budget import BudgetManager
+from app.telemetry.langfuse_tracing import LangfuseTraceMiddleware, shutdown_flush
 from app.telemetry.logging import get_logger, setup_logging
 from app.telemetry.metrics import router_info
 from app.temporal_awareness.engine import TemporalAwarenessEngine
@@ -184,6 +185,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # --- Shutdown ---
+    # Flush any pending Langfuse traces before exit.
+    shutdown_flush()
     logger.info("router.shutdown")
     # Cancel and await background tasks
     tasks_to_cancel = []
@@ -225,6 +228,9 @@ def create_app() -> FastAPI:
     # Middleware (order: outermost first)
     app.add_middleware(RequestLimitsMiddleware, max_body_bytes=10_485_760)
     app.middleware("http")(error_middleware)
+    # Langfuse tracing (outermost): one trace per chat completion request,
+    # ended when the response body fully completes (streams included).
+    app.add_middleware(LangfuseTraceMiddleware)
 
     # Register routers
     app.include_router(health_router)

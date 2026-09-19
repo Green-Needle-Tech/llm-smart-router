@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from app.telemetry import langfuse_tracing
+
 
 class FallbackDeadlineExceeded(Exception):
     """Raised/reported when the wall-clock budget for a request is exhausted."""
@@ -101,28 +103,70 @@ class FallbackExecutor:
 
             attempt_timeout = self._attempt_timeout(deadline)
             request_payload = {**payload, "model": model}
-            try:
-                if stream:
-                    resp, err = await self._try_stream(
-                        effective_base_url, request_payload, headers, model,
-                        timeout=attempt_timeout)
-                    if err:
-                        last_error = err
-                        continue
-                    return None, resp, model, i > 0, None
-                else:
-                    json_resp, err = await self._try_non_stream(
-                        effective_base_url, request_payload, headers, model,
-                        timeout=attempt_timeout)
-                    if err:
-                        last_error = err
-                        continue
-                    return json_resp, None, model, i > 0, None
-            except (TimeoutError, httpx.TimeoutException):
-                last_error = f"timeout for {model}"
-            except httpx.HTTPStatusError as e:
-                last_error = f"upstream {e.response.status_code} for {model}"
-            except Exception as e:
-                last_error = f"error for {model}: {e!s}"
+            # Langfuse: one `generation` observation per upstream model
+            # attempt (siblings under the request trace, so a fallback
+            # chain is visible step by step). Must be a real `with` block
+            # so the OTEL context nests it under the request trace.
+            with langfuse_tracing.generation_cm(
+                name=f"openrouter-{model}", model=model,
+                input_data={"messages": request_payload.get("messages")},
+            ) as gen:
+                try:
+                    if stream:
+                        resp, err = await self._try_stream(
+                            effective_base_url, request_payload, headers, model,
+                            timeout=attempt_timeout)
+                        if err:
+                            last_error = err
+                            langfuse_tracing._safe_update(
+                                gen, level="ERROR", status_message=err[:500])
+                            continue
+                        langfuse_tracing._safe_update(
+                            gen, output={"note": "streamed response", "model": model})
+                        return None, resp, model, i > 0, None
+                    else:
+                        json_resp, err = await self._try_non_stream(
+                            effective_base_url, request_payload, headers, model,
+                            timeout=attempt_timeout)
+                        if err:
+                            last_error = err
+                            langfuse_tracing._safe_update(
+                                gen, level="ERROR", status_message=err[:500])
+                            continue
+                        jr = json_resp or {}
+                        usage = jr.get("usage") or {}
+                        gen_output = None
+                        try:
+                            choices = jr.get("choices") or []
+                            first = choices[0] if choices else {}
+                            message = first.get("message") or {}
+                            gen_output = {
+                                "content": langfuse_tracing._truncate(message.get("content")),
+                                "finish_reason": first.get("finish_reason"),
+                            }
+                        except Exception:
+                            gen_output = {"note": "non-streamed response"}
+                        langfuse_tracing._safe_update(
+                            gen,
+                            output=gen_output,
+                            usage_details={
+                                "input": usage.get("prompt_tokens"),
+                                "output": usage.get("completion_tokens"),
+                                "total": usage.get("total_tokens"),
+                            } if usage else None,
+                        )
+                        return json_resp, None, model, i > 0, None
+                except (TimeoutError, httpx.TimeoutException):
+                    last_error = f"timeout for {model}"
+                    langfuse_tracing._safe_update(
+                        gen, level="ERROR", status_message=last_error[:500])
+                except httpx.HTTPStatusError as e:
+                    last_error = f"upstream {e.response.status_code} for {model}"
+                    langfuse_tracing._safe_update(
+                        gen, level="ERROR", status_message=last_error[:500])
+                except Exception as e:
+                    last_error = f"error for {model}: {e!s}"
+                    langfuse_tracing._safe_update(
+                        gen, level="ERROR", status_message=last_error[:500])
 
         return None, None, primary_model, False, last_error or "all fallbacks exhausted"

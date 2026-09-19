@@ -349,7 +349,39 @@ Turn 2+ skips the classifier: the session pin routes straight to the tier model,
 | Session Store | In-memory TTL+LRU / Redis |
 | Metrics | prometheus-client |
 | Logging | structlog (JSON) |
+| Tracing | Langfuse (optional, OpenTelemetry-based) |
 | Container | Multi-stage Docker, python:3.12-slim |
+
+## Langfuse Tracing (optional)
+
+When `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set, the router emits one **trace per `/v1/chat/completions` request** to Langfuse (SDK v4, OpenTelemetry-based). When the keys are unset — or the `langfuse` package is missing, or Langfuse is unreachable — every tracing call is a silent no-op and request handling is unaffected.
+
+Trace hierarchy:
+
+```mermaid
+flowchart TD
+    T["Trace — chat-completions<br/>input: sanitized messages (post-redaction)<br/>output: status + response excerpt<br/>ends when the response body fully completes<br/>(streams included)"]
+    T --> G["SPAN — guardrail-input-scan<br/>invisible text / PII / secrets scan"]
+    T --> CL["SPAN — classify-request<br/>L1–L5 decision (cache misses only)"]
+    T --> R["propagate_attributes<br/>session_id · tags level:Lx · route metadata"]
+    R --> GEN1["GENERATION — openrouter-&lt;model&gt;<br/>one per fallback attempt<br/>usage: input/output tokens<br/>ERROR + statusMessage on failure"]
+    GEN1 -->|fallback| GEN2["GENERATION — openrouter-&lt;next-model&gt;<br/>…chain visible step by step"]
+```
+
+Semantics:
+
+- **Root span** `chat-completions` — wraps the whole downstream ASGI call in a real `with` block, so streaming responses get accurate end-to-end latency. Trace input is the sanitized message list (post PII/secret masking, last 12 messages, 2 000-char cap per message); output carries the HTTP status and a response excerpt.
+- **Child spans** — `guardrail-input-scan` (input guardrail pipeline) and `classify-request` (classification, wrapped with `@observe`, only on cache misses).
+- **Generations** — one `GENERATION` observation per upstream model attempt (`openrouter-<model>`), including fallback chains. Success records output excerpt + token usage; failures record `level: ERROR` with the upstream error as status message.
+- **Session & tags** — `session_id`, `tags: [level:Lx]` and route metadata (classification source, session source, router version) are propagated onto the trace via baggage before the upstream call, so generations carry session attribution for per-session cost analytics.
+
+Configuration (env vars only, no settings.json change):
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com   # or self-hosted URL
+```
 
 ## Endpoints
 
