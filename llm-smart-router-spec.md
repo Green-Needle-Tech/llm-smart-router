@@ -42,7 +42,9 @@ flowchart TD
     A[AI Agent] -->|"OpenAI-format request + X-Session-Id"| B["LLM-Smart-Router<br/>Docker :8080"]
     B -->|"OpenAI-format response<br/>+ X-Router-* headers"| A
     B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/log<br/>+ PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
-    G --> P["IP REDACTION<br/>raw IPs → placeholders"]
+    G --> CG{"CUSTOM GUARDRAIL<br/>(opt-in, disabled by default)"}
+    CG -->|"enabled: TypeSafe yes/no decision<br/>custom policy prompt<br/>no → HTTP 400 reject"| P["IP REDACTION<br/>raw IPs → placeholders"]
+    CG -->|disabled| P
     P --> P2T["TEMPORAL AWARENESS\ntoday → 2026-08-26\nnow → 2026-08-26T08:35+08:00\n104 patterns / 91 tags\ntypo + grammar tolerant"]
     P2T --> S["Session Store<br/>session_id → level, model, turn, expires"]
 
@@ -64,7 +66,9 @@ flowchart TD
     M5 --> PC
     PC --> RH["IP RE-HYDRATE<br/>placeholders → original IPs"]
     RH --> OM["GUARDRAIL OUTPUT MASK<br/>secrets in LLM output → redacted"]
-    OM --> PF["POSTFIX<br/>append &#91;smart-router/Ln&#93;"]
+    OM --> CGO{"CUSTOM GUARDRAIL output<br/>(opt-in, apply_on=output/both)"}
+    CGO -->|"no → 400 reject (non-stream)<br/>or SSE error event (stream)"| PF["POSTFIX<br/>append &#91;smart-router/Ln&#93;"]
+    CGO -->|yes / disabled| PF
     PF --> B
 ```
 
@@ -115,7 +119,8 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
 flowchart TD
     R1[1. RECEIVE<br/>POST /v1/chat/completions] --> R2[2. AUTHENTICATE<br/>Bearer token check]
     R2 --> R2G[2b. GUARDRAIL INPUT SCAN<br/>injection/jailbreak detection<br/>block → HTTP 400]
-    R2G --> R2P[2c. IP REDACTION<br/>redact raw IPs → placeholders<br/>session-scoped SQLite map]
+    R2G --> R2CG{"2b-2. CUSTOM GUARDRAIL<br/>(opt-in, disabled by default)<br/>TypeSafe yes/no decision on payload<br/>no → HTTP 400 reject<br/>yes → pass untouched"}
+    R2CG --> R2P["2c. IP REDACTION<br/>redact raw IPs → placeholders<br/>session-scoped SQLite map"]
     R2P --> R2T[2d. TEMPORAL AWARENESS<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags from rules.py<br/>typo + grammar tolerant]
     R2T --> R3[3. RESOLVE<br/>Derive session_id]
     R3 --> R4{4. SESSION LOOKUP}
@@ -134,7 +139,8 @@ flowchart TD
     R9 --> R10[10. FORWARD<br/>prompt-cache features → POST OpenRouter<br/>retryable error → fallback chain]
     R10 --> R10P[10b. IP RE-HYDRATE<br/>placeholders → original IPs<br/>carry buffer for split tokens]
     R10P --> R10G[10c. GUARDRAIL OUTPUT MASK<br/>secrets in LLM output → redacted<br/>streaming: split-first carry pipeline]
-    R10G --> R10F["10d. POSTFIX<br/>append &#91;smart-router/Ln&#93; marker"]
+    R10G --> R10CG["10c-2. CUSTOM GUARDRAIL output<br/>(opt-in, apply_on=output/both)<br/>decision no → 400 reject (non-stream)<br/>or SSE error event (stream)"]
+    R10CG --> R10F["10d. POSTFIX<br/>append &#91;smart-router/Ln&#93; marker"]
     R10F --> R11["11. RESPOND<br/>Stream or JSON + X-Router-* headers"]
     R11 --> R12[12. RECORD<br/>Log route, session, latency, usage, cost<br/>prompt-cache metrics]
 ```

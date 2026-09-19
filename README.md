@@ -306,7 +306,10 @@ flowchart TD
 
     subgraph Router [Request Pipeline]
         C --> P1["🛡️ Guardrails Input<br/>Injection detection 26 rules (log/block)<br/>+ Homoglyph normalization<br/>Cyrillic/Greek/Full-width lookalikes<br/>+ Obfuscation & entropy scanning<br/>Base64/Hex/URL-encoded payloads<br/>+ Invisible text stripping<br/>+ Banned substrings scan<br/>+ Input PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
-        P1 --> P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
+        P1 --> CG{"🧭 Custom Guardrail<br/>enabled? (opt-in,<br/>disabled by default)"}
+        CG -->|yes| CG2["🧭 TypeSafe yes/no decision<br/>typesafe/jev-1.13.0<br/>custom policy prompt<br/>no → HTTP 400 reject<br/>yes → pass untouched"]
+        CG2 --> P2
+        CG -->|disabled| P2["🔒 IP Redaction<br/>Raw IPs → [ipaddress-NN]<br/>re-hydrated on response"]
         P2 --> P2T["🕐 Temporal Awareness<br/>today → 2026-08-26<br/>now → 2026-08-26T08:35+08:00<br/>104 patterns / 91 tags<br/>typo + grammar tolerant"]
         P2T --> TP{"Tier-prefix<br/>in prompt?"}
         TP -->|Yes| TP2["Tier-Prefix Pin<br/>L1–L5 detected<br/>prefix stripped<br/>classifier skipped"]
@@ -331,7 +334,8 @@ flowchart TD
     F3 --> C
     H --> C
 
-    C -->|"🔒 Secrets masked (11 provider types)<br/>🔒 PII masked<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Token tracking accumulated<br/>📋 Postfix [smart-router/Ln-In:…|Out:…/Ctx:…/1M]<br/>suppressed on tool-call turns<br/>📊 Refusal logged"| B
+    C --> CGO["🧭 Custom Guardrail output check<br/>(opt-in, apply_on=output/both)<br/>no → 400 reject (non-stream)<br/>or SSE error event (stream)"]
+    CGO -->|"🔒 Secrets masked (11 provider types)<br/>🔒 PII masked<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Token tracking accumulated<br/>📋 Postfix [smart-router/Ln-In:…|Out:…/Ctx:…/1M]<br/>suppressed on tool-call turns<br/>📊 Refusal logged"| B
     B --> A
 ```
 
