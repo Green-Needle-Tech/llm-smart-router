@@ -109,3 +109,32 @@ def test_disabled_guardrail_short_circuits():
     import asyncio
     d = asyncio.run(_engine(enabled=False).evaluate("anything"))
     assert d.decision == "yes" and d.source == "disabled"
+
+
+def test_payload_scope_default_and_values():
+    s = CustomGuardrailSettings(enabled=True)
+    assert s.payload_scope == "all"
+    s = CustomGuardrailSettings(enabled=True, payload_scope="last_user")
+    assert s.payload_scope == "last_user"
+    try:
+        CustomGuardrailSettings(enabled=True, payload_scope="bogus")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+def test_last_user_scope_selects_final_user_message():
+    from app.guardrails.custom import build_payload_text
+
+    messages = [
+        {"role": "system", "content": "s" * 20_000},
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "What is last week sales?"},
+    ]
+    user_msgs = [m for m in messages if m.get("role") == "user"]
+    scoped = [user_msgs[-1]]
+    out = build_payload_text(scoped, 8000)
+    assert "What is last week sales?" in out
+    assert "old question" not in out
+    assert "system" not in out

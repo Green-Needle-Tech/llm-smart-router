@@ -50,6 +50,9 @@ class CustomGuardrailSchema(BaseModel):
     # Decision threshold: P(yes) >= yes_threshold -> pass. Default 0.5.
     yes_threshold: float = 0.5
     max_payload_chars: int = 8000
+    # "all" (system + history + user, budgeted) | "last_user" (only the last
+    # user message — recommended for topic-scope guardrails).
+    payload_scope: str = "all"
     # Question id used in the systemone request/response map.
     question_id: str = "guardrail"
     # "noul" (P(yes) in [0,1]) | "choice" (P of "yes" option) | "score" (normalized)

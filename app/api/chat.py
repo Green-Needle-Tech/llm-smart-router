@@ -284,6 +284,10 @@ async def _custom_guardrail_check_input(request, body, config) -> JSONResponse |
     if not settings.is_enabled():
         return None
     messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
+    if settings.payload_scope == "last_user":
+        user_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "user"]
+        if user_msgs:
+            messages = [user_msgs[-1]]
     payload_text = build_payload_text(messages, settings.max_payload_chars)
     if not payload_text:
         return None
