@@ -1297,10 +1297,30 @@ async def _check_budget(request, body, route, session_id, config) -> JSONRespons
     return None
 
 
+def _strip_reasoning_disable(payload: dict, route, config) -> None:
+    """Remove `reasoning: {"enabled": false}` for reasoning-mandatory models.
+
+    Some upstream models (e.g. z-ai/glm-5.3) hard-reject a reasoning disable
+    with HTTP 400 "Reasoning is mandatory for this endpoint and cannot be
+    disabled".  Auxiliary clients (title generation, compression, ...) send
+    `reasoning.enabled=false` by design; stripping it for these models avoids
+    a deterministic 400, 3 wasted retries, and an unnecessary fallback.
+    """
+    mandatory = getattr(
+        getattr(config, "provider", None), "reasoning_mandatory_models", None
+    ) or []
+    if route.model not in mandatory:
+        return
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict) and reasoning.get("enabled") is False:
+        del payload["reasoning"]
+
+
 def _build_upstream_payload(body, route, session_id, config, provider) -> dict:
     """Build the upstream provider payload with tier params and max_tokens."""
     payload = body.model_dump(exclude={"router"}, exclude_none=True)
     _strip_model_postfix_from_messages(payload.get("messages", []))
+    _strip_reasoning_disable(payload, route, config)
     payload["model"] = route.model
     apply_prompt_cache_features(payload, session_id, config)
     for key, val in route.params.items():

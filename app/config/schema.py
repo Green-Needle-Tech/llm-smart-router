@@ -129,6 +129,14 @@ class ProviderConfig(BaseModel):
     # Used by agent onboarding/config scripts to set client-side context_length.
     # Default: 1,000,000 (1M tokens — matches OpenRouter long-context models).
     context_window: int = 1_000_000
+    # Models that reject `reasoning: {"enabled": false}` with a 400
+    # ("Reasoning is mandatory for this endpoint and cannot be disabled").
+    # For these models the router strips a client-supplied reasoning disable
+    # before forwarding upstream, so auxiliary calls (title generation etc.)
+    # don't burn retries and fall back unnecessarily.
+    reasoning_mandatory_models: list[str] = Field(
+        default_factory=lambda: ["z-ai/glm-5.3"]
+    )
     # --- Stall / hang detection (v2.19.0) -------------------------------
     # httpx's `timeout` is a PER-OPERATION read timeout whose clock resets on
     # every byte received.  A model that trickles one token every few seconds
