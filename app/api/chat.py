@@ -180,11 +180,25 @@ def _custom_guardrail_settings(config) -> CustomGuardrailSettings | None:
     return CustomGuardrailSettings(**vars(cfg))
 
 
-def _custom_guardrail_rejection(reason: str, settings: CustomGuardrailSettings | None = None) -> JSONResponse:
-    """Standardized rejection envelope returned to the client.
+def _guardrail_rejection_marker() -> str:
+    """Version-only postfix for guardrail rejections (no tier was routed)."""
+    from app.version import APPLICATION_VERSION
+
+    return f"[smart-router/v{APPLICATION_VERSION}]"
+
+
+def _custom_guardrail_rejection(reason: str, settings: CustomGuardrailSettings | None = None, body=None):
+    """Build the rejection response for the client.
 
     Message is configurable via telemetry.guardrails.custom.rejection_message
     (supports a "{reason}" placeholder); falls back to the built-in default.
+
+    Delivery mode (telemetry.guardrails.custom.rejection_delivery):
+      - "reply" (default): a normal HTTP 200 chat completion whose content is
+        the rejection message + router version postfix. Downstream clients
+        (e.g. Hermes gateway) render it as a single assistant message instead
+        of stacking a provider error message on top of a failed-turn notice.
+      - "error": legacy HTTP 400 guardrail_violation envelope.
     """
     template = (
         settings.rejection_message
@@ -192,15 +206,71 @@ def _custom_guardrail_rejection(reason: str, settings: CustomGuardrailSettings |
         else "Request rejected by custom guardrail: {reason}"
     )
     message = template.format(reason=reason) if "{reason}" in template else template
+
+    delivery = getattr(settings, "rejection_delivery", "reply") if settings else "reply"
+    if delivery == "error":
+        return JSONResponse(
+            status_code=400,
+            content={"error": {
+                "message": message,
+                "type": "guardrail_violation",
+                "param": None,
+                "code": "router_custom_guardrail_rejected",
+                "guardrail": {"decision": "no", "reason": reason},
+            }},
+        )
+
+    content = f"{message.rstrip()}\n\n{_guardrail_rejection_marker()}"
+    model_name = getattr(body, "model", None) or "smart-router"
+    completion_id = f"chatcmpl-guardrail-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+    guardrail_meta = {
+        "decision": "no",
+        "reason": reason,
+        "code": "router_custom_guardrail_rejected",
+    }
+
+    if body is not None and getattr(body, "stream", False):
+        async def _reject_stream():
+            chunks = [
+                {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model_name,
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+                },
+                {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model_name,
+                    "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+                },
+                {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model_name,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "guardrail": guardrail_meta,
+                },
+            ]
+            for chunk in chunks:
+                yield f"data: {json.dumps(chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(_reject_stream(), media_type="text/event-stream")
+
     return JSONResponse(
-        status_code=400,
-        content={"error": {
-            "message": message,
-            "type": "guardrail_violation",
-            "param": None,
-            "code": "router_custom_guardrail_rejected",
-            "guardrail": {"decision": "no", "reason": reason},
-        }},
+        status_code=200,
+        content={
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": model_name,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "guardrail": guardrail_meta,
+        },
     )
 
 
@@ -229,7 +299,7 @@ async def _custom_guardrail_check_input(request, body, config) -> JSONResponse |
         "router.custom_guardrail.rejected",
         reason=decision.reason,
     )
-    return _custom_guardrail_rejection(decision.reason, settings)
+    return _custom_guardrail_rejection(decision.reason, settings, body)
 
 
 @router.post("/v1/chat/completions", responses={400: {"description": "Bad request"}})
@@ -1628,7 +1698,7 @@ def _build_stream_postfix(route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx
             route.level.value, token_usage_for_postfix, _tt_show,
             last_ctx_tokens=s_prompt, context_window=_ctx_window,
         )
-    return f"[smart-router/{route.level.value}]"
+    return build_token_postfix(route.level.value, None, _tt_show)
 
 
 async def _finalize_stream_token_tracking(

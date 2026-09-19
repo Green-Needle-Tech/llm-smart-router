@@ -379,7 +379,10 @@ An optional, user-configurable guardrail under `telemetry.guardrails.custom` —
 
 - The model returns a probability-of-yes: `noul` (0–1) for `question_type: "noul"`, `probabilities["yes"]` for `"choice"`, or the `score` normalized across levels for `"score"`
 - `P(yes) >= yes_threshold` (default 0.5) → **Pass**: the request continues through the router pipeline untouched
-- `P(yes) < yes_threshold` → **Reject**: execution halts; the client receives a standardized `400` envelope with `code: "router_custom_guardrail_rejected"` and the probability in the reason (also logged + counted in metrics)
+- `P(yes) < yes_threshold` → **Reject**: execution halts. Delivery depends on `rejection_delivery` (v2.26.0):
+  - `"reply"` (default): the client receives a **normal `200` chat completion** whose content is the rejection message plus a version-only postfix (`[smart-router/v2.26.0]`) — rendered as a single assistant message by downstream clients instead of a provider error + failed-turn notice stack. The `guardrail` metadata block (`decision`/`reason`/`code`) rides the response body for observability.
+  - `"error"`: legacy standardized `400` envelope with `code: "router_custom_guardrail_rejected"` and the probability in the reason
+  - Either way the rejection is logged (`router.custom_guardrail.rejected`) and counted in metrics.
 
 ```json
 "custom": {

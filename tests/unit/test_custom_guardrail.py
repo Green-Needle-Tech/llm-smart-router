@@ -211,3 +211,68 @@ class TestPayloadShape:
         d = await engine.evaluate("payload")
         assert d.decision == "yes"
         assert d.probability_yes == 1.0
+
+
+class TestRejectionDelivery:
+    """rejection_delivery="reply" must yield a single 200 completion with the
+    router version postfix; "error" keeps the legacy 400 envelope."""
+
+    def _settings(self, delivery: str):
+        from app.guardrails.custom import CustomGuardrailSettings
+        return CustomGuardrailSettings(enabled=True, rejection_message="Out of scope ({reason})", rejection_delivery=delivery)
+
+    def _body(self, stream: bool = False):
+        body = MagicMock()
+        body.stream = stream
+        body.model = "smart-router"
+        return body
+
+    def test_reply_delivery_returns_200_completion_with_version_postfix(self):
+        from fastapi.responses import JSONResponse
+        from app.api.chat import _custom_guardrail_rejection
+        from app.version import APPLICATION_VERSION
+
+        resp = _custom_guardrail_rejection("policy 0.38", self._settings("reply"), self._body())
+        assert isinstance(resp, JSONResponse)
+        assert resp.status_code == 200
+        content = resp.body.decode() if isinstance(resp.body, bytes) else str(resp.body)
+        payload = json.loads(content)
+        msg = payload["choices"][0]["message"]["content"]
+        assert msg.startswith("Out of scope (policy 0.38)")
+        assert msg.endswith(f"[smart-router/v{APPLICATION_VERSION}]")
+        assert payload["guardrail"]["code"] == "router_custom_guardrail_rejected"
+        assert payload["choices"][0]["finish_reason"] == "stop"
+
+    def test_error_delivery_keeps_legacy_400_envelope(self):
+        from fastapi.responses import JSONResponse
+        from app.api.chat import _custom_guardrail_rejection
+
+        resp = _custom_guardrail_rejection("policy 0.38", self._settings("error"), self._body())
+        assert isinstance(resp, JSONResponse)
+        assert resp.status_code == 400
+        payload = json.loads(resp.body.decode() if isinstance(resp.body, bytes) else str(resp.body))
+        assert payload["error"]["code"] == "router_custom_guardrail_rejected"
+
+    def test_streaming_reply_yields_sse_chunks(self):
+        import asyncio
+        from fastapi.responses import StreamingResponse
+        from app.api.chat import _custom_guardrail_rejection
+        from app.version import APPLICATION_VERSION
+
+        resp = _custom_guardrail_rejection("policy 0.38", self._settings("reply"), self._body(stream=True))
+        assert isinstance(resp, StreamingResponse)
+
+        async def collect():
+            chunks = []
+            async for part in resp.body_iterator:
+                chunks.append(part)
+            return "".join(chunks)
+
+        raw = asyncio.run(collect())
+        assert f"[smart-router/v{APPLICATION_VERSION}]" in raw
+        assert "Out of scope (policy 0.38)" in raw
+        assert raw.rstrip().endswith("data: [DONE]")
+
+    def test_default_delivery_is_reply(self):
+        from app.guardrails.custom import CustomGuardrailSettings
+        assert CustomGuardrailSettings().rejection_delivery == "reply"

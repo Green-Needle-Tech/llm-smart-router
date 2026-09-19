@@ -100,6 +100,11 @@ class CustomGuardrailSettings(BaseModel):
     # Optional custom rejection message shown to the client. Supports a
     # "{reason}" placeholder. Empty -> built-in default message.
     rejection_message: str = ""
+    # How a rejection is delivered to the client:
+    #   "reply"  — HTTP 200 completion whose content is the rejection message
+    #              plus the router version postfix (single client-side message).
+    #   "error"  — legacy HTTP 400 guardrail_violation envelope.
+    rejection_delivery: Literal["reply", "error"] = "reply"
     # Optional prompt file on disk; when set and readable it overrides
     # `prompt`. Edit the file + POST /admin/settings/reload to apply.
     prompt_file: str | None = None

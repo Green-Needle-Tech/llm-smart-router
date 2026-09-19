@@ -20,6 +20,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.version import APPLICATION_VERSION
+
+
+def _version_tag() -> str:
+    """Compact version tag appended to every router postfix (e.g. ``v2.26.0``)."""
+    return f"v{APPLICATION_VERSION}"
+
 
 def extract_tokens(usage: dict[str, Any] | None) -> tuple[int, int]:
     """Extract (prompt_tokens, completion_tokens) from an OpenRouter usage block."""
@@ -166,5 +173,5 @@ def build_postfix(
     if show_in_postfix:
         token_part = render_postfix(token_usage, last_ctx_tokens, context_window)
         if token_part:
-            return f"[smart-router/{token_part}]"
-    return f"[smart-router/{level}]"
+            return f"[smart-router/{token_part}|{_version_tag()}]"
+    return f"[smart-router/{level}|{_version_tag()}]"

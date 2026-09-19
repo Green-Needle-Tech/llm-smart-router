@@ -112,7 +112,7 @@ def test_render_postfix_all_zero():
 
 def test_build_postfix_with_tokens():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
-    assert build_postfix("L1", usage) == "[smart-router/L1-In:3032|Out:1000]"
+    assert build_postfix("L1", usage) == "[smart-router/L1-In:3032|Out:1000|v2.26.0]"
 
 
 def test_build_postfix_multi_tier():
@@ -121,22 +121,22 @@ def test_build_postfix_multi_tier():
         "L2": {"prompt": 10021, "completion": 6054},
     }
     result = build_postfix("L2", usage)
-    assert result == "[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]"
+    assert result == "[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054|v2.26.0]"
 
 
 def test_build_postfix_no_usage_falls_back():
-    assert build_postfix("L1", None) == "[smart-router/L1]"
-    assert build_postfix("L1", {}) == "[smart-router/L1]"
+    assert build_postfix("L1", None) == "[smart-router/L1|v2.26.0]"
+    assert build_postfix("L1", {}) == "[smart-router/L1|v2.26.0]"
 
 
 def test_build_postfix_show_in_postfix_false():
     usage = {"L1": {"prompt": 100, "completion": 50}}
-    assert build_postfix("L1", usage, show_in_postfix=False) == "[smart-router/L1]"
+    assert build_postfix("L1", usage, show_in_postfix=False) == "[smart-router/L1|v2.26.0]"
 
 
 def test_build_postfix_all_zero_falls_back():
     usage = {"L1": {"prompt": 0, "completion": 0}}
-    assert build_postfix("L1", usage) == "[smart-router/L1]"
+    assert build_postfix("L1", usage) == "[smart-router/L1|v2.26.0]"
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ def test_add_model_postfix_with_token_usage():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
     _add_model_postfix(body, "model/test", _route(), token_usage=usage)
     assert body["choices"][0]["message"]["content"] == (
-        "Hello\n\n[smart-router/L1-In:3032|Out:1000]"
+        "Hello\n\n[smart-router/L1-In:3032|Out:1000|v2.26.0]"
     )
 
 
@@ -174,28 +174,28 @@ def test_add_model_postfix_multi_tier_usage():
     }
     _add_model_postfix(body, "model/test", _route(Level.L2), token_usage=usage)
     assert body["choices"][0]["message"]["content"] == (
-        "Hello\n\n[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]"
+        "Hello\n\n[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054|v2.26.0]"
     )
 
 
 def test_add_model_postfix_no_token_usage_falls_back():
     body = {"choices": [{"message": {"role": "assistant", "content": "Hello"}}]}
     _add_model_postfix(body, "model/test", _route(), token_usage=None)
-    assert body["choices"][0]["message"]["content"] == "Hello\n\n[smart-router/L1]"
+    assert body["choices"][0]["message"]["content"] == "Hello\n\n[smart-router/L1|v2.26.0]"
 
 
 def test_add_model_postfix_show_tokens_false():
     body = {"choices": [{"message": {"role": "assistant", "content": "Hello"}}]}
     usage = {"L1": {"prompt": 100, "completion": 50}}
     _add_model_postfix(body, "model/test", _route(), token_usage=usage, show_tokens=False)
-    assert body["choices"][0]["message"]["content"] == "Hello\n\n[smart-router/L1]"
+    assert body["choices"][0]["message"]["content"] == "Hello\n\n[smart-router/L1|v2.26.0]"
 
 
 def test_add_model_postfix_null_content_with_tokens():
     body = {"choices": [{"message": {"role": "assistant", "content": None}}]}
     usage = {"L1": {"prompt": 100, "completion": 50}}
     _add_model_postfix(body, "model/test", _route(), token_usage=usage)
-    assert body["choices"][0]["message"]["content"] == "[smart-router/L1-In:100|Out:50]"
+    assert body["choices"][0]["message"]["content"] == "[smart-router/L1-In:100|Out:50|v2.26.0]"
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ def test_add_model_postfix_null_content_with_tokens():
 def test_strip_model_postfix_removes_token_tracking_format():
     messages = [
         {"role": "user", "content": "First question"},
-        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:3032|Out:1000]"},
+        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:3032|Out:1000|v2.26.0]"},
         {"role": "user", "content": "Follow-up"},
     ]
     _strip_model_postfix_from_messages(messages)
@@ -215,7 +215,7 @@ def test_strip_model_postfix_removes_token_tracking_format():
 def test_strip_model_postfix_removes_multi_tier_format():
     messages = [
         {"role": "user", "content": "First question"},
-        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054]"},
+        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054|v2.26.0]"},
         {"role": "user", "content": "Follow-up"},
     ]
     _strip_model_postfix_from_messages(messages)
@@ -226,7 +226,7 @@ def test_strip_model_postfix_removes_classic_format():
     """Ensure the classic format still strips correctly."""
     messages = [
         {"role": "user", "content": "First question"},
-        {"role": "assistant", "content": "First answer\n\n[smart-router/L1]"},
+        {"role": "assistant", "content": "First answer\n\n[smart-router/L1|v2.26.0]"},
         {"role": "user", "content": "Follow-up"},
     ]
     _strip_model_postfix_from_messages(messages)
@@ -234,10 +234,10 @@ def test_strip_model_postfix_removes_classic_format():
 
 
 def test_strip_model_postfix_preserves_inline_user_text_with_tokens():
-    messages = [{"role": "user", "content": "Explain [smart-router/L1-In:100|Out:50] syntax"}]
+    messages = [{"role": "user", "content": "Explain [smart-router/L1-In:100|Out:50|v2.26.0] syntax"}]
     _strip_model_postfix_from_messages(messages)
     # User messages are not stripped — only assistant messages
-    assert messages[0]["content"] == "Explain [smart-router/L1-In:100|Out:50] syntax"
+    assert messages[0]["content"] == "Explain [smart-router/L1-In:100|Out:50|v2.26.0] syntax"
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +361,7 @@ def test_render_postfix_no_ctx_no_change():
 def test_build_postfix_with_ctx():
     usage = {"L1": {"prompt": 17341, "completion": 42}}
     result = build_postfix("L1", usage, last_ctx_tokens=6100, context_window=1_000_000)
-    assert result == "[smart-router/L1-In:17341|Out:42/Ctx:6100/1M]"
+    assert result == "[smart-router/L1-In:17341|Out:42/Ctx:6100/1M|v2.26.0]"
 
 
 def test_build_postfix_multi_tier_with_ctx():
@@ -370,17 +370,17 @@ def test_build_postfix_multi_tier_with_ctx():
         "L2": {"prompt": 10021, "completion": 6054},
     }
     result = build_postfix("L2", usage, last_ctx_tokens=17341, context_window=1_000_000)
-    assert result == "[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M]"
+    assert result == "[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M|v2.26.0]"
 
 
 def test_build_postfix_ctx_no_usage_falls_back():
     result = build_postfix("L1", None, last_ctx_tokens=500, context_window=1_000_000)
-    assert result == "[smart-router/Ctx:500/1M]"
+    assert result == "[smart-router/Ctx:500/1M|v2.26.0]"
 
 
 def test_build_postfix_no_ctx_defaults_unchanged():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
-    assert build_postfix("L1", usage) == "[smart-router/L1-In:3032|Out:1000]"
+    assert build_postfix("L1", usage) == "[smart-router/L1-In:3032|Out:1000|v2.26.0]"
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +395,7 @@ def test_add_model_postfix_with_ctx():
         token_usage=usage, last_ctx_tokens=6100, context_window=1_000_000,
     )
     assert body["choices"][0]["message"]["content"] == (
-        "Hello\n\n[smart-router/L1-In:17341|Out:42/Ctx:6100/1M]"
+        "Hello\n\n[smart-router/L1-In:17341|Out:42/Ctx:6100/1M|v2.26.0]"
     )
 
 
@@ -406,7 +406,7 @@ def test_add_model_postfix_ctx_without_cumulative():
         token_usage=None, last_ctx_tokens=500, context_window=1_000_000,
     )
     assert body["choices"][0]["message"]["content"] == (
-        "Hello\n\n[smart-router/Ctx:500/1M]"
+        "Hello\n\n[smart-router/Ctx:500/1M|v2.26.0]"
     )
 
 
@@ -417,7 +417,7 @@ def test_add_model_postfix_ctx_without_cumulative():
 def test_strip_model_postfix_removes_ctx_format():
     messages = [
         {"role": "user", "content": "First question"},
-        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:17341|Out:42/Ctx:6100/1M]"},
+        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:17341|Out:42/Ctx:6100/1M|v2.26.0]"},
         {"role": "user", "content": "Follow-up"},
     ]
     _strip_model_postfix_from_messages(messages)
@@ -427,7 +427,7 @@ def test_strip_model_postfix_removes_ctx_format():
 def test_strip_model_postfix_removes_multi_tier_ctx_format():
     messages = [
         {"role": "user", "content": "First question"},
-        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M]"},
+        {"role": "assistant", "content": "First answer\n\n[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M|v2.26.0]"},
         {"role": "user", "content": "Follow-up"},
     ]
     _strip_model_postfix_from_messages(messages)
