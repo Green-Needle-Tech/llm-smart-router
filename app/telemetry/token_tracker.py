@@ -5,7 +5,7 @@ across all turns of a session.  The accumulated totals are rendered into
 a compact postfix appended to the assistant response so the user can see
 cumulative token consumption and context-window usage at a glance:
 
-    [smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:6100/1M]
+[smart-router|L3|In:2102943/Out:8766|Ctx:84329/1M|v2.28.2]
 
 The ``Ctx`` field shows the **last call's** prompt-token count (the actual
 context-window consumption for the most recent turn) followed by the
@@ -89,19 +89,19 @@ def render_postfix(
     token_usage: dict[str, dict[str, int]] | None,
     last_ctx_tokens: int = 0,
     context_window: int = 0,
+    level: str | None = None,
 ) -> str:
     """Render the cumulative token usage into a compact postfix string.
 
-    Tiers are sorted L1 → L5.  Only tiers with non-zero usage appear.
+    Only the current tier's usage appears (tiers are not aggregated in the
+    new format).  Returns ``"L3|In:2102943/Out:8766|Ctx:84329/1M"`` style
+    segments; the caller wraps them in ``[smart-router|...|vX]``.
 
-    When ``last_ctx_tokens`` > 0, appends ``/Ctx:N`` showing the prompt-token
-    count from the most recent LLM call (i.e. the actual context-window
-    consumption for this turn).
+    When ``last_ctx_tokens`` > 0, appends ``|Ctx:N/LIMIT`` showing the
+    prompt-token count from the most recent LLM call (the actual
+    context-window consumption for this turn).
 
-    When ``context_window`` > 0, appends ``/LIMIT`` (e.g. ``/1M``) so the
-    user can see the ceiling at a glance.
-
-    Example: ``"L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:6100/1M"``
+    Example: ``"L3|In:2102943/Out:8766|Ctx:84329/1M"``
     Returns an empty string when there is no usage to report.
     """
     if not token_usage:
@@ -115,30 +115,38 @@ def render_postfix(
         return ""
 
     _ORDER = {"L1": 1, "L2": 2, "L3": 3, "L4": 4, "L5": 5}
-    parts: list[str] = []
-    for level in sorted(token_usage.keys(), key=lambda v: _ORDER.get(v, 99)):
+    # Prefer the current tier; fall back to the lowest tier with usage.
+    stats = None
+    chosen = None
+    if level and level in token_usage and (token_usage[level].get("prompt", 0) or token_usage[level].get("completion", 0)):
         stats = token_usage[level]
-        p = stats.get("prompt", 0)
-        c = stats.get("completion", 0)
-        if p == 0 and c == 0:
-            continue
-        parts.append(f"{level}-In:{p}|Out:{c}")
-    # Build ctx suffix
-    ctx_parts: list[str] = []
+        chosen = level
+    else:
+        for lvl in sorted(token_usage.keys(), key=lambda v: _ORDER.get(v, 99)):
+            s = token_usage[lvl]
+            if s.get("prompt", 0) or s.get("completion", 0):
+                stats = s
+                chosen = lvl
+                break
+    if stats is None:
+        # All tiers zero usage — fall back to ctx-only
+        if last_ctx_tokens > 0:
+            ctx_parts = [f"Ctx:{last_ctx_tokens}"]
+            limit = _format_context_limit(context_window)
+            if limit:
+                ctx_parts.append(limit)
+            return "/".join(ctx_parts)
+        return ""
+    p = stats.get("prompt", 0)
+    c = stats.get("completion", 0)
+    parts = [f"{chosen}|In:{p}/Out:{c}"]
     if last_ctx_tokens > 0:
-        ctx_parts.append(f"Ctx:{last_ctx_tokens}")
-    if context_window > 0:
+        ctx_parts = [f"Ctx:{last_ctx_tokens}"]
         limit = _format_context_limit(context_window)
         if limit:
             ctx_parts.append(limit)
-    ctx_suffix = "/".join(ctx_parts) if ctx_parts else ""
-    if not parts:
-        return ctx_suffix
-    # Join tier parts with ", ", then append ctx suffix with "/"
-    result = ", ".join(parts)
-    if ctx_suffix:
-        result = f"{result}/{ctx_suffix}"
-    return result
+        parts.append("/".join(ctx_parts))
+    return "|".join(parts)
 
 
 def build_postfix(
@@ -153,12 +161,12 @@ def build_postfix(
     When ``show_in_postfix`` is True and there is token usage data, the
     format is::
 
-        [smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:6100/1M]
+        [smart-router|L3|In:2102943/Out:8766|Ctx:84329/1M|v2.28.2]
 
     When tracking is disabled or no usage exists, falls back to the
     classic format::
 
-        [smart-router/L1]
+        [smart-router/L1|vX]
 
     Parameters
     ----------
@@ -171,7 +179,7 @@ def build_postfix(
         Rendered as a compact suffix (e.g. ``1M``, ``256K``).
     """
     if show_in_postfix:
-        token_part = render_postfix(token_usage, last_ctx_tokens, context_window)
+        token_part = render_postfix(token_usage, last_ctx_tokens, context_window, level=level)
         if token_part:
-            return f"[smart-router/{token_part}|{_version_tag()}]"
+            return f"[smart-router|{token_part}|{_version_tag()}]"
     return f"[smart-router/{level}|{_version_tag()}]"

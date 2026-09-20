@@ -83,7 +83,7 @@ def test_render_postfix_empty():
 
 def test_render_postfix_single_tier():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
-    assert render_postfix(usage) == "L1-In:3032|Out:1000"
+    assert render_postfix(usage) == "L1|In:3032/Out:1000"
 
 
 def test_render_postfix_multiple_tiers_sorted():
@@ -91,7 +91,7 @@ def test_render_postfix_multiple_tiers_sorted():
         "L2": {"prompt": 10021, "completion": 6054},
         "L1": {"prompt": 3032, "completion": 1000},
     }
-    assert render_postfix(usage) == "L1-In:3032|Out:1000, L2-In:10021|Out:6054"
+    assert render_postfix(usage) == "L1|In:3032/Out:1000"
 
 
 def test_render_postfix_skips_zero_usage():
@@ -99,7 +99,7 @@ def test_render_postfix_skips_zero_usage():
         "L1": {"prompt": 100, "completion": 50},
         "L2": {"prompt": 0, "completion": 0},
     }
-    assert render_postfix(usage) == "L1-In:100|Out:50"
+    assert render_postfix(usage) == "L1|In:100/Out:50"
 
 
 def test_render_postfix_all_zero():
@@ -113,7 +113,7 @@ def test_render_postfix_all_zero():
 
 def test_build_postfix_with_tokens():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
-    assert build_postfix("L1", usage) == f"[smart-router/L1-In:3032|Out:1000|v{APPLICATION_VERSION}]"
+    assert build_postfix("L1", usage) == f"[smart-router|L1|In:3032/Out:1000|v{APPLICATION_VERSION}]"
 
 
 def test_build_postfix_multi_tier():
@@ -122,7 +122,7 @@ def test_build_postfix_multi_tier():
         "L2": {"prompt": 10021, "completion": 6054},
     }
     result = build_postfix("L2", usage)
-    assert result == f"[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054|v{APPLICATION_VERSION}]"
+    assert result == f"[smart-router|L2|In:10021/Out:6054|v{APPLICATION_VERSION}]"
 
 
 def test_build_postfix_no_usage_falls_back():
@@ -163,7 +163,7 @@ def test_add_model_postfix_with_token_usage():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
     _add_model_postfix(body, "model/test", _route(), token_usage=usage)
     assert body["choices"][0]["message"]["content"] == (
-        f"Hello\n\n[smart-router/L1-In:3032|Out:1000|v{APPLICATION_VERSION}]"
+        f"Hello\n\n[smart-router|L1|In:3032/Out:1000|v{APPLICATION_VERSION}]"
     )
 
 
@@ -175,7 +175,7 @@ def test_add_model_postfix_multi_tier_usage():
     }
     _add_model_postfix(body, "model/test", _route(Level.L2), token_usage=usage)
     assert body["choices"][0]["message"]["content"] == (
-        f"Hello\n\n[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054|v{APPLICATION_VERSION}]"
+        f"Hello\n\n[smart-router|L2|In:10021/Out:6054|v{APPLICATION_VERSION}]"
     )
 
 
@@ -196,7 +196,7 @@ def test_add_model_postfix_null_content_with_tokens():
     body = {"choices": [{"message": {"role": "assistant", "content": None}}]}
     usage = {"L1": {"prompt": 100, "completion": 50}}
     _add_model_postfix(body, "model/test", _route(), token_usage=usage)
-    assert body["choices"][0]["message"]["content"] == f"[smart-router/L1-In:100|Out:50|v{APPLICATION_VERSION}]"
+    assert body["choices"][0]["message"]["content"] == f"[smart-router|L1|In:100/Out:50|v{APPLICATION_VERSION}]"
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +228,17 @@ def test_strip_model_postfix_removes_classic_format():
     messages = [
         {"role": "user", "content": "First question"},
         {"role": "assistant", "content": f"First answer\n\n[smart-router/L1|v{APPLICATION_VERSION}]"},
+        {"role": "user", "content": "Follow-up"},
+    ]
+    _strip_model_postfix_from_messages(messages)
+    assert messages[1]["content"] == "First answer"
+
+
+def test_strip_model_postfix_removes_new_format():
+    """New postfix format: [smart-router|L3|In:N/Out:N|Ctx:N/1M|vX]."""
+    messages = [
+        {"role": "user", "content": "First question"},
+        {"role": "assistant", "content": f"First answer\n\n[smart-router|L3|In:2102943/Out:8766|Ctx:84329/1M|v{APPLICATION_VERSION}]"},
         {"role": "user", "content": "Follow-up"},
     ]
     _strip_model_postfix_from_messages(messages)
@@ -327,7 +338,7 @@ def test_format_context_limit_zero():
 def test_render_postfix_with_ctx():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
     assert render_postfix(usage, last_ctx_tokens=6100, context_window=1_000_000) == (
-        "L1-In:3032|Out:1000/Ctx:6100/1M"
+        "L1|In:3032/Out:1000|Ctx:6100/1M"
     )
 
 
@@ -337,7 +348,7 @@ def test_render_postfix_multi_tier_with_ctx():
         "L2": {"prompt": 10021, "completion": 6054},
     }
     assert render_postfix(usage, last_ctx_tokens=17341, context_window=1_000_000) == (
-        "L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M"
+        "L1|In:3032/Out:1000|Ctx:17341/1M"
     )
 
 
@@ -347,12 +358,12 @@ def test_render_postfix_ctx_without_usage():
 
 def test_render_postfix_ctx_no_context_window():
     usage = {"L1": {"prompt": 100, "completion": 50}}
-    assert render_postfix(usage, last_ctx_tokens=200) == "L1-In:100|Out:50/Ctx:200"
+    assert render_postfix(usage, last_ctx_tokens=200) == "L1|In:100/Out:50|Ctx:200"
 
 
 def test_render_postfix_no_ctx_no_change():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
-    assert render_postfix(usage) == "L1-In:3032|Out:1000"
+    assert render_postfix(usage) == "L1|In:3032/Out:1000"
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +373,7 @@ def test_render_postfix_no_ctx_no_change():
 def test_build_postfix_with_ctx():
     usage = {"L1": {"prompt": 17341, "completion": 42}}
     result = build_postfix("L1", usage, last_ctx_tokens=6100, context_window=1_000_000)
-    assert result == f"[smart-router/L1-In:17341|Out:42/Ctx:6100/1M|v{APPLICATION_VERSION}]"
+    assert result == f"[smart-router|L1|In:17341/Out:42|Ctx:6100/1M|v{APPLICATION_VERSION}]"
 
 
 def test_build_postfix_multi_tier_with_ctx():
@@ -371,17 +382,17 @@ def test_build_postfix_multi_tier_with_ctx():
         "L2": {"prompt": 10021, "completion": 6054},
     }
     result = build_postfix("L2", usage, last_ctx_tokens=17341, context_window=1_000_000)
-    assert result == f"[smart-router/L1-In:3032|Out:1000, L2-In:10021|Out:6054/Ctx:17341/1M|v{APPLICATION_VERSION}]"
+    assert result == f"[smart-router|L2|In:10021/Out:6054|Ctx:17341/1M|v{APPLICATION_VERSION}]"
 
 
 def test_build_postfix_ctx_no_usage_falls_back():
     result = build_postfix("L1", None, last_ctx_tokens=500, context_window=1_000_000)
-    assert result == f"[smart-router/Ctx:500/1M|v{APPLICATION_VERSION}]"
+    assert result == f"[smart-router|Ctx:500/1M|v{APPLICATION_VERSION}]"
 
 
 def test_build_postfix_no_ctx_defaults_unchanged():
     usage = {"L1": {"prompt": 3032, "completion": 1000}}
-    assert build_postfix("L1", usage) == f"[smart-router/L1-In:3032|Out:1000|v{APPLICATION_VERSION}]"
+    assert build_postfix("L1", usage) == f"[smart-router|L1|In:3032/Out:1000|v{APPLICATION_VERSION}]"
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +407,7 @@ def test_add_model_postfix_with_ctx():
         token_usage=usage, last_ctx_tokens=6100, context_window=1_000_000,
     )
     assert body["choices"][0]["message"]["content"] == (
-        f"Hello\n\n[smart-router/L1-In:17341|Out:42/Ctx:6100/1M|v{APPLICATION_VERSION}]"
+        f"Hello\n\n[smart-router|L1|In:17341/Out:42|Ctx:6100/1M|v{APPLICATION_VERSION}]"
     )
 
 
@@ -407,7 +418,7 @@ def test_add_model_postfix_ctx_without_cumulative():
         token_usage=None, last_ctx_tokens=500, context_window=1_000_000,
     )
     assert body["choices"][0]["message"]["content"] == (
-        f"Hello\n\n[smart-router/Ctx:500/1M|v{APPLICATION_VERSION}]"
+        f"Hello\n\n[smart-router|Ctx:500/1M|v{APPLICATION_VERSION}]"
     )
 
 
