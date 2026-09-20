@@ -209,6 +209,41 @@ class FallbackExecutor:
                                     await asyncio.sleep(backoff)
                                     continue
                                 break
+                            # Detect null/empty choices — reasoning models with
+                            # small max_tokens can exhaust all tokens on internal
+                            # reasoning, returning choices=null. Treat as
+                            # retryable so the fallback chain moves to the next
+                            # model instead of returning a malformed response.
+                            _choices = (json_resp or {}).get("choices")
+                            if not _choices:
+                                last_error = (
+                                    f"upstream returned null/empty choices for "
+                                    f"{model} (likely reasoning model exhausted "
+                                    f"max_tokens)"
+                                )
+                                attempt_record["outcome"] = "retryable_status"
+                                attempt_record["error"] = last_error
+                                attempts.append(attempt_record)
+                                logger.warning(
+                                    "fallback_attempt_failed",
+                                    **attempt_record,
+                                    duration_ms=int((time.monotonic() - attempt_started) * 1000),
+                                )
+                                langfuse_tracing._safe_update(
+                                    gen, level="ERROR",
+                                    status_message=last_error[:500])
+                                if retry < max_retries:
+                                    router_provider_retries_total.labels(
+                                        model=model,
+                                        reason="null_choices").inc()
+                                    logger.info(
+                                        "provider_retry_scheduled",
+                                        model=model, retry=retry + 1,
+                                        backoff_seconds=backoff,
+                                    )
+                                    await asyncio.sleep(backoff)
+                                    continue
+                                break
                             attempt_record["outcome"] = "success"
                             attempt_record["fallback_used"] = i > 0
                             attempts.append(attempt_record)

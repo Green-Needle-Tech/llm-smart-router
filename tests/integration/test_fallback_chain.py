@@ -178,6 +178,34 @@ async def test_timeout_advances_to_fallback(executor, payload):
 
 
 @respx.mock
+async def test_null_choices_advances_to_fallback(executor, payload):
+    """Null choices (reasoning model exhausted max_tokens) advances the chain."""
+    null_choices_resp = {
+        "id": "chatcmpl-null",
+        "object": "chat.completion",
+        "model": PRIMARY,
+        "choices": None,
+        "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10},
+    }
+    respx.post(UPSTREAM).mock(
+        side_effect=[
+            httpx.Response(200, json=null_choices_resp),
+            httpx.Response(200, json=_completion(FALLBACK_1)),
+        ]
+    )
+
+    body, _raw, model_used, fallback_used, error = await executor.execute_with_fallback(
+        PRIMARY, [FALLBACK_1, FALLBACK_2], payload, {}
+    )
+
+    assert error is None
+    assert fallback_used is True
+    assert model_used == FALLBACK_1
+    assert body["choices"] is not None
+    assert body["choices"][0]["message"]["content"] == "ok"
+
+
+@respx.mock
 async def test_non_retryable_status_still_degrades(executor, payload):
     """A 400 is not in retry_on_status, but raise_for_status must not escape."""
     respx.post(UPSTREAM).mock(

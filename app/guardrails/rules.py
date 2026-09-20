@@ -262,23 +262,39 @@ def _scan_hex_payloads(text: str) -> list[tuple[str, str, int, int]]:
 
 
 def _scan_url_encoded_payloads(text: str) -> list[tuple[str, str, int, int]]:
-    """Detect URL-encoded payloads with %-escapes."""
+    """Detect URL-encoded payloads with %-escapes.
+
+    Only flags tokens where decoding reveals hidden special characters
+    (HTML tags, shell metacharacters, control characters, JSON braces) that
+    would bypass text-based injection scanners. Benign URL query parameters
+    that encode only spaces and common punctuation (%20, %3A) are skipped,
+    eliminating false-positive guardrail blocks on legitimate URLs in system
+    prompts, tool output, and user messages.
+    """
     if "%" not in text:
         return []
+    # Characters that are structurally significant in injection attacks and
+    # are hidden by URL-encoding. Their presence in decoded content indicates
+    # an actual obfuscated payload, not a benign URL query string.
+    _HIDDEN_INJECTION_CHARS = frozenset("<>|;{}\n\r\t`$\\")
     findings: list[tuple[str, str, int, int]] = []
     for m in re.finditer(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_+.-]){12,}", text):
         token = m.group(0)
         if token.count("%") < 2:
             continue
-        def _url_decode(t: str, _token: str = token) -> bytes:
-            return urllib.parse.unquote_plus(_token).encode("utf-8", errors="ignore")
         decoded_str = ""
         with contextlib.suppress(Exception):
             result = urllib.parse.unquote_plus(token)
             if result != token and any(ch.isalpha() for ch in result):
                 decoded_str = result[:60]
-        if decoded_str:
-            findings.append(("obfuscation-url-encoded", decoded_str, m.start(), m.end()))
+        if not decoded_str:
+            continue
+        # Only flag if decoded content contains structurally significant
+        # characters hidden by the encoding. Benign URL query strings
+        # (spaces, colons, etc.) do not qualify.
+        if not any(ch in _HIDDEN_INJECTION_CHARS for ch in decoded_str):
+            continue
+        findings.append(("obfuscation-url-encoded", decoded_str, m.start(), m.end()))
     return findings
 
 
