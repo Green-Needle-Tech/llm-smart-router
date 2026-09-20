@@ -1312,8 +1312,13 @@ def _strip_reasoning_disable(payload: dict, route, config) -> None:
     if route.model not in mandatory:
         return
     reasoning = payload.get("reasoning")
-    if isinstance(reasoning, dict) and reasoning.get("enabled") is False:
-        del payload["reasoning"]
+    if isinstance(reasoning, dict):
+        # A disable arrives in two wire shapes: ``{"enabled": false}`` (direct)
+        # and ``{"effort": "none"}`` (Hermes aux client translates enabled=false
+        # to effort:"none" on Responses-API routes). Both hard-400 on
+        # reasoning-mandatory models.
+        if reasoning.get("enabled") is False or reasoning.get("effort") == "none":
+            del payload["reasoning"]
 
 
 def _build_upstream_payload(body, route, session_id, config, provider) -> dict:

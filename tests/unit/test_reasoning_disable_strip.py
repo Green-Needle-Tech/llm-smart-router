@@ -68,6 +68,20 @@ def test_strip_noop_for_non_dict_reasoning():
     assert payload["reasoning"] == "low"
 
 
+def test_strip_removes_effort_none_for_mandatory_model():
+    # Hermes aux client translates enabled=false to effort:"none" on
+    # Responses-API routes — same deterministic z-ai 400.
+    payload = {"reasoning": {"effort": "none"}}
+    _strip_reasoning_disable(payload, _route(), _config())
+    assert "reasoning" not in payload
+
+
+def test_strip_keeps_real_effort_for_mandatory_model():
+    payload = {"reasoning": {"effort": "low"}}
+    _strip_reasoning_disable(payload, _route(), _config())
+    assert payload["reasoning"] == {"effort": "low"}
+
+
 def test_build_upstream_payload_strips_disable():
     body = ChatCompletionRequest.model_validate(
         {
