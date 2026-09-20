@@ -135,7 +135,7 @@ class ProviderConfig(BaseModel):
     # before forwarding upstream, so auxiliary calls (title generation etc.)
     # don't burn retries and fall back unnecessarily.
     reasoning_mandatory_models: list[str] = Field(
-        default_factory=lambda: ["z-ai/glm-5.3"]
+        default_factory=lambda: ["z-ai/glm-5.3", "z-ai/glm-5.3-flash"]
     )
     # --- Stall / hang detection (v2.19.0) -------------------------------
     # httpx's `timeout` is a PER-OPERATION read timeout whose clock resets on
