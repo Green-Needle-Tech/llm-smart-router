@@ -297,9 +297,20 @@ def _scan_url_encoded_payloads(text: str) -> list[tuple[str, str, int, int]]:
     if "%" not in text:
         return []
     # Characters that are structurally significant in injection attacks and
-    # are hidden by URL-encoding. Their presence in decoded content indicates
-    # an actual obfuscated payload, not a benign URL query string.
-    _HIDDEN_INJECTION_CHARS = frozenset("<>|;{}\n\r\t`$\\")
+    # are hidden by URL-encoding. Split into strong and weak signals:
+    # - Strong chars are always suspicious in URL-encoded content.
+    # - Angle brackets (<>) are weak: common in benign HTML/JSON-LD markup
+    #   scraped from web pages. They only flag when the decoded content also
+    #   contains an HTML injection pattern (<script, <img, </system, etc.)
+    #   or an injection-signal keyword (ignore, override, system, etc.).
+    _STRONG_INJECTION_CHARS = frozenset("|;{}\n\r\t`$\\")
+    _HTML_INJECTION_RE = re.compile(
+        r"</?(?:script|img|iframe|svg|body|object|embed|style|link|"
+        r"meta|details|marquee|system|instructions|prompt)\b"
+        r"|on(?:error|load|mouseover|focus|click)\s*="
+        r"|javascript:",
+        re.IGNORECASE,
+    )
     findings: list[tuple[str, str, int, int]] = []
     for m in re.finditer(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_+.-]){12,}", text):
         token = m.group(0)
@@ -312,12 +323,19 @@ def _scan_url_encoded_payloads(text: str) -> list[tuple[str, str, int, int]]:
                 decoded_str = result[:60]
         if not decoded_str:
             continue
-        # Only flag if decoded content contains structurally significant
-        # characters hidden by the encoding. Benign URL query strings
-        # (spaces, colons, etc.) do not qualify.
-        if not any(ch in _HIDDEN_INJECTION_CHARS for ch in decoded_str):
-            continue
-        findings.append(("obfuscation-url-encoded", decoded_str, m.start(), m.end()))
+        # Strong injection chars → flag immediately.
+        # Angle brackets alone → only flag with HTML injection pattern
+        # or injection-signal keyword in decoded content.
+        has_strong = any(ch in _STRONG_INJECTION_CHARS for ch in decoded_str)
+        has_angle = "<" in decoded_str or ">" in decoded_str
+        if has_strong:
+            findings.append(("obfuscation-url-encoded", decoded_str, m.start(), m.end()))
+        elif has_angle:
+            lower = decoded_str.lower()
+            if _HTML_INJECTION_RE.search(decoded_str) or any(
+                sig in lower for sig in _HEX_INJECTION_SIGNALS
+            ):
+                findings.append(("obfuscation-url-encoded", decoded_str, m.start(), m.end()))
     return findings
 
 

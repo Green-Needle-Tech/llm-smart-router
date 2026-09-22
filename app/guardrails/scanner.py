@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from app.guardrails.base import (
     SEV_ORDER,
+    ContextAwareInjectionValidator,
     EncodedUnicodeValidator,
     GuardrailFinding,
     RegexValidator,
@@ -57,6 +58,16 @@ def _build_default_registry() -> ValidatorRegistry:
             # Prevents false positives on scraped web content (JSON unicode
             # escapes from Agoda/booking sites, emoji surrogate pairs, etc.)
             registry.register(EncodedUnicodeValidator(
+                rule_id=rule_id, severity=severity, pattern=pattern,
+                direction="input",
+            ))
+        elif rule_id == "injection-ignore-previous":
+            # Use the context-aware validator that suppresses findings when
+            # the match appears in an educational/defensive context (e.g.
+            # "Ignore previous instructions is a classic example").
+            # Prevents false-positive blocks on security discussions and
+            # log-analysis requests that quote injection phrases.
+            registry.register(ContextAwareInjectionValidator(
                 rule_id=rule_id, severity=severity, pattern=pattern,
                 direction="input",
             ))

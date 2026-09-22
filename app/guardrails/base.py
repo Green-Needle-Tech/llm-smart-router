@@ -188,6 +188,68 @@ class EncodedUnicodeValidator(RegexValidator):
         return any(sig in lower for sig in _UNICODE_INJECTION_SIGNALS)
 
 
+class ContextAwareInjectionValidator(RegexValidator):
+    """RegexValidator with a benign-context guard for injection rules.
+
+    Extends RegexValidator with a post-match guard: after a regex match,
+    examines the surrounding text window for educational/defensive context
+    words. If the match appears in a sentence *about* prompt injection
+    (e.g. "Ignore previous instructions is a classic example"), the finding
+    is suppressed.
+
+    This prevents false-positive blocks on security-focused conversations,
+    documentation, and log-analysis requests that quote or reference
+    injection phrases without attempting them.
+
+    The guard checks a window of ±_CONTEXT_WINDOW characters around each
+    match for benign-context indicators. The window is deliberately small
+    so that a real injection buried at the end of a long educational
+    preamble is still caught.
+    """
+
+    _CONTEXT_WINDOW = 80
+
+    # Words/phrases that indicate the user is DISCUSSING injection, not
+    # performing it. Checked case-insensitively as substrings in the
+    # surrounding context window.
+    _BENIGN_CONTEXT_SIGNALS = frozenset(
+        w.lower() for w in (
+            "prevent", "example", "attack", "detect", "test", "discuss",
+            "security", "vulnerab", "how to", "what is", "explain",
+            "learn", "study", "research", "mitigat", "protect", "defend",
+            "guardrail", "false positive", "prompt injection", "classic",
+            "known as", "called", "such as", "like ", "including",
+            "pattern", "regex", "rule", "scan", "filter", "check",
+            "log", "block", "monitor", "measure", "safe",
+        )
+    )
+
+    def scan(self, text: str) -> list[GuardrailFinding]:
+        if not text:
+            return []
+        findings: list[GuardrailFinding] = []
+        for m in self.pattern.finditer(text):
+            if self._is_benign_context(text, m.start(), m.end()):
+                continue
+            findings.append(GuardrailFinding(
+                rule_id=self.rule_id,
+                severity=self.severity,
+                snippet=m.group(0)[:80],
+                start=m.start(),
+                end=m.end(),
+                direction=self.direction,
+                metadata={},
+            ))
+        return findings
+
+    def _is_benign_context(self, text: str, start: int, end: int) -> bool:
+        """Check if the match is surrounded by educational/defensive context."""
+        window_start = max(0, start - self._CONTEXT_WINDOW)
+        window_end = min(len(text), end + self._CONTEXT_WINDOW)
+        context = text[window_start:window_end].lower()
+        return any(sig in context for sig in self._BENIGN_CONTEXT_SIGNALS)
+
+
 class ValidatorRegistry:
     """Registry of composable validators.
 
