@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from app.guardrails.base import (
     SEV_ORDER,
+    EncodedUnicodeValidator,
     GuardrailFinding,
     RegexValidator,
     ValidatorRegistry,
@@ -50,10 +51,20 @@ def _build_default_registry() -> ValidatorRegistry:
 
     # Input: injection rules (24 patterns across 8 categories)
     for rule_id, severity, pattern in COMPILED_INJECTION:
-        registry.register(RegexValidator(
-            rule_id=rule_id, severity=severity, pattern=pattern,
-            direction="input",
-        ))
+        if rule_id == "encoded-unicode":
+            # Use the guarded validator that decodes \uXXXX runs and only
+            # flags when decoded content contains injection signals.
+            # Prevents false positives on scraped web content (JSON unicode
+            # escapes from Agoda/booking sites, emoji surrogate pairs, etc.)
+            registry.register(EncodedUnicodeValidator(
+                rule_id=rule_id, severity=severity, pattern=pattern,
+                direction="input",
+            ))
+        else:
+            registry.register(RegexValidator(
+                rule_id=rule_id, severity=severity, pattern=pattern,
+                direction="input",
+            ))
 
     # Output: secret rules (11 provider-prefixed credential patterns)
     for rule_id, pattern in SECRET_RULES:

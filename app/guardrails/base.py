@@ -19,6 +19,7 @@ masking, and future UI highlighting.
 """
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass, field
 
@@ -129,6 +130,62 @@ class RegexValidator(BaseValidator):
 
     def mask_value(self) -> str:
         return self._mask_str
+
+
+# Injection-signal keywords for decoded-unicode content relevance check.
+# Mirrors the obfuscation-scanner guard pattern: decode succeeded is necessary
+# but NOT sufficient — decoded content must look like an attack.
+_UNICODE_INJECTION_SIGNALS = frozenset(
+    w.lower() for w in (
+        "ignore", "override", "bypass", "system", "pretend", "admin",
+        "instruction", "jailbreak", "prompt", "ignore previous",
+        "you are", "act as", "new role", "developer mode", "dan",
+    )
+)
+
+
+class EncodedUnicodeValidator(RegexValidator):
+    """Validator for the encoded-unicode injection rule with benign-content guard.
+
+    Extends RegexValidator with a post-match guard: matched \\uXXXX sequences
+    are decoded and only flagged if the decoded content contains injection
+    signals. This prevents false positives on scraped web content containing
+    JSON unicode escapes (HTML entities, emoji surrogate pairs, Vietnamese
+    diacritics from Agoda/booking sites, etc.).
+
+    Follows the same guard pattern as the obfuscation scanners
+    (_scan_hex_payloads, _scan_url_encoded_payloads): decode-succeeded is
+    necessary but NOT sufficient — decoded content must look like an attack.
+    """
+
+    def scan(self, text: str) -> list[GuardrailFinding]:
+        if not text:
+            return []
+        findings = []
+        for m in self.pattern.finditer(text):
+            matched = m.group(0)
+            # Decode the \uXXXX sequences to check content relevance
+            decoded = ""
+            with contextlib.suppress(Exception):
+                decoded = matched.encode("utf-8").decode("unicode_escape")
+            # Only flag if decoded content contains injection signals
+            if decoded and self._contains_injection_signal(decoded):
+                findings.append(GuardrailFinding(
+                    rule_id=self.rule_id,
+                    severity=self.severity,
+                    snippet=matched[:80],
+                    start=m.start(),
+                    end=m.end(),
+                    direction=self.direction,
+                    metadata={"decoded_preview": decoded[:60]},
+                ))
+        return findings
+
+    @staticmethod
+    def _contains_injection_signal(decoded: str) -> bool:
+        """Check if decoded content contains injection-related keywords."""
+        lower = decoded.lower()
+        return any(sig in lower for sig in _UNICODE_INJECTION_SIGNALS)
 
 
 class ValidatorRegistry:
