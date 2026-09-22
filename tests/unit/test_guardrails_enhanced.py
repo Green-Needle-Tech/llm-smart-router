@@ -126,6 +126,25 @@ class TestObfuscationScanning:
                 f[0] == "obfuscation-hex" for f in findings
             ), f"false positive on {token}"
 
+    def test_scan_hex_benign_readable_text_not_flagged(self):
+        """Benign hex-encoded readable text is NOT flagged as obfuscation.
+
+        Regression test (2026-09-22): hex tokens that decode to ordinary
+        readable ASCII (Trip.com/Agoda page snapshot tracking tokens,
+        hex-encoded JSON payloads, session IDs) were false-positive blocked
+        by _scan_hex_payloads because it only checked "decodes to readable
+        text" without an injection-signal guard. The guard now requires the
+        decoded content to contain attack keywords, matching the url-encoded
+        and encoded-unicode scanners.
+        """
+        # hex of "the quick brown fox jumps" — readable but benign
+        benign = "74686520717569636b2062726f776e20666f78206a756d7073"
+        text = f"Tracking token: {benign}"
+        findings = scan_obfuscated_payloads(text)
+        assert not any(
+            f[0] == "obfuscation-hex" for f in findings
+        ), f"false positive on benign readable hex: {benign}"
+
     def test_scan_obfuscated_url_encoded_payload(self):
         """URL encoded string with hidden special chars is detected and decoded."""
         raw_payload = "%3Cscript%3Ealert%281%29%3C%2Fscript%3E"

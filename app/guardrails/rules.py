@@ -13,6 +13,21 @@ import contextlib
 import re
 import urllib.parse
 
+# Injection-signal keywords for decoded-content relevance check.
+# Mirrors _UNICODE_INJECTION_SIGNALS in base.py: decode-succeeded is necessary
+# but NOT sufficient — decoded content must look like an actual injection attack,
+# not merely readable text. Shared by _scan_hex_payloads so that benign
+# hex-encoded content (tracking tokens, session IDs, hex-encoded JSON data in
+# scraped web pages like Trip.com/Agoda snapshots) is not false-positive blocked.
+_HEX_INJECTION_SIGNALS = frozenset(
+    w.lower() for w in (
+        "ignore", "override", "bypass", "system", "pretend", "admin",
+        "instruction", "jailbreak", "prompt", "ignore previous",
+        "you are", "act as", "new role", "developer mode", "dan",
+        "execute", "command", "rm -rf", "script", "eval",
+    )
+)
+
 INJECTION_RULES = [
     # --- 1. Direct instruction override ---
     ("injection-ignore-previous", "CRITICAL",
@@ -256,6 +271,14 @@ def _scan_hex_payloads(text: str) -> list[tuple[str, str, int, int]]:
             continue
         decoded = raw.decode("utf-8", errors="ignore")
         if not any(c.isalpha() for c in decoded):
+            continue
+        # Benign-content guard (matches the url-encoded / encoded-unicode
+        # scanners): decoded content must contain an injection signal, not
+        # merely be readable text. Without this, hex tokens that decode to
+        # ordinary readable ASCII (tracking IDs, hex-encoded JSON payloads,
+        # Trip.com/Agoda page snapshot tokens) get false-positive blocked.
+        lower = decoded.lower()
+        if not any(sig in lower for sig in _HEX_INJECTION_SIGNALS):
             continue
         findings.append(("obfuscation-hex", decoded[:60], m.start(), m.end()))
     return findings
