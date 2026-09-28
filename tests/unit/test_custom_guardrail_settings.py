@@ -169,3 +169,212 @@ def test_conversation_scope_budget_preserves_last_user():
     out = build_payload_text(non_system, 8000)
     assert "Generate html" in out
     assert len(out) <= 8000 + len("\n...[truncated]")
+
+
+# --- short follow-up bypass (v2.30.0) ---------------------------------------
+
+
+def test_short_followup_bypass_defaults():
+    s = CustomGuardrailSettings()
+    assert s.skip_short_followups is True
+    assert s.short_followup_max_chars == 120
+
+
+def test_is_short_followup_true_for_confirmation_with_history():
+    from app.guardrails.custom import is_short_followup
+
+    messages = [
+        {"role": "system", "content": "s" * 500},
+        {"role": "user", "content": "What is last week's revenue?"},
+        {"role": "assistant", "content": "It was $12,300."},
+        {"role": "user", "content": "yes"},
+    ]
+    assert is_short_followup(messages, 120)
+
+
+def test_is_short_followup_true_for_short_instruction():
+    from app.guardrails.custom import is_short_followup
+
+    messages = [
+        {"role": "user", "content": "Summarize the sales report"},
+        {"role": "assistant", "content": "Sales were up 5%."},
+        {"role": "user", "content": "make it darker"},
+    ]
+    assert is_short_followup(messages, 120)
+
+
+def test_is_short_followup_true_for_content_blocks():
+    from app.guardrails.custom import is_short_followup
+
+    messages = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": [{"type": "text", "text": "go ahead"}]},
+    ]
+    assert is_short_followup(messages, 120)
+
+
+def test_is_short_followup_false_for_first_turn():
+    from app.guardrails.custom import is_short_followup
+
+    # System-only prefix does not count as history: the first user turn is always evaluated.
+    messages = [
+        {"role": "system", "content": "s" * 500},
+        {"role": "user", "content": "hi"},
+    ]
+    assert not is_short_followup(messages, 120)
+
+
+def test_is_short_followup_false_for_long_followup():
+    from app.guardrails.custom import is_short_followup
+
+    messages = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "x" * 121},
+    ]
+    assert not is_short_followup(messages, 120)
+    assert is_short_followup(messages, 200)
+
+
+def test_is_short_followup_false_for_empty_last_user():
+    from app.guardrails.custom import is_short_followup
+
+    messages = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "   "},
+    ]
+    assert not is_short_followup(messages, 120)
+
+
+def test_is_short_followup_false_without_user_message():
+    from app.guardrails.custom import is_short_followup
+
+    assert not is_short_followup([{"role": "assistant", "content": "x"}], 120)
+    assert not is_short_followup([], 120)
+
+
+def _hook_config(settings):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        telemetry=SimpleNamespace(guardrails=SimpleNamespace(custom=settings))
+    )
+
+
+def _hook_body(messages):
+    from app.schemas.openai import ChatCompletionRequest
+
+    return ChatCompletionRequest.model_validate(
+        {"model": "smart-router/L1", "messages": messages}
+    )
+
+
+def test_hook_skips_short_followup(monkeypatch):
+    import asyncio
+    from app.api import chat as chat_mod
+
+    class ExplodingEngine:
+        def __init__(self, settings):
+            raise AssertionError("decision model must not be called for short follow-ups")
+
+    monkeypatch.setattr(chat_mod, "CustomGuardrailEngine", ExplodingEngine)
+    messages = [
+        {"role": "user", "content": "What is last week's revenue?"},
+        {"role": "assistant", "content": "It was $12,300."},
+        {"role": "user", "content": "yes"},
+    ]
+    result = asyncio.run(
+        chat_mod._custom_guardrail_check_input(
+            None, _hook_body(messages), _hook_config(CustomGuardrailSettings(enabled=True))
+        )
+    )
+    assert result is None
+
+
+def test_hook_evaluates_first_turn_short_message(monkeypatch):
+    import asyncio
+    from app.api import chat as chat_mod
+
+    calls = []
+
+    class FakeEngine:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def evaluate(self, payload_text):
+            calls.append(payload_text)
+            return CustomGuardrailDecision(decision="yes")
+
+    monkeypatch.setattr(chat_mod, "CustomGuardrailEngine", FakeEngine)
+    messages = [
+        {"role": "system", "content": "s" * 500},
+        {"role": "user", "content": "hi"},
+    ]
+    result = asyncio.run(
+        chat_mod._custom_guardrail_check_input(
+            None, _hook_body(messages), _hook_config(CustomGuardrailSettings(enabled=True))
+        )
+    )
+    assert result is None
+    assert len(calls) == 1 and "hi" in calls[0]
+
+
+def test_hook_evaluates_followup_when_bypass_disabled(monkeypatch):
+    import asyncio
+    from app.api import chat as chat_mod
+
+    calls = []
+
+    class FakeEngine:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def evaluate(self, payload_text):
+            calls.append(payload_text)
+            return CustomGuardrailDecision(decision="yes")
+
+    monkeypatch.setattr(chat_mod, "CustomGuardrailEngine", FakeEngine)
+    messages = [
+        {"role": "user", "content": "What is last week's revenue?"},
+        {"role": "assistant", "content": "It was $12,300."},
+        {"role": "user", "content": "yes"},
+    ]
+    settings = CustomGuardrailSettings(enabled=True, skip_short_followups=False)
+    result = asyncio.run(
+        chat_mod._custom_guardrail_check_input(
+            None, _hook_body(messages), _hook_config(settings)
+        )
+    )
+    assert result is None
+    assert len(calls) == 1
+
+
+def test_hook_evaluates_long_followup(monkeypatch):
+    import asyncio
+    from app.api import chat as chat_mod
+
+    calls = []
+
+    class FakeEngine:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def evaluate(self, payload_text):
+            calls.append(payload_text)
+            return CustomGuardrailDecision(decision="yes")
+
+    monkeypatch.setattr(chat_mod, "CustomGuardrailEngine", FakeEngine)
+    messages = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "Also, while you are at it, please analyse the " + "x" * 150},
+    ]
+    result = asyncio.run(
+        chat_mod._custom_guardrail_check_input(
+            None, _hook_body(messages), _hook_config(CustomGuardrailSettings(enabled=True))
+        )
+    )
+    assert result is None
+    assert len(calls) == 1

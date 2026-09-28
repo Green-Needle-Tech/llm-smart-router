@@ -405,7 +405,7 @@ LANGFUSE_HOST=https://cloud.langfuse.com   # or self-hosted URL
 
 See the [full specification](./llm-smart-router-spec.md) for complete details.
 
-### Custom Guardrail — opt-in TypeSafe question check, input only (v2.25.0)
+### Custom Guardrail — opt-in TypeSafe question check, input only (v2.25.0; short follow-up bypass v2.30.0)
 
 An optional, user-configurable guardrail under `telemetry.guardrails.custom` — **disabled by default** (a single global `enabled` toggle), evaluated on the **request (input) path only**. It asks a TypeSafe question against the payload — **the entire question is defined in settings, no code changes needed**:
 
@@ -430,13 +430,17 @@ An optional, user-configurable guardrail under `telemetry.guardrails.custom` —
   "prompt": "Does the payload comply with the deployment's safety policy and may it proceed to the LLM?",
   "criteria": {"true": "...", "false": "..."},   // optional; shape depends on question_type
   "rejection_message": "..."   // optional client-facing message; supports "{reason}"
+  "payload_scope": "all",      // "all" | "last_user" | "conversation" (§ below)
+  "skip_short_followups": true,     // v2.30.0: short follow-ups skip the decision call
+  "short_followup_max_chars": 120   // v2.30.0: "short" threshold for the bypass
 }
 ```
 
 - **Fully settings-driven question**: `question_type` picks the TypeSafe primitive — `noul` (probability-of-yes, `{true, false}` criteria), `choice` (options map; P(yes) = the `yes` option's probability), or `score` (ordered levels list; P(yes) = score / (levels − 1)). `question_id` is your routing key in the request/response map. The `prompt` string (or a `prompt_file` on disk) becomes the question `instructions`; best practice is a clear yes/no phrasing where high probability = yes, with `criteria` kept aligned to the prompt. `rejection_message` customizes the client-facing rejection text (`{reason}` placeholder; empty = built-in default). Edit settings + `POST /admin/settings/reload` to apply — no restart, no rebuild.
 - **Strict output validation**: the probability is range-checked ([0,1]) and thresholded into a Pydantic `Literal["yes", "no"]` — anything unparseable follows `on_error` (default fail-open), so a misbehaving decision model can never break routing.
 - **Input only**: the check runs in `_preprocess_request`, after the standard injection guardrails and before IP redaction. Responses are never evaluated.
-- **Metrics**: `router_custom_guardrail_evals_total{decision,source}`, `router_custom_guardrail_blocks_total`.
+- **Short follow-up bypass (v2.30.0)**: confirmations and short instructions ("yes", "go ahead", "make it darker") inherit their topic from the conversation and carry no signal of their own — a scope guardrail judging them in isolation wrongly rejects them. When `skip_short_followups` is `true` (default) and the request has prior non-system conversation history, a last user message of at most `short_followup_max_chars` chars (default 120) skips the decision call entirely and proceeds to routing. The **first turn of a conversation is always evaluated** — a short first message ("hi") has no history to inherit and still goes through the guardrail. Skips are counted in `router_custom_guardrail_skipped_total{reason="short_followup"}`.
+- **Metrics**: `router_custom_guardrail_evals_total{decision,source}`, `router_custom_guardrail_blocks_total`, `router_custom_guardrail_skipped_total{reason}`.
 
 #### Worked example — topic-scope guardrail (live-tested)
 

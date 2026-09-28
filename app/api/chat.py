@@ -16,6 +16,7 @@ from app.guardrails.custom import (
     CustomGuardrailEngine,
     CustomGuardrailSettings,
     build_payload_text,
+    is_short_followup,
 )
 from app.guardrails.rules import strip_invisible_text
 from app.guardrails.scanner import GuardrailConfig, GuardrailEngine
@@ -45,6 +46,7 @@ from app.telemetry.metrics import (
     router_cost_usd_total,
     router_custom_guardrail_blocks_total,
     router_custom_guardrail_evals_total,
+    router_custom_guardrail_skipped_total,
     router_escalation_signals_total,
     router_escalation_turn,
     router_escalations_total,
@@ -282,9 +284,17 @@ async def _custom_guardrail_check_input(request, body, config) -> JSONResponse |
     settings = _custom_guardrail_settings(config)
     if settings is None or not settings.is_enabled():
         return None
-    if not settings.is_enabled():
-        return None
     messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
+    # Short follow-up bypass (v2.30.0): confirmations and short instructions
+    # ("yes", "go ahead", "make it darker") carry no topic signal of their own
+    # and were wrongly rejected by topic-scope guardrails. When prior
+    # non-system conversation history exists, skip the decision call entirely.
+    if (
+        settings.skip_short_followups
+        and is_short_followup(messages, settings.short_followup_max_chars)
+    ):
+        router_custom_guardrail_skipped_total.labels(reason="short_followup").inc()
+        return None
     if settings.payload_scope == "last_user":
         user_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "user"]
         if user_msgs:

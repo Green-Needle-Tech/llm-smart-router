@@ -236,6 +236,12 @@ router_custom_guardrail_blocks_total = Counter(
     "Requests rejected by the custom guardrail",
 )
 
+router_custom_guardrail_skipped_total = Counter(
+    "router_custom_guardrail_skipped_total",
+    "Requests that skipped the custom guardrail evaluation (reason, e.g. short_followup)",
+    ["reason"],
+)
+
 # Info
 router_info = Info(
     "router",

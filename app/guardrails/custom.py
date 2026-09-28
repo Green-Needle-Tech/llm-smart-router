@@ -127,6 +127,15 @@ class CustomGuardrailSettings(BaseModel):
     # Optional prompt file on disk; when set and readable it overrides
     # `prompt`. Edit the file + POST /admin/settings/reload to apply.
     prompt_file: str | None = None
+    # Short follow-up bypass (v2.30.0): confirmations and short instructions
+    # ("yes", "go ahead", "make it darker") carry no topic signal of their own
+    # and were wrongly rejected by topic-scope guardrails (documented weakness
+    # of payload_scope "last_user"). When a conversation already has non-system
+    # history, short follow-ups skip the decision call entirely. The FIRST
+    # turn of a conversation is always evaluated.
+    skip_short_followups: bool = True
+    # Max length (chars) of the last user message for the follow-up bypass.
+    short_followup_max_chars: int = 120
 
     def is_enabled(self) -> bool:
         """Single global opt-in toggle."""
@@ -209,6 +218,50 @@ def build_payload_text(messages: list, max_chars: int = 8000) -> str:
         if len(text) > max_chars:
             text = text[:max_chars] + "\n...[truncated]"
     return text
+
+
+def _message_text(message: dict) -> str:
+    """Extract the text of a single message (str or content-block list)."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block["text"] for block in content
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def is_short_followup(messages: list, max_chars: int = 120) -> bool:
+    """True when the last user message is a SHORT FOLLOW-UP turn.
+
+    Conditions (all must hold):
+    - there is at least one user message;
+    - non-system conversation history (user or assistant) exists BEFORE the
+      last user message — i.e. this is not the first turn of the chat;
+    - the last user message's text is non-empty and at most `max_chars` chars.
+
+    Confirmations ("yes", "go ahead", "continue") and short instructions
+    ("make it darker", "generate html") match: they inherit their topic from
+    the conversation and carry no signal of their own, so a scope guardrail
+    cannot judge them — skipping the decision call is the safe behavior.
+    The first turn is always evaluated (no history -> False).
+    """
+    last_user_idx: int | None = None
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            last_user_idx = i
+    if last_user_idx is None:
+        return False
+    has_history = any(
+        isinstance(m, dict) and m.get("role") not in (None, "system")
+        for m in messages[:last_user_idx]
+    )
+    if not has_history:
+        return False
+    text = _message_text(messages[last_user_idx]).strip()
+    return 0 < len(text) <= max_chars
 
 
 class CustomGuardrailEngine:
@@ -413,4 +466,5 @@ __all__ = [
     "CustomGuardrailEngine",
     "CustomGuardrailSettings",
     "build_payload_text",
+    "is_short_followup",
 ]

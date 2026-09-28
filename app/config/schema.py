@@ -64,6 +64,10 @@ class CustomGuardrailSchema(BaseModel):
     # Custom client-facing rejection message; supports "{reason}". Empty -> default.
     rejection_message: str = ""
     prompt_file: str | None = None
+    # Short follow-up bypass (v2.30.0): short follow-up turns (confirmations,
+    # short instructions) with prior non-system history skip the decision call.
+    skip_short_followups: bool = True
+    short_followup_max_chars: int = 120
 
 
 class GuardrailsConfig(BaseModel):
