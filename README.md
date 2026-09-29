@@ -336,6 +336,8 @@ flowchart TD
 
     C -->|"🔒 Secrets masked (11 provider types)<br/>🔒 PII masked<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>🔒 Malicious URLs masked<br/>🔒 System prompt leaks masked<br/>🔒 IPs re-hydrated<br/>📊 Token tracking accumulated<br/>📋 Postfix [smart-router/Ln-In:…|Out:…/Ctx:…/1M]<br/>suppressed on tool-call turns<br/>📊 Refusal logged"| B
     B --> A
+
+    C -.->|"📊 Langfuse tracing (optional, SDK v4 / OTEL)<br/>one trace per request → spans + generations<br/>session_id · tags level:Lx · usage_details<br/>no-op when keys unset or unreachable"| LF["📈 Langfuse<br/>cloud.langfuse.com or self-hosted<br/>LLM observability & cost analytics"]
 ```
 
 Turn 2+ skips the classifier: the session pin routes straight to the tier model, with `on_config_change: keep_level` re-resolving the model after settings changes.
@@ -366,6 +368,7 @@ flowchart TD
     T --> R["propagate_attributes<br/>session_id · tags level:Lx · route metadata"]
     R --> GEN1["GENERATION — openrouter-&lt;model&gt;<br/>one per fallback attempt<br/>usage: input/output tokens<br/>ERROR + statusMessage on failure"]
     GEN1 -->|fallback| GEN2["GENERATION — openrouter-&lt;next-model&gt;<br/>…chain visible step by step"]
+    GEN2 -.->|"flush on shutdown<br/>(try/except, no-op if unreachable)"| LF["📈 Langfuse<br/>trace + observations delivered<br/>cloud or self-hosted"]
 ```
 
 Semantics:

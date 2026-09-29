@@ -41,6 +41,7 @@ Classification is **session-scoped, not request-scoped**. The **first** prompt o
 flowchart TD
     A[AI Agent] -->|"OpenAI-format request + X-Session-Id"| B["LLM-Smart-Router<br/>Docker :8080"]
     B -->|"OpenAI-format response<br/>+ X-Router-* headers"| A
+    B -.->|"📊 trace (optional, SDK v4 / OTEL)<br/>one trace per request<br/>spans: guardrails · classify · generations"| LF["LANGFUSE<br/>cloud.langfuse.com or self-hosted<br/>LLM observability & cost analytics<br/>no-op when keys unset"]
     B --> G["GUARDRAIL INPUT SCAN<br/>injection detection → block/log<br/>+ PII & secret masking<br/>email/phone/SSN/CC/IBAN/passport/DL<br/>+ 11 provider credential types"]
     G --> CG{"CUSTOM GUARDRAIL<br/>(opt-in, disabled by default,<br/>input only)"}
     CG -->|"enabled: TypeSafe Noul question<br/>P(comply) >= 0.5 → pass<br/>P(comply) < 0.5 → HTTP 400 reject"| P["IP REDACTION<br/>raw IPs → placeholders"]
@@ -110,11 +111,13 @@ The practical effect: a 40-turn agent session costs **one** classifier call, not
 | **Provider Adapter** | OpenAI-compatible HTTP client: request translation, streaming pass-through, retries, error normalization. Supports per-tier `base_url` and `api_key` overrides (§9.5). |
 | **Config Manager** | Loads and validates `settings.json`, watches for changes, exposes hot reload. |
 | **Telemetry** | Structured JSON logs, Prometheus metrics, per-request cost accounting. |
+| **Tracing** (optional) | Langfuse SDK v4 (OpenTelemetry-based) — one trace per `/v1/chat/completions` request. Disabled by default (env vars only); degrades to no-op when keys unset or endpoint unreachable. See §8.4. |
 
 ### 2.2 Request lifecycle
 
 ```mermaid
 flowchart TD
+    R0["0. LANGFUSE TRACE (optional)<br/>LangfuseTraceMiddleware wraps ASGI call<br/>root span 'chat-completions'"] --> R1[1. RECEIVE<br/>POST /v1/chat/completions]
     R1[1. RECEIVE<br/>POST /v1/chat/completions] --> R2[2. AUTHENTICATE<br/>Bearer token check]
     R2 --> R2G[2b. GUARDRAIL INPUT SCAN<br/>injection/jailbreak detection<br/>block → HTTP 400]
     R2G --> R2CG{"2b-2. CUSTOM GUARDRAIL<br/>(opt-in, disabled by default, input only)<br/>TypeSafe Noul: P(comply) on payload<br/>&lt; 0.5 threshold → HTTP 400 reject"}
@@ -140,6 +143,8 @@ flowchart TD
     R10G --> R10F["10d. POSTFIX<br/>append &#91;smart-router/Ln&#93; marker"]
     R10F --> R11["11. RESPOND<br/>Stream or JSON + X-Router-* headers"]
     R11 --> R12[12. RECORD<br/>Log route, session, latency, usage, cost<br/>prompt-cache metrics]
+    R12 -.-> R0
+    R0 -.->|"flush trace (OTEL / SDK v4)<br/>no-op when keys unset"| LF["Langfuse<br/>cloud or self-hosted"]
 ```
 
 Steps 2b–2c (guardrail input scan, IP redaction) run on **every** request, before session resolution, so detection sees the original text. Steps 5–8 execute **once per session**. Steps 10b–10d (IP re-hydration, guardrail output masking, postfix) run on the response before it is returned to the client; in streaming mode they operate per-SSE-chunk through a carry buffer that holds back partial-token tails. On a session hit the entire router overhead is a store lookup plus a config dictionary read — the guardrail and privacy middleware add < 1 ms combined.
@@ -157,6 +162,7 @@ Steps 2b–2c (guardrail input scan, IP redaction) run on **every** request, bef
 > ⚠️ **Worker/session consistency.** An in-memory session store is per-process. With `WORKERS > 1`, turn 1 and turn 2 of the same session can land on different workers, causing a redundant classification and possibly a different pinned model. Therefore: **`memory` backend forces `WORKERS=1`** (enforced at startup with a fatal config error), and `WORKERS > 1` requires `CACHE_BACKEND=redis`. One worker comfortably handles the target load since the router is I/O-bound.
 | Metrics | `prometheus-client` | Scrapeable `/metrics`. |
 | Logging | `structlog` → JSON to stdout | Container-native. |
+| Tracing (optional) | `langfuse` SDK v4 (OpenTelemetry) | One trace per request; env-var enabled, no-op when unconfigured (§8.4). |
 | Container | Multi-stage Dockerfile on `python:3.12-slim` | Small image, non-root user. |
 | Orchestration | Docker Compose | Single-host deployment; router + optional Redis. |
 | Tests | pytest, pytest-asyncio, respx | Mock OpenRouter at the HTTP layer. |
@@ -1489,6 +1495,7 @@ sequenceDiagram
     participant MW as LangfuseTraceMiddleware (ASGI)
     participant R as Request pipeline
     participant U as Upstream (OpenRouter)
+    participant L as Langfuse (cloud / self-hosted)
 
     C->>MW: POST /v1/chat/completions
     MW->>MW: start root span "chat-completions" (with block)
@@ -1504,6 +1511,8 @@ sequenceDiagram
     R-->>MW: response (stream chunks until more_body falsy)
     MW->>MW: end root span (output: status + excerpt; ERROR on exception)
     MW-->>C: response
+    MW->>L: flush() — deliver trace + observations (batched, async)
+    Note over MW,L: no-op when keys unset / package missing / unreachable
 ```
 
 Observation semantics:
