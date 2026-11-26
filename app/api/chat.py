@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 import uuid
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -35,7 +37,11 @@ from app.schemas.router import (
     SessionPin,
     SessionStatus,
 )
-from app.session.lifecycle import check_expiry, check_turn_cap
+from app.session.lifecycle import (
+    check_expiry,
+    check_turn_cap,
+    should_reclassify_on_turn,
+)
 from app.session.locks import acquire_or_wait
 from app.session.resolver import _get_api_key_identity, resolve_session_id
 from app.telemetry import langfuse_tracing
@@ -277,6 +283,23 @@ def _custom_guardrail_rejection(reason: str, settings: CustomGuardrailSettings |
     )
 
 
+def _shallow_message_dicts(messages) -> list[dict[str, Any]]:
+    """Build lightweight {role, content} dicts without full Pydantic model_dump."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if isinstance(m, dict):
+            content = m.get("content")
+            if isinstance(content, list):
+                content = [dict(b) if isinstance(b, dict) else b for b in content]
+            out.append({"role": m.get("role"), "content": content})
+        else:
+            content = m.content
+            if isinstance(content, list):
+                content = [dict(b) if isinstance(b, dict) else b for b in content]
+            out.append({"role": m.role, "content": content})
+    return out
+
+
 async def _custom_guardrail_check_input(request, body, config) -> JSONResponse | None:
     """Opt-in custom guardrail (input only): evaluate the request payload with
     a TypeSafe Noul probability-of-yes call, thresholded into a binary
@@ -284,7 +307,7 @@ async def _custom_guardrail_check_input(request, body, config) -> JSONResponse |
     settings = _custom_guardrail_settings(config)
     if settings is None or not settings.is_enabled():
         return None
-    messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
+    messages = _shallow_message_dicts(body.messages)
     # Short follow-up bypass (v2.30.0): confirmations and short instructions
     # ("yes", "go ahead", "make it darker") carry no topic signal of their own
     # and were wrongly rejected by topic-scope guardrails. When prior
@@ -307,7 +330,13 @@ async def _custom_guardrail_check_input(request, body, config) -> JSONResponse |
     payload_text = build_payload_text(messages, settings.max_payload_chars)
     if not payload_text:
         return None
-    engine = CustomGuardrailEngine(settings)
+    app_state = getattr(getattr(request, "app", None), "state", None)
+    shared_http = getattr(app_state, "custom_guardrail_http", None) if app_state is not None else None
+    engine = (
+        CustomGuardrailEngine(settings, http_client=shared_http)
+        if shared_http is not None
+        else CustomGuardrailEngine(settings)
+    )
     decision = await engine.evaluate(payload_text)
     router_custom_guardrail_evals_total.labels(
         decision=decision.decision, source=decision.source,
@@ -332,24 +361,29 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
     if preproc_error is not None:
         return preproc_error
 
-    redaction_key = await _redact_incoming(request, body)
+    # Resolve session once BEFORE IP redaction & temporal normalization mutate messages,
+    # guaranteeing identical session keys for IP redaction/rehydration and fingerprint fallback.
+    resolved_session = _resolve_session(request, body, config) if config.session.enabled else None
+    resolved_sid = resolved_session[0] if resolved_session else None
+
+    redaction_key = await _redact_incoming(request, body, session_id=resolved_sid)
     _process_temporal_awareness(request, body)
 
-    # Langfuse: set an explicit, sanitized trace input (not raw function
-    # args). Messages are post-redaction/post-PII-masking at this point.
-    langfuse_tracing.note_trace_input({
-        "model_directive": body.model,
-        "stream": bool(body.stream),
-        "messages": [
-            {
-                "role": getattr(m, "role", None),
-                "content": langfuse_tracing._truncate(
-                    m.content if isinstance(getattr(m, "content", None), str) else "[non-text content]"
-                ),
-            }
-            for m in body.messages[-12:]
-        ],
-    })
+    # Langfuse: set an explicit, sanitized trace input only when tracing is enabled.
+    if langfuse_tracing.enabled():
+        langfuse_tracing.note_trace_input({
+            "model_directive": body.model,
+            "stream": bool(body.stream),
+            "messages": [
+                {
+                    "role": getattr(m, "role", None),
+                    "content": langfuse_tracing._truncate(
+                        m.content if isinstance(getattr(m, "content", None), str) else "[non-text content]"
+                    ),
+                }
+                for m in body.messages[-12:]
+            ],
+        })
 
     routing_engine = request.app.state.routing_engine
     directive = routing_engine.parse_model_directive(body.model)
@@ -392,6 +426,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         return await _stateless_classify_and_forward(
             request, body, config, routing_engine, opts["task_text"],
             max_level, min_level, forced_model, opts["bypass_cache"],
+            redaction_key=redaction_key,
         )
     if mode == "level":
         forced_level = directive["level"]
@@ -402,11 +437,34 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         opts["reclassify"], opts["repin"], opts["task_text"],
         opts["bypass_cache"], opts["include_metadata"], start,
         redaction_key=redaction_key,
+        resolved_session=resolved_session,
+    )
+
+
+def _guardrail_cfg_key(cfg) -> tuple:
+    """Hashable snapshot key for detecting live guardrail config changes."""
+    return (
+        cfg.input_enabled,
+        cfg.input_action,
+        cfg.block_on_severity,
+        cfg.output_enabled,
+        cfg.output_action,
+        cfg.invisible_text_detection,
+        cfg.pii_masking_enabled,
+        getattr(cfg, "input_pii_masking_enabled", True),
+        tuple(cfg.banned_substrings or ()),
+        cfg.refusal_detection,
+        cfg.malicious_url_detection,
+        getattr(cfg, "system_prompt_leak_detection", False),
+        tuple(getattr(cfg, "system_prompt_fragments", ()) or ()),
+        getattr(cfg, "system_prompt_leak_threshold", 0.85),
+        getattr(cfg, "homoglyph_normalization", True),
+        getattr(cfg, "obfuscation_detection", True),
     )
 
 
 def _build_guardrail_engine(cfg) -> GuardrailEngine:
-    """Create a per-request GuardrailEngine with its own config snapshot."""
+    """Create a GuardrailEngine with a config snapshot."""
     return GuardrailEngine(GuardrailConfig(
         input_enabled=cfg.input_enabled,
         input_action=cfg.input_action,
@@ -425,6 +483,20 @@ def _build_guardrail_engine(cfg) -> GuardrailEngine:
         homoglyph_normalization=getattr(cfg, "homoglyph_normalization", True),
         obfuscation_detection=getattr(cfg, "obfuscation_detection", True),
     ))
+
+
+def _get_live_guardrail_engine(request, cfg) -> GuardrailEngine:
+    """Return a cached GuardrailEngine synced to the current live config."""
+    key = _guardrail_cfg_key(cfg)
+    if getattr(request.app.state, "_guardrails_cfg_key", None) == key:
+        cached = getattr(request.app.state, "_guardrails_cached_engine", None)
+        if cached is not None:
+            return cached
+    engine = _build_guardrail_engine(cfg)
+    request.app.state._guardrails_cfg_key = key
+    request.app.state._guardrails_cached_engine = engine
+    request.app.state.guardrails = engine
+    return engine
 
 
 def _scan_message_contents(messages: list, scanner_fn) -> list:
@@ -511,21 +583,18 @@ def _guardrail_scan_input(request, body):
     Also detects invisible/zero-width characters and banned substrings,
     and strips invisible characters from message content before forwarding.
     """
-    engine: GuardrailEngine | None = getattr(request.app.state, "guardrails", None)
-    if engine is None:
+    if getattr(request.app.state, "guardrails", None) is None:
         return None
     config = request.app.state.config.get()
     cfg = config.telemetry.guardrails
-    engine = _build_guardrail_engine(cfg)
+    engine = _get_live_guardrail_engine(request, cfg)
     # Langfuse: real `with` block so the OTEL context nests the span.
     with langfuse_tracing.span_cm("guardrail-input-scan"):
         return _guardrail_scan_input_impl(request, body, engine, cfg)
 
 
 def _guardrail_scan_input_impl(request, body, engine, cfg):
-    messages = [
-        (m.model_dump() if hasattr(m, "model_dump") else m) for m in body.messages
-    ]
+    messages = _shallow_message_dicts(body.messages)
 
     # Invisible text detection + stripping
     invisible_findings = _scan_invisible_text(messages, engine, cfg)
@@ -583,6 +652,8 @@ def _check_guardrail_block(cfg, all_findings):
             "code": "router_guardrail_blocked",
         }},
     )
+
+
 def _process_guardrail_finding(f, engine) -> None:
     """Log and count a single output guardrail finding."""
     if f.rule_id.startswith("refusal-"):
@@ -591,10 +662,7 @@ def _process_guardrail_finding(f, engine) -> None:
         ).inc()
         logger.info("router.guardrail.refusal_detected", rule=f.rule_id)
         return
-    _NON_SECRET_PREFIXES = ("pii-",)
-    _NON_SECRET_IDS = {"malicious-url", "output-system-prompt-leak"}
-    is_non_secret = f.rule_id.startswith(_NON_SECRET_PREFIXES) or f.rule_id in _NON_SECRET_IDS
-    if engine.config.output_action == "mask":
+    if engine.config.output_action in ("mask", "block"):
         router_guardrail_secret_masks_total.labels(rule_id=f.rule_id).inc()
     else:
         router_guardrail_findings_total.labels(
@@ -604,9 +672,6 @@ def _process_guardrail_finding(f, engine) -> None:
         "router.guardrail.output_finding", rule=f.rule_id,
         action=engine.config.output_action,
     )
-    # Reference is_non_secret to avoid unused-variable warnings; the
-    # distinction is preserved for future per-type metric splitting.
-    _ = is_non_secret
 
 
 def _guardrail_process_output(request, json_resp) -> None:
@@ -628,7 +693,7 @@ def _guardrail_process_output(request, json_resp) -> None:
             _process_guardrail_finding(f, engine)
 
 
-async def _redact_incoming(request, body) -> str | None:
+async def _redact_incoming(request, body, session_id: str | None = None) -> str | None:
     """Run IP redaction over the incoming messages if enabled.
 
     Returns the re-hydration key (session id), or None when the privacy
@@ -643,22 +708,16 @@ async def _redact_incoming(request, body) -> str | None:
     )
     if engine is None:
         return None
-    headers_dict = {k.lower(): v for k, v in request.headers.items()}
-    config = request.app.state.config.get()
-    auth_header = headers_dict.get("authorization", "")
-    key_identity = _get_api_key_identity(auth_header)
-    session_id, _ = resolve_session_id(
-        body, headers_dict, config, config.session.fingerprint_salt,
-        api_key_identity=key_identity,
-        namespace=getattr(config.session, "namespace_by_api_key", False),
-    )
+    if session_id is None:
+        config = request.app.state.config.get()
+        session_id, _ = _resolve_session(request, body, config)
     key = session_id or f"req-{uuid.uuid4()}"
-    messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
-    await engine.redact_messages(messages, key)
-    # Write redacted content back onto the pydantic messages.
-    for orig, dumped in zip(body.messages, messages, strict=False):
-        if orig.content != dumped.get("content"):
-            orig.content = dumped.get("content")
+    messages = _shallow_message_dicts(body.messages)
+    changed = await engine.redact_messages(messages, key)
+    if changed:
+        for orig, dumped in zip(body.messages, messages, strict=False):
+            if orig.content != dumped.get("content"):
+                orig.content = dumped.get("content")
     router_privacy_redactions_total.inc()
     return key
 
@@ -668,13 +727,13 @@ def _process_temporal_awareness(request, body) -> None:
     engine: TemporalAwarenessEngine | None = getattr(
         request.app.state, "temporal_awareness_engine", None
     )
-    if engine is None:
+    if engine is None or not engine.config.enabled:
         return
-    messages = [m.model_dump() if hasattr(m, "model_dump") else m for m in body.messages]
+    messages = _shallow_message_dicts(body.messages)
     processed = engine.process_messages(messages)
     for orig, proc in zip(body.messages, processed, strict=False):
         content = proc.get("content")
-        if isinstance(content, str) and orig.content != content:
+        if orig.content != content:
             orig.content = content
 
 
@@ -701,19 +760,16 @@ def _rehydrate_response_content(engine, json_resp, key: str | None) -> None:
             )
 
 
+@lru_cache(maxsize=16)
+def _compile_tier_prefix(pattern_str: str) -> re.Pattern | None:
+    try:
+        return re.compile(pattern_str, re.IGNORECASE)
+    except re.error:
+        return None
+
+
 def _detect_tier_prefix(body, config) -> Level | None:
-    """Detect a tier label (L1-L5) at the start of the first user prompt.
-
-    When the user's opening message begins with a tier identifier like
-    "L4 explain quantum computing", the session is pinned directly to
-    that tier, bypassing the classifier LLM entirely.
-
-    If strip_prefix is enabled and meaningful content remains after the
-    prefix, the prefix is removed from the message content before
-    forwarding upstream.
-
-    Returns the detected Level, or None.
-    """
+    """Detect a tier label (L1-L5) at the start of the first user prompt."""
     tier_cfg = getattr(config.classification, "tier_prefix", None)
     if tier_cfg is None or not getattr(tier_cfg, "enabled", False):
         return None
@@ -732,10 +788,16 @@ def _detect_tier_prefix(body, config) -> Level | None:
         return None
 
     content = first_user_msg.content
-    if not isinstance(content, str) or not content.strip():
+    if not isinstance(content, str):
+        return None
+    stripped_input = content.strip()
+    if not stripped_input:
         return None
 
-    match = re.match(pattern_str, content.strip(), re.IGNORECASE)
+    compiled = _compile_tier_prefix(pattern_str)
+    if compiled is None:
+        return None
+    match = compiled.match(stripped_input)
     if match is None:
         return None
 
@@ -747,7 +809,7 @@ def _detect_tier_prefix(body, config) -> Level | None:
 
     # Strip the prefix from the message if configured and content remains
     if strip_prefix:
-        stripped = content.strip()[match.end():].strip()
+        stripped = stripped_input[match.end():].strip()
         if stripped:
             first_user_msg.content = stripped
 
@@ -766,6 +828,7 @@ async def _handle_session_hit(request, body, pin, config, routing_engine, forced
     pin.turn_count += 1
     pin.touch(config.session.idle_ttl_seconds, config.session.max_ttl_seconds)
 
+    prev_level = pin.level
     effective_level = pin.level
     effective_model = _resolve_effective_model(pin, routing_engine, config)
 
@@ -779,6 +842,16 @@ async def _handle_session_hit(request, body, pin, config, routing_engine, forced
         effective_model = routing_engine.resolve_model_for_level(forced_level)
     if forced_model:
         effective_model = forced_model
+
+    escalated = False
+    escalated_from: Level | None = None
+    if config.session.escalation.enabled and config.session.escalation.free_signals_enabled:
+        escalation_result = _check_escalation_signals(body, pin, config)
+        if escalation_result:
+            effective_level, effective_model = escalation_result
+            escalated = True
+            escalated_from = prev_level
+
     if max_level and effective_level > max_level:
         effective_level = max_level
         effective_model = routing_engine.resolve_model_for_level(effective_level)
@@ -793,15 +866,10 @@ async def _handle_session_hit(request, body, pin, config, routing_engine, forced
         source=ClassificationSource.SESSION, latency_ms=0,
     )
 
-    if config.session.escalation.enabled and config.session.escalation.free_signals_enabled:
-        escalation_result = _check_escalation_signals(body, pin, config)
-        if escalation_result:
-            effective_level, effective_model = escalation_result
-            await store.put(pin)
-
     route = RouteDecision(
         level=effective_level, model=effective_model,
         params=pin.params, classification=classification,
+        escalated=escalated, escalated_from=escalated_from,
     )
     return await _forward_to_provider(
         request, body, route, session_id, session_source, pin, include_metadata, start,
@@ -930,12 +998,13 @@ async def _create_and_pin_session(
     model = routing_engine.resolve_model_for_level(effective_level)
     params = config.routing.get_params(effective_level.value)
 
-    is_unknown = classification.reason and "UNKNOWN" in classification.reason.upper()
+    is_unknown = bool(classification.reason and "UNKNOWN" in classification.reason.upper())
     status = SessionStatus.PROVISIONAL if is_unknown else SessionStatus.PINNED
 
     new_pin = SessionPin(
         session_id=session_id, level=effective_level, model=model,
         params=params, status=status, classification=classification, turn_count=1,
+        provisional_turns=1 if is_unknown else 0,
     )
     if not is_unknown:
         new_pin.escalation.original_level = effective_level
@@ -982,30 +1051,85 @@ async def _lookup_pin(store, session_id, config):
     return pin
 
 
+async def _handle_provisional_turn(
+    request, body, pin, config, classifier, routing_engine, store,
+    forced_level, forced_model, max_level, min_level, task_text,
+    bypass_cache, include_metadata, start, session_id, session_source, redaction_key,
+):
+    """Re-classify a PROVISIONAL session (e.g. after a 'hi' opener) using the latest user message."""
+    effective_task = task_text or _extract_raw_user_text(body)
+    level, classification, _ = await _classify_and_pin(
+        request, body, config, classifier, routing_engine,
+        forced_level, effective_task, bypass_cache, start, session_id,
+    )
+    still_unknown = bool(classification.reason and "UNKNOWN" in classification.reason.upper())
+    effective_level = level
+    if max_level and effective_level > max_level:
+        effective_level = max_level
+    if min_level and effective_level < min_level:
+        effective_level = min_level
+
+    pin.turn_count += 1
+    pin.provisional_turns += 1
+    pin.level = effective_level
+    pin.model = forced_model or routing_engine.resolve_model_for_level(effective_level)
+    pin.params = config.routing.get_params(effective_level.value)
+    pin.classification = classification
+    max_prov = getattr(config.session, "max_provisional_turns", 3)
+    if not still_unknown or pin.provisional_turns >= max_prov:
+        pin.status = SessionStatus.PINNED
+        pin.escalation.original_level = effective_level
+    pin.touch(config.session.idle_ttl_seconds, config.session.max_ttl_seconds)
+    await store.put(pin)
+
+    route = RouteDecision(
+        level=effective_level, model=pin.model,
+        params=pin.params, classification=classification,
+    )
+    return await _forward_to_provider(
+        request, body, route, session_id, session_source, pin, include_metadata, start,
+        redaction_key=redaction_key,
+    )
+
+
 async def _session_pinned_route(
     request, body, config, routing_engine,
     directive, forced_level, forced_model, max_level, min_level,
     reclassify, repin, task_text, bypass_cache, include_metadata, start,
     redaction_key=None,
+    resolved_session=None,
 ):
     """The main session-pinned routing path."""
     store = request.app.state.session_store
     classifier = request.app.state.classifier
 
-    session_id, session_source = _resolve_session(request, body, config)
+    session_id, session_source = (
+        resolved_session if resolved_session is not None else _resolve_session(request, body, config)
+    )
     if session_id is None:
         router_session_lookups_total.labels(result="disabled").inc()
         return await _stateless_classify_and_forward(
-            request, body, config, routing_engine, task_text, max_level, min_level, forced_model, bypass_cache
+            request, body, config, routing_engine, task_text, max_level, min_level,
+            forced_model, bypass_cache, redaction_key=redaction_key,
         )
 
     pin = await _lookup_pin(store, session_id, config)
     if pin is not None and not reclassify:
+        max_prov = getattr(config.session, "max_provisional_turns", 3)
+        if should_reclassify_on_turn(pin, max_prov) and not forced_level:
+            return await _handle_provisional_turn(
+                request, body, pin, config, classifier, routing_engine, store,
+                forced_level, forced_model, max_level, min_level, task_text,
+                bypass_cache, include_metadata, start, session_id, session_source, redaction_key,
+            )
         return await _handle_session_hit(
             request, body, pin, config, routing_engine, forced_level, forced_model,
             max_level, min_level, repin, include_metadata, start,
             session_id, session_source, redaction_key,
         )
+
+    if pin is not None and reclassify:
+        await store.delete(session_id)
 
     router_session_lookups_total.labels(result="miss").inc()
 
@@ -1053,6 +1177,14 @@ def _resolve_effective_model(pin, routing_engine, config) -> str:
     return resolved
 
 
+_INJECTED_CONTEXT_RE = re.compile(
+    r"<(?:memory|skill|system|context|soul|persona|user_profile)[-_]?context>"
+    r".*?"
+    r"</(?:memory|skill|system|context|soul|persona|user_profile)[-_]?context>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
 def _extract_raw_user_text(body) -> str:
     """Extract the user's actual typed text, stripping injected context blocks.
 
@@ -1067,15 +1199,8 @@ def _extract_raw_user_text(body) -> str:
             last_user_text = content
             break
 
-    # Strip injected context blocks: <memory-context>...</memory-context>,
-    # <skill-context>...</skill-context>, <system-note>...</system-note>, etc.
-    import re
-    last_user_text = re.sub(
-        r"<(?:memory|skill|system|context|soul|persona|user_profile)[-_]?context>.*?</(?:memory|skill|system|context|soul|persona|user_profile)[-_]?context>",
-        "",
-        last_user_text,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+    if "<" in last_user_text:
+        last_user_text = _INJECTED_CONTEXT_RE.sub("", last_user_text)
     return last_user_text.strip()
 
 
@@ -1242,6 +1367,7 @@ async def _retry_with_higher_tier(
             level=new_level, confidence=1.0, reason="retry_on_failure",
             source=ClassificationSource.SESSION, latency_ms=0,
         ),
+        escalated=True, escalated_from=old_level,
     )
     return await _forward_to_provider(
         request, body, new_route, session_id, session_source, pin,
@@ -1255,7 +1381,6 @@ def _resolve_tier_provider(config, level: str) -> tuple[str | None, str | None]:
     Returns (base_url, api_key). Both are None when the tier uses the
     global provider configuration.
     """
-    import os
     # Defensive: tests may mock config as SimpleNamespace without get_tier
     routing = getattr(config, "routing", None)
     if routing is None or not hasattr(routing, "get_tier"):
@@ -1601,7 +1726,7 @@ def _process_stream_chunk(chunk, usage_holder, tool_call_holder) -> None:
 
 def _mask_stream_flush(flush, guardrail_engine) -> str:
     """Apply all guardrail masks to the flushable portion of a stream chunk."""
-    if guardrail_engine is None or guardrail_engine.config.output_action != "mask":
+    if guardrail_engine is None or guardrail_engine.config.output_action not in ("mask", "block"):
         return flush
     flush, fs = guardrail_engine.mask_secrets(flush)
     for f in fs:
@@ -1726,6 +1851,7 @@ def _next_tier_route(route, pin, config, routing_engine):
             level=new_level, confidence=1.0, reason="stream_stall_recovery",
             source=ClassificationSource.SESSION, latency_ms=0,
         ),
+        escalated=True, escalated_from=route.level,
     )
 
 
@@ -1831,18 +1957,22 @@ def _process_data_line(line, stream_usage, had_tool_calls) -> tuple:
     return stream_usage, had_tool_calls
 
 
-
-_PARTIAL_TAIL_RE = re.compile(r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?$", re.IGNORECASE)
+# Matches any trailing prefix of `[ipaddress-XX]` (e.g. `[`, `[ip`, `[ipaddr`, `[ipaddress-0`)
+_IP_WORD_PREFIXES = "|".join("ipaddress"[:k] for k in range(len("ipaddress"), 0, -1))
+_PARTIAL_TAIL_RE = re.compile(
+    rf"\[\s*(?:ipaddress\s*-\s*\d{{0,2}}\s*\]?|ipaddress\s*|{_IP_WORD_PREFIXES})?\Z",
+    re.IGNORECASE,
+)
 
 
 def _split_carry(text: str, guardrail_mask_active: bool) -> tuple[str, str]:
     """Split text into (flushable, carry) around a possible partial token tail."""
-    for keep in range(min(len(text), 20), 0, -1):
-        tail = text[-keep:]
-        if tail.lstrip("`").startswith("[") and re.fullmatch(
-            r"[\[`]?ipaddress\s*-\s*\d{0,2}\]?", tail, re.IGNORECASE
-        ):
-            return text[:-keep], tail
+    tail_window = text[-24:]
+    if "[" in tail_window:
+        m = _PARTIAL_TAIL_RE.search(tail_window)
+        if m:
+            split_at = len(text) - len(tail_window) + m.start()
+            return text[:split_at], text[split_at:]
     if guardrail_mask_active:
         idx = secret_carry_split(text)
         if idx < len(text):
@@ -1856,7 +1986,7 @@ def _rehydrate_chunk(
 ) -> tuple[str, str]:
     """Re-hydrate and mask a chunk of streaming text."""
     text = carry + payload_text
-    if rehydrate_engine is not None and redaction_key and "ipaddress" in text:
+    if rehydrate_engine is not None and redaction_key and "ipaddress" in text.lower():
         text = rehydrate_engine.rehydrate_text_sync(text, redaction_key)
     flush, carry = _split_carry(text, guardrail_mask_active)
     flush = _mask_stream_flush(flush, guardrail_engine) if guardrail_engine else flush
@@ -1870,7 +2000,12 @@ async def _rehydrate_line(
     """Re-hydrate content inside a data: SSE line; returns (line, carry)."""
     if not line.startswith("data: "):
         return line, carry
-    if not guardrail_mask_active and "ipaddress" not in line and not carry:
+    rehydrate_active = rehydrate_engine is not None and bool(redaction_key)
+    if (
+        not guardrail_mask_active
+        and not carry
+        and not (rehydrate_active and ("[" in line or "ipaddress" in line.lower()))
+    ):
         return line, carry
     try:
         data = json.loads(line[6:])
@@ -1953,7 +2088,7 @@ async def _handle_stream(
         _guardrail_mask_active = (
             guardrail_engine is not None
             and guardrail_engine.config.output_enabled
-            and guardrail_engine.config.output_action == "mask"
+            and guardrail_engine.config.output_action in ("mask", "block")
         )
 
         _config = request.app.state.config.get()
@@ -1970,137 +2105,147 @@ async def _handle_stream(
         _emitted_to_client = False
         metadata_sent = False
 
-        while True:
-            carry = ""
-            stalled: _StreamStalled | None = None
-            try:
-                async for line in _aiter_lines_with_stall_guard(
-                    stream_resp, _first_timeout, _idle_timeout,
-                ):
-                    if not metadata_sent:
-                        metadata_sent = True
-                        if include_metadata:
-                            _meta = {"router": {
-                                "level": route.level.value,
-                                "model": f"smart-router/{route.level.value}",
-                                "session_id": session_id,
-                                "turn": pin.turn_count if pin else 0,
-                                "classification_source": route.classification.source.value,
-                                "fallback_used": fallback_used,
-                            }}
-                            yield f"data: {json.dumps(_meta)}\n\n"
+        router_active_requests.inc()
+        try:
+            while True:
+                carry = ""
+                stalled: _StreamStalled | None = None
+                try:
+                    async for line in _aiter_lines_with_stall_guard(
+                        stream_resp, _first_timeout, _idle_timeout,
+                    ):
+                        if not metadata_sent:
+                            metadata_sent = True
+                            if include_metadata:
+                                _meta = {"router": {
+                                    "level": route.level.value,
+                                    "model": f"smart-router/{route.level.value}",
+                                    "session_id": session_id,
+                                    "turn": pin.turn_count if pin else 0,
+                                    "classification_source": route.classification.source.value,
+                                    "fallback_used": fallback_used,
+                                }}
+                                yield f"data: {json.dumps(_meta)}\n\n"
 
-                    if line.strip() == "data: [DONE]":
-                        if carry:
-                            if _guardrail_mask_active and guardrail_engine is not None:
-                                carry = _mask_carry_flush(carry, guardrail_engine)
-                            flush_event = {"choices": [{"delta": {"content": carry}}]}
-                            yield f"data: {json.dumps(flush_event)}\n\n"
-                            carry = ""
+                        if line.strip() == "data: [DONE]":
+                            if carry:
+                                if rehydrate_engine is not None and redaction_key and "ipaddress" in carry.lower():
+                                    carry = rehydrate_engine.rehydrate_text_sync(carry, redaction_key)
+                                if _guardrail_mask_active and guardrail_engine is not None:
+                                    carry = _mask_carry_flush(carry, guardrail_engine)
+                                flush_event = {"choices": [{"delta": {"content": carry}}]}
+                                yield f"data: {json.dumps(flush_event)}\n\n"
+                                carry = ""
 
-                        if _tt_enabled and _stream_usage is not None:
-                            await _finalize_stream_token_tracking(
-                                pin, route, model_used, provider, _stream_usage, request,
+                            if _tt_enabled and _stream_usage is not None:
+                                await _finalize_stream_token_tracking(
+                                    pin, route, model_used, provider, _stream_usage, request,
+                                )
+                            postfix_text = _build_stream_postfix(
+                                route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window,
                             )
-                        postfix_text = _build_stream_postfix(
-                            route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window,
+                            if not _stream_had_tool_calls:
+                                postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
+                                yield f"data: {json.dumps(postfix_event)}\n\n"
+                            yield f"{line}\n"
+                            break
+                        if line.startswith("data: "):
+                            _stream_usage, _stream_had_tool_calls = _process_data_line(
+                                line, _stream_usage, _stream_had_tool_calls,
+                            )
+                        line, carry = await _rehydrate_line(
+                            line, carry,
+                            rehydrate_engine, redaction_key, guardrail_engine, _guardrail_mask_active,
                         )
-                        if not _stream_had_tool_calls:
-                            postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
-                            yield f"data: {json.dumps(postfix_event)}\n\n"
+                        _emitted_to_client = True
                         yield f"{line}\n"
-                        break
-                    if line.startswith("data: "):
-                        _stream_usage, _stream_had_tool_calls = _process_data_line(
-                            line, _stream_usage, _stream_had_tool_calls,
-                        )
-                    line, carry = await _rehydrate_line(
-                        line, carry,
-                        rehydrate_engine, redaction_key, guardrail_engine, _guardrail_mask_active,
+                except _StreamStalled as e:
+                    stalled = e
+                except Exception as e:
+                    error_data = _handle_stream_error(e, route, model_used, session_id, upstream_start)
+                    _mark_upstream_failure(pin, request.app.state.config.get())
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    await _safe_aclose(stream_resp)
+                    stream_resp = None
+                    _record_stream_finally(route, model_used, upstream_start, fallback_used)
+                    return
+                else:
+                    _record_stream_success(route, model_used)
+                    _clear_upstream_failure(pin)
+                    await _safe_aclose(stream_resp)
+                    stream_resp = None
+                    _record_stream_finally(route, model_used, upstream_start, fallback_used)
+                    return
+
+                # --- stalled -------------------------------------------------
+                await _safe_aclose(stream_resp)
+                stream_resp = None
+                _record_stream_finally(route, model_used, upstream_start, fallback_used)
+                _mark_upstream_failure(pin, _config)
+                router_stream_errors_total.labels(
+                    level=route.level.value, model=model_used, kind="upstream_stalled",
+                ).inc()
+                logger.warning(
+                    "router.stream.stalled",
+                    level=route.level.value, model=model_used, session_id=session_id,
+                    waited_s=stalled.waited, first_token=stalled.first_token,
+                )
+
+                budget_left = deadline is None or (deadline - time.monotonic()) > 5
+                recoverable = (
+                    stalled.first_token
+                    and not _emitted_to_client
+                    and budget_left
+                    and _stall_retry_budget_left(pin, _config)
+                )
+                new_route = (
+                    _next_tier_route(route, pin, _config, _routing_engine)
+                    if recoverable else None
+                )
+                if new_route is None:
+                    error_data = _handle_stream_error(
+                        TimeoutError(str(stalled)), route, model_used, session_id, upstream_start,
                     )
-                    _emitted_to_client = True
-                    yield f"{line}\n"
-            except _StreamStalled as e:
-                stalled = e
-            except Exception as e:
-                error_data = _handle_stream_error(e, route, model_used, session_id, upstream_start)
-                _mark_upstream_failure(pin, request.app.state.config.get())
-                yield f"data: {json.dumps(error_data)}\n\n"
-                await _safe_aclose(stream_resp)
-                _record_stream_finally(route, model_used, upstream_start, fallback_used)
-                return
-            else:
-                _record_stream_success(route, model_used)
-                _clear_upstream_failure(pin)
-                await _safe_aclose(stream_resp)
-                _record_stream_finally(route, model_used, upstream_start, fallback_used)
-                return
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    return
 
-            # --- stalled -------------------------------------------------
+                # Restream transparently from the higher tier.
+                router_retry_on_failure_total.labels(
+                    from_level=route.level.value, outcome="stall_escalated",
+                ).inc()
+                logger.info(
+                    "router.stream.stall_escalated",
+                    session_id=session_id,
+                    from_level=route.level.value, to_level=new_route.level.value,
+                )
+                route = new_route
+                retry_payload = dict(payload)
+                retry_payload["model"] = route.model
+                retry_fallbacks = _config.routing.get_fallbacks(route.level.value)
+                r_base_url, r_api_key = _resolve_tier_provider(_config, route.level.value)
+                _, stream_resp, model_used, fallback_used, retry_error = await provider.chat_completion(
+                    retry_payload, fallback_models=retry_fallbacks, stream=True,
+                    base_url=r_base_url, api_key=r_api_key, deadline=deadline,
+                )
+                if retry_error or stream_resp is None:
+                    _msg = (
+                        f"{stalled!s}; escalation to {route.level.value} "
+                        f"failed: {retry_error}"
+                    )
+                    _err = {"error": {
+                        "message": _msg,
+                        "type": "upstream_error",
+                        "code": "router_upstream_stalled",
+                    }}
+                    yield f"data: {json.dumps(_err)}\n\n"
+                    return
+                if pin is not None:
+                    await request.app.state.session_store.put(pin)
+                _stream_usage = None
+                _stream_had_tool_calls = False
+        finally:
+            router_active_requests.dec()
             await _safe_aclose(stream_resp)
-            _record_stream_finally(route, model_used, upstream_start, fallback_used)
-            _mark_upstream_failure(pin, _config)
-            router_stream_errors_total.labels(
-                level=route.level.value, model=model_used, kind="upstream_stalled",
-            ).inc()
-            logger.warning(
-                "router.stream.stalled",
-                level=route.level.value, model=model_used, session_id=session_id,
-                waited_s=stalled.waited, first_token=stalled.first_token,
-            )
-
-            budget_left = deadline is None or (deadline - time.monotonic()) > 5
-            recoverable = (
-                stalled.first_token
-                and not _emitted_to_client
-                and budget_left
-                and _stall_retry_budget_left(pin, _config)
-            )
-            new_route = (
-                _next_tier_route(route, pin, _config, _routing_engine)
-                if recoverable else None
-            )
-            if new_route is None:
-                error_data = _handle_stream_error(
-                    TimeoutError(str(stalled)), route, model_used, session_id, upstream_start,
-                )
-                yield f"data: {json.dumps(error_data)}\n\n"
-                return
-
-            # Restream transparently from the higher tier.
-            router_retry_on_failure_total.labels(
-                from_level=route.level.value, outcome="stall_escalated",
-            ).inc()
-            logger.info(
-                "router.stream.stall_escalated",
-                session_id=session_id,
-                from_level=route.level.value, to_level=new_route.level.value,
-            )
-            route = new_route
-            retry_payload = dict(payload)
-            retry_payload["model"] = route.model
-            retry_fallbacks = _config.routing.get_fallbacks(route.level.value)
-            r_base_url, r_api_key = _resolve_tier_provider(_config, route.level.value)
-            _, stream_resp, model_used, fallback_used, retry_error = await provider.chat_completion(
-                retry_payload, fallback_models=retry_fallbacks, stream=True,
-                base_url=r_base_url, api_key=r_api_key, deadline=deadline,
-            )
-            if retry_error or stream_resp is None:
-                _msg = (
-                    f"{stalled!s}; escalation to {route.level.value} "
-                    f"failed: {retry_error}"
-                )
-                _err = {"error": {
-                    "message": _msg,
-                    "type": "upstream_error",
-                    "code": "router_upstream_stalled",
-                }}
-                yield f"data: {json.dumps(_err)}\n\n"
-                return
-            if pin is not None:
-                await request.app.state.session_store.put(pin)
-            _stream_usage = None
-            _stream_had_tool_calls = False
 
     response = StreamingResponse(
         stream_generator(),
@@ -2238,12 +2383,34 @@ async def _passthrough(request, body, model, redaction_key=None):
         if error:
             return JSONResponse(status_code=502, content={"error": {"message": error, "type": "upstream_error"}})
 
+        rehydrate_engine = getattr(request.app.state, "ip_redaction", None)
+        guardrail_engine: GuardrailEngine | None = getattr(request.app.state, "guardrails", None)
+        guardrail_mask_active = (
+            guardrail_engine is not None
+            and guardrail_engine.config.output_enabled
+            and guardrail_engine.config.output_action in ("mask", "block")
+        )
+
         async def gen():
-            async for line in stream_resp.aiter_lines():
-                yield f"{line}\n"
-                if line.strip() == "data: [DONE]":
-                    break
-            await stream_resp.aclose()
+            carry = ""
+            try:
+                async for line in stream_resp.aiter_lines():
+                    if line.strip() == "data: [DONE]":
+                        if carry:
+                            if rehydrate_engine is not None and redaction_key and "ipaddress" in carry.lower():
+                                carry = rehydrate_engine.rehydrate_text_sync(carry, redaction_key)
+                            if guardrail_mask_active and guardrail_engine is not None:
+                                carry = _mask_carry_flush(carry, guardrail_engine)
+                            yield f"data: {json.dumps({'choices': [{'delta': {'content': carry}}]})}\n\n"
+                        yield f"{line}\n"
+                        break
+                    line, carry = await _rehydrate_line(
+                        line, carry,
+                        rehydrate_engine, redaction_key, guardrail_engine, guardrail_mask_active,
+                    )
+                    yield f"{line}\n"
+            finally:
+                await _safe_aclose(stream_resp)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
     else:
@@ -2259,6 +2426,7 @@ async def _passthrough(request, body, model, redaction_key=None):
 
 async def _stateless_classify_and_forward(
     request, body, config, routing_engine, task_text, max_level, min_level, forced_model, bypass_cache,
+    *, redaction_key=None,
 ):
     """Classify in isolation, no session pinning."""
     classifier = request.app.state.classifier
@@ -2273,5 +2441,5 @@ async def _stateless_classify_and_forward(
 
     return await _forward_to_provider(
         request, body, route, None, None, None, False, time.monotonic(),
-        redaction_key=None,
+        redaction_key=redaction_key,
     )

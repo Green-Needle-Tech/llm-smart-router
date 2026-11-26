@@ -77,8 +77,10 @@ class ConfigManager:
         return self._settings
 
     def reload(self) -> Settings:
-        """Force reload from file. Returns new settings or raises."""
-        return self.load()
+        """Force reload from file, notify callbacks, and return new settings."""
+        settings = self.load()
+        self._notify_callbacks()
+        return settings
 
     def check_and_reload(self) -> bool:
         """Check if file changed, reload if so. Returns True if reloaded."""

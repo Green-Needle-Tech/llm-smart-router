@@ -7,16 +7,20 @@ import re
 GUARD_PATTERNS = [
     r"(?i)ignore previous",
     r"(?i)you are a classifier",
-    r"(?i)output L[1-4]",
+    r"(?i)output L[1-5]",
     r"(?i)always classify",
-    r"(?i)classify (this|everything|all) as L[1-4]",
+    r"(?i)classify (this|everything|all) as L[1-5]",
     r"(?i)disregard (the|any) (instructions|rules|rubric)",
-    r"(?i)you must (output|return|classify) L[1-4]",
+    r"(?i)you must (output|return|classify) L[1-5]",
 ]
 
 _COMPILED = [re.compile(p) for p in GUARD_PATTERNS]
+_COMBINED_RE = re.compile(
+    "|".join(f"(?:{p.removeprefix('(?i)')})" for p in GUARD_PATTERNS),
+    re.IGNORECASE,
+)
 
 
 def check_injection(text: str) -> bool:
     """Return True if any guard phrase is found in the text."""
-    return any(pattern.search(text) for pattern in _COMPILED)
+    return bool(_COMBINED_RE.search(text))

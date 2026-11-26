@@ -35,6 +35,11 @@ IPV4_RE = re.compile(
 # ({1,4} inside {1,7}) which cause super-linear backtracking (S5850).
 _H = r"[0-9a-fA-F]{1,4}"
 _IPV6_FULL = rf"\b(?:{_H}:){{7}}{_H}\b"
+_IPV6_COMPRESSED_BOTH = "|".join(
+    rf"\b{':'.join([_H] * left)}::{':'.join([_H] * right)}\b"
+    for left in range(6, 0, -1)
+    for right in range(7 - left, 0, -1)
+)
 _IPV6_LEAD = "|".join(
     rf"\b{':'.join([_H] * k)}::" for k in range(7, 0, -1)
 )
@@ -42,7 +47,7 @@ _IPV6_TRAIL = "|".join(
     rf":{':'.join([''] + [_H] * k)}\b" for k in range(7, 0, -1)
 )
 IPV6_RE = re.compile(
-    f"{_IPV6_FULL}|{_IPV6_LEAD}|{_IPV6_TRAIL}"
+    f"{_IPV6_FULL}|{_IPV6_COMPRESSED_BOTH}|{_IPV6_LEAD}|{_IPV6_TRAIL}"
 )
 
 # Combined matcher: IPv4 first so dotted quads are never misread as IPv6.
@@ -77,6 +82,8 @@ class IPRedactionStore:
         with self._lock, self._conn:
             self._conn.executescript(
                 """
+                PRAGMA journal_mode=WAL;
+                PRAGMA synchronous=NORMAL;
                 CREATE TABLE IF NOT EXISTS ip_redaction_sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id VARCHAR(255) NOT NULL,
@@ -146,6 +153,52 @@ class IPRedactionStore:
                 (session_id, original_ip, placeholder),
             )
 
+    def record_many(self, session_id: str, items: list[tuple[str, str]]) -> None:
+        """Batch-insert (original_ip, placeholder) pairs in a single transaction."""
+        if not items:
+            return
+        with self._lock, self._conn:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO ip_redaction_sessions "
+                "(session_id, original_ip, placeholder) VALUES (?, ?, ?)",
+                [(session_id, ip, ph) for ip, ph in items],
+            )
+
+    def get_or_create_placeholders(self, session_id: str, ips: list[str]) -> dict[str, str]:
+        """Atomically map a list of IPs to session-stable placeholders in one transaction."""
+        if not ips:
+            return {}
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT placeholder, original_ip FROM ip_redaction_sessions "
+                "WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+            by_ip = {r["original_ip"]: r["placeholder"] for r in rows}
+            next_n = 0
+            for r in rows:
+                m = PLACEHOLDER_RE.fullmatch(r["placeholder"])
+                if m:
+                    n = int(m.group(1))
+                    if n > next_n:
+                        next_n = n
+
+            to_insert: list[tuple[str, str, str]] = []
+            for ip in ips:
+                if ip not in by_ip:
+                    next_n += 1
+                    ph = PLACEHOLDER_FMT.format(next_n)
+                    by_ip[ip] = ph
+                    to_insert.append((session_id, ip, ph))
+
+            if to_insert:
+                self._conn.executemany(
+                    "INSERT INTO ip_redaction_sessions "
+                    "(session_id, original_ip, placeholder) VALUES (?, ?, ?)",
+                    to_insert,
+                )
+            return by_ip
+
     # --- Maintenance -----------------------------------------------------------
 
     def purge_older_than(self, hours: float) -> int:
@@ -214,45 +267,24 @@ class IPRedactionEngine:
 
     async def redact_text(self, text: str, session_id: str) -> str:
         """Replace every IP in `text` with a session-stable placeholder."""
-        if not text or not IP_RE.search(text):
+        if not text:
+            return text
+        matches = list(IP_RE.finditer(text))
+        if not matches:
             return text
 
-        # Snapshot existing mappings once.
-        mappings = await asyncio.to_thread(self.store.get_mappings, session_id)
-        by_ip = {ip: ph for ph, ip in mappings.items()}
-
-        # Resolve the session's highest existing number so new IPs assigned
-        # within this prompt continue the sequence without colliding
-        # (DB rows for pending assignments are not yet written).
-        def _max_existing() -> int:
-            row = None
-            for ph in mappings:
-                m = re.fullmatch(r"\[ipaddress-(\d+)\]", ph)
-                if m:
-                    n = int(m.group(1))
-                    row = max(row or 0, n)
-            return row or 0
-
-        next_n = _max_existing()
+        unique_ips = list(dict.fromkeys(m.group(0) for m in matches))
+        by_ip = await asyncio.to_thread(
+            self.store.get_or_create_placeholders, session_id, unique_ips
+        )
 
         result = []
         last = 0
-        pending_new: list[tuple[str, str]] = []
-        for match in IP_RE.finditer(text):
-            ip = match.group(0)
-            ph = by_ip.get(ip)
-            if ph is None:
-                next_n += 1
-                ph = PLACEHOLDER_FMT.format(next_n)
-                by_ip[ip] = ph
-                pending_new.append((ip, ph))
+        for match in matches:
             result.append(text[last:match.start()])
-            result.append(ph)
+            result.append(by_ip[match.group(0)])
             last = match.end()
         result.append(text[last:])
-
-        for ip, ph in pending_new:
-            await asyncio.to_thread(self.store.record, session_id, ip, ph)
 
         return "".join(result)
 
@@ -260,7 +292,7 @@ class IPRedactionEngine:
 
     def rehydrate_text_sync(self, text: str, session_id: str) -> str:
         """Replace placeholder tokens (incl. fuzzy variants) with original IPs."""
-        if "ipaddress" not in text:
+        if not text or "ipaddress" not in text.lower():
             return text
         mappings = self.store.get_mappings(session_id)
         if not mappings:

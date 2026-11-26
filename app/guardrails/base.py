@@ -260,6 +260,21 @@ class ValidatorRegistry:
     def __init__(self):
         self._validators: list[BaseValidator] = []
         self._by_id: dict[str, BaseValidator] = {}
+        self._input_cache: tuple[BaseValidator, ...] | None = None
+        self._output_cache: tuple[BaseValidator, ...] | None = None
+
+    def _invalidate(self) -> None:
+        self._input_cache = None
+        self._output_cache = None
+
+    def clone(self) -> ValidatorRegistry:
+        """Create a fast shallow clone sharing immutable validator instances."""
+        copy_reg = ValidatorRegistry.__new__(ValidatorRegistry)
+        copy_reg._validators = list(self._validators)
+        copy_reg._by_id = dict(self._by_id)
+        copy_reg._input_cache = self._input_cache
+        copy_reg._output_cache = self._output_cache
+        return copy_reg
 
     def register(self, validator: BaseValidator) -> None:
         """Register a validator. Replaces existing with same rule_id."""
@@ -268,6 +283,7 @@ class ValidatorRegistry:
             self._validators = [v for v in self._validators if v.rule_id != validator.rule_id]
         self._validators.append(validator)
         self._by_id[validator.rule_id] = validator
+        self._invalidate()
 
     def register_many(self, validators: list[BaseValidator]) -> None:
         for v in validators:
@@ -278,6 +294,7 @@ class ValidatorRegistry:
         if rule_id in self._by_id:
             self._validators = [v for v in self._validators if v.rule_id != rule_id]
             del self._by_id[rule_id]
+            self._invalidate()
 
     def get(self, rule_id: str) -> BaseValidator | None:
         return self._by_id.get(rule_id)
@@ -288,16 +305,21 @@ class ValidatorRegistry:
         return list(self._validators)
 
     @property
-    def input_validators(self) -> list[BaseValidator]:
-        return [v for v in self._validators if v.direction == "input"]
+    def input_validators(self) -> tuple[BaseValidator, ...]:
+        if self._input_cache is None:
+            self._input_cache = tuple(v for v in self._validators if v.direction == "input")
+        return self._input_cache
 
     @property
-    def output_validators(self) -> list[BaseValidator]:
-        return [v for v in self._validators if v.direction == "output"]
+    def output_validators(self) -> tuple[BaseValidator, ...]:
+        if self._output_cache is None:
+            self._output_cache = tuple(v for v in self._validators if v.direction == "output")
+        return self._output_cache
 
     def clear(self) -> None:
         self._validators.clear()
         self._by_id.clear()
+        self._invalidate()
 
 
 # Severity ordering for threshold comparisons

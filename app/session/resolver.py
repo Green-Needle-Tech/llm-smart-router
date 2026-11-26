@@ -6,6 +6,7 @@ import hmac
 import os
 import re
 
+from app.middleware.auth import extract_bearer_token
 from app.schemas.openai import ChatCompletionRequest
 from app.schemas.router import SessionSource
 
@@ -21,9 +22,7 @@ def _get_api_key_identity(auth_header: str | None) -> str:
     Uses SHA-256 of the full key (first 16 hex chars) so the raw key or its
     suffix is never exposed or used as a lookup key directly.
     """
-    if not auth_header:
-        return "anon"
-    token = auth_header.replace("Bearer ", "").replace("bearer ", "").strip()
+    token = extract_bearer_token(auth_header)
     if not token:
         return "anon"
     return hashlib.sha256(token.encode()).hexdigest()[:16]
@@ -157,18 +156,22 @@ def resolve_session_id(
     api_key_identity: str | None = None,
     namespace: bool = False,
 ) -> tuple[str | None, SessionSource]:
-    """Resolve session_id in strict priority order.
+    """Resolve session_id in strict priority order (lazily short-circuiting).
 
     Returns (session_id, source). session_id is None if unresolvable.
     """
-    for attempt in (
-        _try_header_sid(headers, config, api_key_identity, namespace),
-        _try_body_sid(request, api_key_identity, namespace),
-        _try_user_field(request, config, api_key_identity, namespace),
-        _try_fingerprint(request, headers, config, fingerprint_salt, api_key_identity),
-    ):
-        if attempt is not None:
-            return attempt
+    res = _try_header_sid(headers, config, api_key_identity, namespace)
+    if res is not None:
+        return res
+    res = _try_body_sid(request, api_key_identity, namespace)
+    if res is not None:
+        return res
+    res = _try_user_field(request, config, api_key_identity, namespace)
+    if res is not None:
+        return res
+    res = _try_fingerprint(request, headers, config, fingerprint_salt, api_key_identity)
+    if res is not None:
+        return res
     return None, SessionSource.NONE
 
 

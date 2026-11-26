@@ -1,12 +1,23 @@
 """Session management endpoints."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from app.middleware.auth import check_router_auth
 from app.schemas.router import Level, SessionPin, SessionStatus
 
-router = APIRouter(prefix="/v1/router/sessions")
+
+def _require_auth(request: Request) -> None:
+    cm = getattr(request.app.state, "config", None)
+    if cm is None:
+        return
+    config = cm.get()
+    if config.auth.enabled and not check_router_auth(request.headers.get("Authorization"), config):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+router = APIRouter(prefix="/v1/router/sessions", dependencies=[Depends(_require_auth)])
 
 
 class SetPinRequest(BaseModel):

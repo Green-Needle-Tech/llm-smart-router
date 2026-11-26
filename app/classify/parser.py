@@ -6,6 +6,10 @@ import re
 
 from app.schemas.router import ClassificationResult, ClassificationSource, Level
 
+_MD_FENCE_OPEN_RE = re.compile(r"^```(?:json)?\s*")
+_MD_FENCE_CLOSE_RE = re.compile(r"```$")
+_LEVEL_FALLBACK_RE = re.compile(r"\bL([1-5])\b")
+
 
 def parse_classifier_output(
     raw: str,
@@ -22,9 +26,8 @@ def parse_classifier_output(
 
     # Strip markdown fences
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"```$", "", text)
-        text = text.strip()
+        text = _MD_FENCE_OPEN_RE.sub("", text)
+        text = _MD_FENCE_CLOSE_RE.sub("", text).strip()
 
     # Try JSON parse
     try:
@@ -54,11 +57,11 @@ def parse_classifier_output(
             rubric_version=rubric_version,
             latency_ms=latency_ms,
         )
-    except (json.JSONDecodeError, ValueError, KeyError):
+    except (json.JSONDecodeError, ValueError, KeyError, AttributeError, TypeError):
         pass
 
-    # Fallback: regex extract L[1-4]
-    match = re.search(r"\bL([1-4])\b", text)
+    # Fallback: regex extract L[1-5]
+    match = _LEVEL_FALLBACK_RE.search(text)
     if match:
         level = Level(f"L{match.group(1)}")
         return ClassificationResult(

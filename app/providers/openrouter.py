@@ -17,9 +17,13 @@ class OpenRouterAdapter(ProviderAdapter):
     def __init__(self, config, api_key: str):
         self.config = config
         self.api_key = api_key
+        connect_timeout = getattr(config.provider, "connect_timeout_seconds", 10)
         self.http = httpx.AsyncClient(
             http2=True,
-            timeout=config.provider.timeout_seconds,
+            timeout=httpx.Timeout(
+                config.provider.timeout_seconds,
+                connect=connect_timeout,
+            ),
             limits=httpx.Limits(
                 max_connections=100,
                 max_keepalive_connections=20,
@@ -29,6 +33,11 @@ class OpenRouterAdapter(ProviderAdapter):
         self._fallback_executor = FallbackExecutor(config, self.http)
         self._pricing: dict[str, dict] = {}
         self._max_tokens: dict[str, int] = {}  # model_id → max_completion_tokens
+
+    def update_config(self, config) -> None:
+        """Apply hot-reloaded configuration to adapter and fallback executor."""
+        self.config = config
+        self._fallback_executor.config = config
 
     def _headers(self) -> dict[str, str]:
         return {

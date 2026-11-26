@@ -1,9 +1,50 @@
 """Heuristic fast-path rules for pre-classifier evaluation."""
 from __future__ import annotations
 
+import ast
 import re
+from functools import lru_cache
+from types import CodeType
 
 from app.schemas.router import Level
+
+_ALLOWED_NAMES = frozenset({
+    "len", "digest", "has_code", "code_fences",
+    "json_mode", "prompt_tokens", "task_chars",
+    "True", "False", "None",
+})
+
+_ALLOWED_AST_NODES = (
+    ast.Expression,
+    ast.BoolOp, ast.And, ast.Or,
+    ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
+    ast.UnaryOp, ast.Not, ast.USub, ast.UAdd,
+    ast.Compare, ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Is, ast.IsNot,
+    ast.Call,
+    ast.Name, ast.Load,
+    ast.Constant,
+)
+
+
+@lru_cache(maxsize=128)
+def _compile_condition(expr: str) -> CodeType | None:
+    """Validate AST safety and compile a heuristic expression once."""
+    if not expr or not expr.strip():
+        return None
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_AST_NODES):
+            return None
+        if isinstance(node, ast.Name) and node.id not in _ALLOWED_NAMES:
+            return None
+        if isinstance(node, ast.Call) and not (
+            isinstance(node.func, ast.Name) and node.func.id == "len"
+        ):
+            return None
+    return compile(tree, "<heuristic>", "eval")
 
 
 def evaluate_heuristics(
@@ -15,7 +56,7 @@ def evaluate_heuristics(
     prompt_tokens: int = 0,
     task_chars: int | None = None,
     huge_context_tokens: int = 32000,
-    rules: list[dict] | None = None,
+    rules: list | None = None,
     measure: str = "task_payload",
 ) -> tuple[Level, bool, str] | None:
     """Evaluate heuristic rules. Returns (level, stop, rule_name) or None.
@@ -41,17 +82,6 @@ def evaluate_heuristics(
             {"name": "code_heavy", "when": "code_fences >= 3", "level": "L3", "stop": False},
         ]
 
-    # Normalize pydantic models to dicts
-    normalized_rules = []
-    for rule in rules:
-        if hasattr(rule, "model_dump"):
-            normalized_rules.append(rule.model_dump())
-        elif isinstance(rule, dict):
-            normalized_rules.append(rule)
-        else:
-            normalized_rules.append({"name": str(rule), "when": "", "level": "L1", "stop": False})
-    rules = normalized_rules
-
     stop_result, floor_level = _evaluate_rules(
         rules, digest, has_code, code_fences, json_mode, prompt_tokens, task_chars
     )
@@ -73,17 +103,40 @@ _DEEP_KW_PATTERN = re.compile(
 )
 
 
+def _rule_fields(rule) -> tuple[str, str, str, bool]:
+    """Extract (name, when, level, stop) from dict or Pydantic HeuristicRule without model_dump."""
+    if isinstance(rule, dict):
+        return (
+            rule.get("name", ""),
+            rule.get("when", ""),
+            rule.get("level", "L1"),
+            bool(rule.get("stop", False)),
+        )
+    if hasattr(rule, "when"):
+        return (
+            getattr(rule, "name", ""),
+            getattr(rule, "when", ""),
+            getattr(rule, "level", "L1"),
+            bool(getattr(rule, "stop", False)),
+        )
+    return str(rule), "", "L1", False
+
+
 def _evaluate_rules(rules, digest, has_code, code_fences, json_mode, prompt_tokens, task_chars):
     """Evaluate explicit rules. Returns (stop_result, floor_level)."""
     floor_level: Level | None = None
+    ns = {
+        "len": len,
+        "digest": digest,
+        "has_code": has_code,
+        "code_fences": code_fences,
+        "json_mode": json_mode,
+        "prompt_tokens": prompt_tokens,
+        "task_chars": task_chars,
+    }
     for rule in rules:
-        name = rule.get("name", "")
-        when = rule.get("when", "")
-        level_str = rule.get("level", "L1")
-        stop = rule.get("stop", False)
-        matched = _eval_condition(when, digest=digest, has_code=has_code,
-                                  code_fences=code_fences, json_mode=json_mode,
-                                  prompt_tokens=prompt_tokens, task_chars=task_chars)
+        name, when, level_str, stop = _rule_fields(rule)
+        matched = _eval_condition(when, _ns=ns)
         if matched:
             try:
                 level = Level.from_str(level_str)
@@ -96,11 +149,13 @@ def _evaluate_rules(rules, digest, has_code, code_fences, json_mode, prompt_toke
     return None, floor_level
 
 
-def _eval_condition(expr: str, **kwargs) -> bool:
-    """Safely evaluate a simple condition expression."""
+def _eval_condition(expr: str, _ns: dict | None = None, **kwargs) -> bool:
+    """Safely evaluate a simple condition expression via AST-validated compiled code."""
+    code = _compile_condition(expr)
+    if code is None:
+        return False
     try:
-        # Build a safe namespace
-        ns = {
+        ns = _ns if _ns is not None else {
             "len": len,
             "digest": kwargs.get("digest", ""),
             "has_code": kwargs.get("has_code", False),
@@ -109,6 +164,6 @@ def _eval_condition(expr: str, **kwargs) -> bool:
             "prompt_tokens": kwargs.get("prompt_tokens", 0),
             "task_chars": kwargs.get("task_chars", 0),
         }
-        return bool(eval(expr, {"__builtins__": {}}, ns))
+        return bool(eval(code, {"__builtins__": {}}, ns))
     except Exception:
         return False

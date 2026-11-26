@@ -160,6 +160,20 @@ def _in_code_block_heavy_text(text: str) -> bool:
     return len(fences) >= 2 and text.count("```") / max(len(text), 1) > 0.0005 and len(fences) % 2 == 0 and len(text) > 400
 
 
+_SKIP_INPUT_PREFIXES = (
+    "openrouter-", "anthropic-", "openai-", "github-",
+    "aws-", "google-", "slack-", "gitlab-", "stripe-",
+    "telegram-", "private-key-", "pii-", "malicious-",
+    "refusal-",
+)
+_PASSPORT_KEYWORD_RE = re.compile(r"passport", re.IGNORECASE)
+_SECRET_RULE_IDS = frozenset({
+    "openrouter-key", "anthropic-key", "openai-key", "github-token",
+    "aws-access-key", "google-api-key", "slack-token", "gitlab-token",
+    "stripe-key", "telegram-bot", "private-key-pem",
+})
+
+
 class GuardrailEngine:
     """Scans text on the request and response paths.
 
@@ -169,7 +183,7 @@ class GuardrailEngine:
 
     def __init__(self, config: GuardrailConfig):
         self.config = config
-        self.registry = _build_default_registry()
+        self.registry = _DEFAULT_REGISTRY.clone()
         self._spleak_validator: SystemPromptLeakValidator | None = None
         self._update_spleak_validator()
 
@@ -204,14 +218,8 @@ class GuardrailEngine:
         eval_text = normalize_homoglyphs(text) if self.config.homoglyph_normalization else text
 
         findings = []
-        # Use registry's input validators (injection rules)
-        # Match all non-secret, non-PII, non-URL, non-refusal input validators
-        _skip_prefixes = ("openrouter-", "anthropic-", "openai-", "github-",
-                          "aws-", "google-", "slack-", "gitlab-", "stripe-",
-                          "telegram-", "private-key-", "pii-", "malicious-",
-                          "refusal-")
         for v in self.registry.input_validators:
-            if not v.rule_id.startswith(_skip_prefixes):
+            if not v.rule_id.startswith(_SKIP_INPUT_PREFIXES):
                 findings.extend(v.scan(eval_text))
         return findings
 
@@ -325,11 +333,7 @@ class GuardrailEngine:
             return []
         findings = []
         for v in self.registry.output_validators:
-            if v.rule_id in (
-                "openrouter-key", "anthropic-key", "openai-key", "github-token",
-                "aws-access-key", "google-api-key", "slack-token", "gitlab-token",
-                "stripe-key", "telegram-bot", "private-key-pem",
-            ):
+            if v.rule_id in _SECRET_RULE_IDS:
                 findings.extend(v.scan(text))
         return findings
 
@@ -403,8 +407,8 @@ class GuardrailEngine:
                 match_text = m.group(0)
                 if _pid == "pii-credit-card" and not _is_likely_credit_card(match_text):
                     return match_text  # don't mask non-CC digit runs
-                if _pid == "pii-passport" and not re.search(
-                    r"passport", _text[:m.start() + 50], re.IGNORECASE
+                if _pid == "pii-passport" and not _PASSPORT_KEYWORD_RE.search(
+                    _text[:m.start() + 50]
                 ):
                     # Avoid false positive: require context keyword nearby
                     return match_text
@@ -561,7 +565,7 @@ class GuardrailEngine:
 
     def _process_text(self, text: str) -> tuple[str, list[GuardrailFinding]]:
         """Process text: mask or scan based on config. Returns (text, findings)."""
-        if self.config.output_action == "mask":
+        if self.config.output_action in ("mask", "block"):
             return self._mask_text(text)
         return text, self._scan_text(text)
 

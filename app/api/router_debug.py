@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
 
+from app.middleware.auth import check_router_auth, unauthorized_response
 from app.schemas.openai import ChatCompletionRequest
 
 router = APIRouter(prefix="/v1/router")
@@ -11,6 +12,11 @@ router = APIRouter(prefix="/v1/router")
 @router.post("/classify")
 async def classify(request: Request, body: ChatCompletionRequest, debug: str = Query(default="")):
     """Debug: classify a prompt without forwarding or pinning."""
+    cm = getattr(request.app.state, "config", None)
+    if cm is not None:
+        config = cm.get()
+        if config.auth.enabled and not check_router_auth(request.headers.get("Authorization"), config):
+            return unauthorized_response()
     classifier = request.app.state.classifier
 
     # Get router overrides

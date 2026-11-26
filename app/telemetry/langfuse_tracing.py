@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 _CLIENT = None
 _INIT_ATTEMPTED = False

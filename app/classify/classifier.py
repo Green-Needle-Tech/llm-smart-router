@@ -10,6 +10,13 @@ import httpx
 
 from app.schemas.openai import ChatMessage
 from app.schemas.router import ClassificationResult, ClassificationSource, Level
+from app.telemetry import langfuse_tracing
+from app.telemetry.metrics import (
+    router_classification_duration_seconds,
+    router_classifier_calls_total,
+    router_classifier_failures_total,
+    router_injection_suspected_total,
+)
 
 from .digest import DigestBuilder
 from .heuristics import evaluate_heuristics
@@ -27,49 +34,75 @@ class ClassifierService:
     ):
         self.config = config
         self.api_key = openrouter_api_key
-
-        # Per-classifier provider override (optional)
-        self._classifier_api_key: str | None = None
-        cls_cfg = config.classification
-        if hasattr(cls_cfg, "api_key_env") and cls_cfg.api_key_env:
-            self._classifier_api_key = os.environ.get(cls_cfg.api_key_env, "")
         self._http = http_client
         self._owns_client = http_client is None
 
-        cls_cfg = config.classification
-        digest_cfg = cls_cfg.digest
-
-        self.digest_builder = DigestBuilder(
-            system_chars=digest_cfg.system_chars,
-            tail_chars=digest_cfg.tail_chars,
-            include_tool_names=digest_cfg.include_tool_names,
-            include_context_summary=digest_cfg.include_context_summary,
-            strip_scaffolding=digest_cfg.strip_scaffolding,
-            learn_common_prefix=digest_cfg.learn_common_prefix,
-            prefix_samples=digest_cfg.prefix_samples,
-            min_prefix_chars=digest_cfg.min_prefix_chars,
-            strip_sections_enabled=digest_cfg.strip_sections_enabled,
-            strip_sections=digest_cfg.strip_sections,
-            keep_sections=digest_cfg.keep_sections,
-            delimit_untrusted=digest_cfg.delimit_untrusted,
-            injection_guard=digest_cfg.injection_guard,
-        )
-
+        self._classifier_api_key: str | None = None
         self._prompt_template: str | None = None
-        self._prompt_file = cls_cfg.prompt_file
+        self._prompt_file: str = ""
+        self._sync_from_config(config, init=True)
+
+    def _sync_from_config(self, config, *, init: bool = False) -> None:
+        """Sync runtime fields from config (used at init and on hot-reload)."""
+        self.config = config
+        cls_cfg = config.classification
+        if hasattr(cls_cfg, "api_key_env") and cls_cfg.api_key_env:
+            self._classifier_api_key = os.environ.get(cls_cfg.api_key_env, "")
+        else:
+            self._classifier_api_key = None
+
+        new_prompt_file = getattr(cls_cfg, "prompt_file", "")
+        if init or new_prompt_file != self._prompt_file:
+            self._prompt_file = new_prompt_file
+            self._prompt_template = None
+
+        digest_cfg = cls_cfg.digest
+        if init:
+            self.digest_builder = DigestBuilder(
+                system_chars=digest_cfg.system_chars,
+                tail_chars=digest_cfg.tail_chars,
+                include_tool_names=digest_cfg.include_tool_names,
+                include_context_summary=digest_cfg.include_context_summary,
+                strip_scaffolding=digest_cfg.strip_scaffolding,
+                learn_common_prefix=digest_cfg.learn_common_prefix,
+                prefix_samples=digest_cfg.prefix_samples,
+                min_prefix_chars=digest_cfg.min_prefix_chars,
+                strip_sections_enabled=digest_cfg.strip_sections_enabled,
+                strip_sections=digest_cfg.strip_sections,
+                keep_sections=digest_cfg.keep_sections,
+                delimit_untrusted=digest_cfg.delimit_untrusted,
+                injection_guard=digest_cfg.injection_guard,
+            )
+        else:
+            db = self.digest_builder
+            db.system_chars = digest_cfg.system_chars
+            db.tail_chars = digest_cfg.tail_chars
+            db.include_tool_names = digest_cfg.include_tool_names
+            db.include_context_summary = digest_cfg.include_context_summary
+            db.strip_scaffolding = digest_cfg.strip_scaffolding
+            db.learn_common_prefix = digest_cfg.learn_common_prefix
+            db.strip_sections_enabled = digest_cfg.strip_sections_enabled
+            db.strip_sections = digest_cfg.strip_sections or []
+            db.keep_sections = digest_cfg.keep_sections or []
+            db.delimit_untrusted = digest_cfg.delimit_untrusted
+            db.injection_guard = digest_cfg.injection_guard
+
+    def update_config(self, config) -> None:
+        """Apply hot-reloaded configuration."""
+        self._sync_from_config(config, init=False)
 
     @property
     def prompt_template(self) -> str:
         """Load the classifier prompt template (cached)."""
         if self._prompt_template is None:
             try:
-                with open(self._prompt_file) as f:
+                with open(self._prompt_file, encoding="utf-8") as f:
                     self._prompt_template = f.read()
-            except FileNotFoundError:
+            except OSError:
                 # Fallback inline prompt
                 self._prompt_template = (
                     'You are a task-complexity classifier. Output ONLY JSON: '
-                    '{"level":"L1|L2|L3|L4|UNKNOWN","confidence":0.0-1.0,"reason":"<12 words>"}\n\n'
+                    '{"level":"L1|L2|L3|L4|L5|UNKNOWN","confidence":0.0-1.0,"reason":"<12 words>"}\n\n'
                     'REQUEST:\n{{PROMPT_DIGEST}}'
                 )
         return self._prompt_template
@@ -101,27 +134,23 @@ class ClassifierService:
 
         Returns (result, digest_info).
         """
-        # Langfuse: traced as a span when the SDK is configured; input
-        # capture disabled (the sanitized trace input already carries the
-        # messages), output captures the classification decision.
-        try:
-            from langfuse import observe
-
-            @observe(name="classify-request", as_type="span", capture_input=False)
-            async def _classify(*a, **kw):
-                return await self._classify_inner(*a, **kw)
-
-            return await _classify(
+        with langfuse_tracing.span_cm("classify-request") as span:
+            result, digest_info = await self._classify_inner(
                 messages, tools, response_format,
                 task_text=task_text, ignore_system=ignore_system,
                 bypass_cache=bypass_cache,
             )
-        except Exception:
-            return await self._classify_inner(
-                messages, tools, response_format,
-                task_text=task_text, ignore_system=ignore_system,
-                bypass_cache=bypass_cache,
+            langfuse_tracing._safe_update(
+                span,
+                output={
+                    "level": result.level.value if result.level else "UNKNOWN",
+                    "confidence": result.confidence,
+                    "source": result.source.value,
+                    "reason": result.reason,
+                    "latency_ms": result.latency_ms,
+                },
             )
+            return result, digest_info
 
     async def _classify_inner(
         self,
@@ -145,28 +174,38 @@ class ClassifierService:
 
         # Injection check
         if digest_info.get("injection_suspected"):
+            router_injection_suspected_total.inc()
             default_level = Level.from_str(self.config.classification.default_level)
+            elapsed = time.monotonic() - start
+            router_classification_duration_seconds.labels(source="default").observe(elapsed)
             result = ClassificationResult(
                 level=default_level,
                 confidence=0.0,
                 reason="injection suspected, fallback to default",
                 source=ClassificationSource.DEFAULT,
-                latency_ms=int((time.monotonic() - start) * 1000),
+                latency_ms=int(elapsed * 1000),
             )
             return result, digest_info
 
-        # Heuristic fast path
-        heur_result = self._try_heuristics(digest_info, response_format, start)
-        if heur_result is not None:
-            return heur_result, digest_info
+        # Heuristic fast path (stop rules return immediately; floor rules clamp below)
+        heur_stop, floor_level = self._try_heuristics(digest_info, response_format, start)
+        if heur_stop is not None:
+            router_classification_duration_seconds.labels(source="heuristic").observe(
+                time.monotonic() - start
+            )
+            return heur_stop, digest_info
 
         # Call classifier model
         if not self.config.classification.enabled:
-            return self._default_result("classification disabled", start), digest_info
+            res = self._default_result("classification disabled", start)
+            if floor_level is not None and res.level is not None and res.level < floor_level:
+                res.level = floor_level
+            return res, digest_info
 
         try:
             raw_output = await self._call_classifier_model(digest_info["digest"])
-            latency_ms = int((time.monotonic() - start) * 1000)
+            elapsed = time.monotonic() - start
+            latency_ms = int(elapsed * 1000)
             result = parse_classifier_output(
                 raw_output,
                 source=ClassificationSource.MODEL,
@@ -174,16 +213,36 @@ class ClassifierService:
                 rubric_version=self.config.classification.rubric_version,
                 latency_ms=latency_ms,
             )
-            return self._handle_classifier_result(result, digest_info, start), digest_info
+            final = self._handle_classifier_result(result, digest_info, start)
+            if floor_level is not None and final.level is not None and final.level < floor_level:
+                final.reason = f"{final.reason}; heuristic floor {floor_level.value}".lstrip("; ")
+                final.level = floor_level
+            router_classifier_calls_total.labels(
+                result=final.level.value if final.level else "UNKNOWN"
+            ).inc()
+            router_classification_duration_seconds.labels(
+                source=final.source.value
+            ).observe(elapsed)
+            return final, digest_info
         except (TimeoutError, httpx.TimeoutException):
-            return self._default_result("classifier timeout", start), digest_info
+            router_classifier_failures_total.labels(reason="timeout").inc()
+            router_classifier_calls_total.labels(result="timeout").inc()
+            res = self._default_result("classifier timeout", start)
+            if floor_level is not None and res.level is not None and res.level < floor_level:
+                res.level = floor_level
+            return res, digest_info
         except Exception:
-            return self._default_result("classifier error", start), digest_info
+            router_classifier_failures_total.labels(reason="error").inc()
+            router_classifier_calls_total.labels(result="error").inc()
+            res = self._default_result("classifier error", start)
+            if floor_level is not None and res.level is not None and res.level < floor_level:
+                res.level = floor_level
+            return res, digest_info
 
-    def _try_heuristics(self, digest_info, response_format, start):
-        """Try heuristic fast path. Returns ClassificationResult or None."""
+    def _try_heuristics(self, digest_info, response_format, start) -> tuple[ClassificationResult | None, Level | None]:
+        """Try heuristic fast path. Returns (stop_result, floor_level)."""
         if not self.config.heuristics.enabled:
-            return None
+            return None, None
         heur_result = evaluate_heuristics(
             digest=digest_info["digest"],
             has_code=digest_info["has_code"],
@@ -192,7 +251,7 @@ class ClassifierService:
             prompt_tokens=digest_info["task_tokens"] if self.config.heuristics.measure == "task_payload" else digest_info["total_tokens"],
             task_chars=digest_info.get("task_chars"),
             huge_context_tokens=self.config.heuristics.huge_context_tokens,
-            rules=[r.model_dump() if hasattr(r, "model_dump") else r for r in self.config.heuristics.rules] if self.config.heuristics.rules else None,
+            rules=self.config.heuristics.rules or None,
             measure=self.config.heuristics.measure,
         )
         if heur_result is not None:
@@ -202,16 +261,19 @@ class ClassifierService:
                     level=level, confidence=1.0, reason=f"heuristic: {rule_name}",
                     source=ClassificationSource.HEURISTIC,
                     latency_ms=int((time.monotonic() - start) * 1000),
-                )
-        return None
+                ), None
+            return None, level
+        return None, None
 
     def _default_result(self, reason, start):
         """Build a default-level classification result."""
+        elapsed = time.monotonic() - start
+        router_classification_duration_seconds.labels(source="default").observe(elapsed)
         return ClassificationResult(
             level=Level.from_str(self.config.classification.default_level),
             confidence=0.0, reason=reason,
             source=ClassificationSource.DEFAULT,
-            latency_ms=int((time.monotonic() - start) * 1000),
+            latency_ms=int(elapsed * 1000),
         )
 
     def _handle_classifier_result(self, result, digest_info, start):
@@ -219,6 +281,7 @@ class ClassifierService:
         if result.level is not None:
             return self._apply_confidence_policy(result)
         if result.reason == "parse failure":
+            router_classifier_failures_total.labels(reason="parse_failure").inc()
             result.level = Level.from_str(self.config.classification.default_level)
             result.source = ClassificationSource.DEFAULT
             return result

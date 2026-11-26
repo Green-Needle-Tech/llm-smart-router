@@ -96,14 +96,21 @@ class RequestLimitsMiddleware(BaseHTTPMiddleware):
         if request.method != "POST" or "/v1/chat/completions" not in request.url.path:
             return await call_next(request)
 
+        max_bytes = self.max_body_bytes
+        cm = getattr(getattr(request.app, "state", None), "config", None)
+        if cm is not None and hasattr(cm, "get"):
+            server_cfg = getattr(cm.get(), "server", None)
+            if server_cfg is not None:
+                max_bytes = getattr(server_cfg, "max_body_bytes", max_bytes)
+
         content_length = request.headers.get("content-length")
         if content_length:
             try:
                 cl = int(content_length)
-                if cl > self.max_body_bytes:
+                if cl > max_bytes:
                     return _err(
                         413,
-                        f"Request body exceeds limit of {self.max_body_bytes} bytes",
+                        f"Request body exceeds limit of {max_bytes} bytes",
                         "body_size_exceeded",
                     )
             except ValueError:

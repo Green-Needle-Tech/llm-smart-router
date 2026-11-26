@@ -1,5 +1,9 @@
 """Integration tests for the API endpoints."""
+import os
+
+import httpx
 import pytest
+import respx
 from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
@@ -8,13 +12,16 @@ from app.main import create_app
 @pytest.fixture
 async def client():
     app = create_app()
-    # We need to mock the provider since we don't have a real API key
-    import os
     os.environ["OPENROUTER_API_KEY"] = "test-key"
     os.environ["ROUTER_API_KEY"] = "test-router-key"
 
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    with respx.mock(assert_all_called=False) as rmock:
+        rmock.get("https://openrouter.ai/api/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+        async with app.router.lifespan_context(app), AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
             yield ac
 
 

@@ -188,9 +188,11 @@ def _collapsed_tail_hold(text: str) -> int:
     if not pairs:
         return len(text)
     pairs.reverse()
-    collapsed = "".join(ch for _, ch in pairs)
-    if not re.search(r"\s", text[pairs[0][0]:]):
+    # If every char from pairs[0][0] to end of text is non-whitespace,
+    # there is no whitespace in that span -> contiguous checks already covered it.
+    if (len(text) - pairs[0][0]) == len(pairs):
         return len(text)
+    collapsed = "".join(ch for _, ch in pairs)
     best = len(text)
     for result in (_collapsed_marker_prefixes(collapsed, pairs),
                    _collapsed_marker_bodies(collapsed, pairs),

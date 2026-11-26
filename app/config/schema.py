@@ -1,9 +1,14 @@
 """Pydantic models mirroring settings.json structure."""
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
+
+_SK_OR_KEY_RE = re.compile(r'"sk-or-[A-Za-z0-9_-]+"')
+_SK_KEY_RE = re.compile(r'"sk-[A-Za-z0-9]{20,}"')
 
 
 class ServerConfig(BaseModel):
@@ -63,6 +68,8 @@ class CustomGuardrailSchema(BaseModel):
     criteria: dict | list | None = None
     # Custom client-facing rejection message; supports "{reason}". Empty -> default.
     rejection_message: str = ""
+    # Delivery mode: "reply" (HTTP 200 assistant reply) | "error" (HTTP 400 error envelope)
+    rejection_delivery: str = "reply"
     prompt_file: str | None = None
     # Short follow-up bypass (v2.30.0): short follow-up turns (confirmations,
     # short instructions) with prior non-system history skip the decision call.
@@ -395,12 +402,10 @@ class Settings(BaseModel):
     @model_validator(mode="after")
     def validate_no_secrets(self) -> Settings:
         """Reject any value matching sk-* or sk-or-* patterns."""
-        import json
         raw = json.dumps(self.model_dump())
-        import re
-        if re.search(r'"sk-or-[A-Za-z0-9_-]+"', raw):
+        if _SK_OR_KEY_RE.search(raw):
             raise ValueError("settings.json must not contain API keys (sk-or-* pattern detected)")
-        if re.search(r'"sk-[A-Za-z0-9]{20,}"', raw):
+        if _SK_KEY_RE.search(raw):
             raise ValueError("settings.json must not contain API keys (sk-* pattern detected)")
         return self
 

@@ -30,10 +30,21 @@ class RedisClassificationCache:
         return await self._redis.delete(self._key(key)) > 0
 
     async def clear(self) -> None:
-        keys = await self._redis.keys("classify_cache:*")
-        if keys:
-            await self._redis.delete(*keys)
+        batch: list[str] = []
+        async for key in self._redis.scan_iter(match="classify_cache:*", count=200):
+            batch.append(key)
+            if len(batch) >= 200:
+                await self._redis.delete(*batch)
+                batch.clear()
+        if batch:
+            await self._redis.delete(*batch)
 
     async def count(self) -> int:
-        keys = await self._redis.keys("classify_cache:*")
-        return len(keys)
+        total = 0
+        async for _ in self._redis.scan_iter(match="classify_cache:*", count=200):
+            total += 1
+        return total
+
+    async def close(self) -> None:
+        """Close the Redis connection pool."""
+        await self._redis.aclose()

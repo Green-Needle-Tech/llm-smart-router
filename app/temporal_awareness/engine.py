@@ -9,12 +9,18 @@ seasons, quarters, and end/beginning-of-period expressions.
 """
 import re
 from datetime import timedelta
+from functools import lru_cache
 
 import pendulum
 from pendulum import DateTime
 
 from app.config.schema import TemporalAwarenessConfig
-from app.temporal_awareness.rules import COMPILED_TEMPORAL_PATTERNS
+from app.temporal_awareness.rules import COMPILED_TRIGGERED_PATTERNS
+
+
+@lru_cache(maxsize=32)
+def _cached_timezone(tz_name: str):
+    return pendulum.timezone(tz_name)
 
 
 
@@ -448,10 +454,24 @@ _TAG_DISPATCH: dict[str, object] = {
 }
 
 
+_WEEKDAY_NAMES = {
+    "monday": pendulum.MONDAY, "mon": pendulum.MONDAY,
+    "tuesday": pendulum.TUESDAY, "tue": pendulum.TUESDAY, "tues": pendulum.TUESDAY,
+    "wednesday": pendulum.WEDNESDAY, "wed": pendulum.WEDNESDAY,
+    "thursday": pendulum.THURSDAY, "thu": pendulum.THURSDAY, "thur": pendulum.THURSDAY, "thurs": pendulum.THURSDAY,
+    "friday": pendulum.FRIDAY, "fri": pendulum.FRIDAY,
+    "saturday": pendulum.SATURDAY, "sat": pendulum.SATURDAY,
+    "sunday": pendulum.SUNDAY, "sun": pendulum.SUNDAY,
+}
+
+
 class TemporalAwarenessEngine:
     def __init__(self, config: TemporalAwarenessConfig):
         self.config = config
-        self.default_tz = self.config.default_timezone  # IANA tz string for pendulum
+
+    @property
+    def default_tz(self) -> str:
+        return self.config.default_timezone
 
     # ── Resolution helpers ──────────────────────────────────────────
 
@@ -481,17 +501,7 @@ class TemporalAwarenessEngine:
 
     def _resolve_weekday(self, name: str) -> int:
         """Map a weekday name (with abbreviation support) to pendulum's day-of-week integer (0=Monday)."""
-        name = name.lower()
-        names = {
-            "monday": pendulum.MONDAY, "mon": pendulum.MONDAY,
-            "tuesday": pendulum.TUESDAY, "tue": pendulum.TUESDAY, "tues": pendulum.TUESDAY,
-            "wednesday": pendulum.WEDNESDAY, "wed": pendulum.WEDNESDAY,
-            "thursday": pendulum.THURSDAY, "thu": pendulum.THURSDAY, "thur": pendulum.THURSDAY, "thurs": pendulum.THURSDAY,
-            "friday": pendulum.FRIDAY, "fri": pendulum.FRIDAY,
-            "saturday": pendulum.SATURDAY, "sat": pendulum.SATURDAY,
-            "sunday": pendulum.SUNDAY, "sun": pendulum.SUNDAY,
-        }
-        return names.get(name, 0)
+        return _WEEKDAY_NAMES.get(name.lower(), 0)
 
     def _format_date(self, dt: DateTime) -> str:
         return dt.to_date_string()
@@ -577,20 +587,34 @@ class TemporalAwarenessEngine:
 
     # ── Message processing ─────────────────────────────────────────
 
-    def process_message(self, message_content: str) -> str:
-        if not self.config.enabled:
+    def _now(self) -> DateTime:
+        return pendulum.now(_cached_timezone(self.default_tz))
+
+    def _replace_with_now(self, message_content: str, now: DateTime) -> str:
+        if not message_content:
             return message_content
 
-        now = pendulum.now(self.default_tz)
         processed = message_content
+        lower = processed.lower()
+        trigger_cache: dict[str, bool] = {}
 
-        # Patterns are already sorted longest-first in rules.py.
-        # We iterate all compiled patterns and replace each match with its
-        # resolved value, replacing right-to-left to preserve indices.
-        for compiled, tag in COMPILED_TEMPORAL_PATTERNS:
+        for compiled, tag, triggers in COMPILED_TRIGGERED_PATTERNS:
+            if triggers:
+                hit = False
+                for trig in triggers:
+                    res = trigger_cache.get(trig)
+                    if res is None:
+                        res = trig in lower
+                        trigger_cache[trig] = res
+                    if res:
+                        hit = True
+                        break
+                if not hit:
+                    continue
             matches = list(compiled.finditer(processed))
             if not matches:
                 continue
+            mutated = False
             for match in reversed(matches):
                 resolved = self._resolve_match(match, tag, now)
                 if resolved:
@@ -599,24 +623,45 @@ class TemporalAwarenessEngine:
                         + resolved
                         + processed[match.end() :]
                     )
-
+                    mutated = True
+            if mutated:
+                lower = processed.lower()
+                trigger_cache.clear()
         return processed
 
+    def process_message(self, message_content: str) -> str:
+        if not self.config.enabled or not message_content:
+            return message_content
+        return self._replace_with_now(message_content, self._now())
+
     def process_messages(self, messages: list[dict]) -> list[dict]:
-        if not self.config.enabled:
+        if not self.config.enabled or not messages:
             return messages
 
-        processed_messages = []
+        now = self._now()
+        if getattr(self.config, "strategy", "replace") == "context_block":
+            ctx_tag = (
+                f"<temporal-context>Current time: {now.isoformat()} "
+                f"({self.default_tz}, {now.format('dddd')})</temporal-context>"
+            )
+            for message in reversed(messages):
+                if message.get("role") == "user":
+                    content = message.get("content")
+                    if isinstance(content, str) and "<temporal-context>" not in content:
+                        message["content"] = f"{content}\n{ctx_tag}" if content else ctx_tag
+                    break
+            return messages
+
         for message in messages:
             role = message.get("role")
+            if role not in ("system", "user"):
+                continue
             content = message.get("content")
-
-            if role in ("system", "user") and isinstance(content, str):
-                message["content"] = self.process_message(content)
-            elif role in ("system", "user") and isinstance(content, list):
+            if isinstance(content, str):
+                message["content"] = self._replace_with_now(content, now)
+            elif isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and isinstance(block.get("text"), str):
-                        block["text"] = self.process_message(block["text"])
+                        block["text"] = self._replace_with_now(block["text"], now)
 
-            processed_messages.append(message)
-        return processed_messages
+        return messages

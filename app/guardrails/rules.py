@@ -240,6 +240,15 @@ def normalize_homoglyphs(text: str) -> str:
 
 _HEX_TOKEN_RE = re.compile(r"\b(?:0x)?[0-9a-fA-F]{32,}\b")
 _URL_ENCODED_TOKEN_RE = re.compile(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_.-]){10,}")
+_URL_ENCODED_SCAN_RE = re.compile(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_+.-]){12,}")
+_STRONG_INJECTION_CHARS = frozenset("|;{}\n\r\t`$\\")
+_HTML_INJECTION_RE = re.compile(
+    r"</?(?:script|img|iframe|svg|body|object|embed|style|link|"
+    r"meta|details|marquee|system|instructions|prompt)\b"
+    r"|on(?:error|load|mouseover|focus|click)\s*="
+    r"|javascript:",
+    re.IGNORECASE,
+)
 
 
 def _scan_hex_payloads(text: str) -> list[tuple[str, str, int, int]]:
@@ -296,23 +305,8 @@ def _scan_url_encoded_payloads(text: str) -> list[tuple[str, str, int, int]]:
     """
     if "%" not in text:
         return []
-    # Characters that are structurally significant in injection attacks and
-    # are hidden by URL-encoding. Split into strong and weak signals:
-    # - Strong chars are always suspicious in URL-encoded content.
-    # - Angle brackets (<>) are weak: common in benign HTML/JSON-LD markup
-    #   scraped from web pages. They only flag when the decoded content also
-    #   contains an HTML injection pattern (<script, <img, </system, etc.)
-    #   or an injection-signal keyword (ignore, override, system, etc.).
-    _STRONG_INJECTION_CHARS = frozenset("|;{}\n\r\t`$\\")
-    _HTML_INJECTION_RE = re.compile(
-        r"</?(?:script|img|iframe|svg|body|object|embed|style|link|"
-        r"meta|details|marquee|system|instructions|prompt)\b"
-        r"|on(?:error|load|mouseover|focus|click)\s*="
-        r"|javascript:",
-        re.IGNORECASE,
-    )
     findings: list[tuple[str, str, int, int]] = []
-    for m in re.finditer(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_+.-]){12,}", text):
+    for m in _URL_ENCODED_SCAN_RE.finditer(text):
         token = m.group(0)
         if token.count("%") < 2:
             continue
@@ -323,9 +317,6 @@ def _scan_url_encoded_payloads(text: str) -> list[tuple[str, str, int, int]]:
                 decoded_str = result[:60]
         if not decoded_str:
             continue
-        # Strong injection chars → flag immediately.
-        # Angle brackets alone → only flag with HTML injection pattern
-        # or injection-signal keyword in decoded content.
         has_strong = any(ch in _STRONG_INJECTION_CHARS for ch in decoded_str)
         has_angle = "<" in decoded_str or ">" in decoded_str
         if has_strong:

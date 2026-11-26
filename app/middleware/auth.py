@@ -24,9 +24,23 @@ def _constant_time_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode(), b.encode())
 
 
+def extract_bearer_token(auth_header: str | None) -> str:
+    """Extract token from Authorization header (RFC 6750 case-insensitive Bearer)."""
+    if not auth_header:
+        return ""
+    stripped = auth_header.strip()
+    if not stripped:
+        return ""
+    parts = stripped.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    if parts[0].lower() == "bearer":
+        return ""
+    return stripped
+
+
 async def auth_middleware(request: Request, call_next):
     """Authenticate requests based on config."""
-    # We'll use the global config instance instead
     return await call_next(request)
 
 
@@ -39,11 +53,10 @@ def check_router_auth(auth_header: str | None, config) -> bool:
     if not keys:
         return False
 
-    if not auth_header:
+    token = extract_bearer_token(auth_header)
+    if not token:
         return False
 
-    # Extract bearer token
-    token = auth_header.replace("Bearer ", "").replace("bearer ", "").strip()
     return any(_constant_time_compare(token, key) for key in keys)
 
 
@@ -53,10 +66,10 @@ def check_admin_auth(auth_header: str | None, config) -> bool:
     if not admin_key:
         return False
 
-    if not auth_header:
+    token = extract_bearer_token(auth_header)
+    if not token:
         return False
 
-    token = auth_header.replace("Bearer ", "").replace("bearer ", "").strip()
     return _constant_time_compare(token, admin_key)
 
 

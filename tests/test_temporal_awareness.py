@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -21,23 +22,30 @@ from pathlib import Path
 
 BASE = "http://localhost:8080"
 MAX_TOKENS = 200
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Load keys
-key = None
-adm = None
-env_path = Path("/root/llm-smart-router/.env")
-if env_path.exists():
-    with open(env_path, encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("ROUTER_API_KEY="):
-                key = line.strip().split("=", 1)[1].strip('"').strip("'")
-            if line.startswith("ADMIN_API_KEY="):
-                adm = line.strip().split("=", 1)[1].strip('"').strip("'")
+key: str | None = None
+adm: str | None = None
 
-if not key:
-    raise ValueError("ROUTER_API_KEY not found")
-if not adm:
-    raise ValueError("ADMIN_API_KEY not found")
+
+def _load_keys() -> tuple[str, str]:
+    """Load ROUTER_API_KEY and ADMIN_API_KEY from environment or repo .env."""
+    router_key = os.environ.get("ROUTER_API_KEY")
+    admin_key = os.environ.get("ADMIN_API_KEY")
+    for candidate in (REPO_ROOT / ".env", Path(".env")):
+        with contextlib.suppress(OSError):
+            if candidate.exists():
+                with open(candidate, encoding="utf-8") as f:
+                    for line in f:
+                        if not router_key and line.startswith("ROUTER_API_KEY="):
+                            router_key = line.strip().split("=", 1)[1].strip('"').strip("'")
+                        if not admin_key and line.startswith("ADMIN_API_KEY="):
+                            admin_key = line.strip().split("=", 1)[1].strip('"').strip("'")
+    if not router_key:
+        raise ValueError("ROUTER_API_KEY not found")
+    if not admin_key:
+        raise ValueError("ADMIN_API_KEY not found")
+    return router_key, admin_key
 
 
 def call(messages: list[dict], session_id: str | None = None, timeout: int = 120) -> dict:
@@ -84,7 +92,7 @@ def reload_settings() -> dict:
 
 def set_temporal(enabled: bool) -> None:
     """Toggle temporal_awareness.enabled in settings.json and hot-reload."""
-    settings_path = Path("/root/llm-smart-router/config/settings.json")
+    settings_path = REPO_ROOT / "config" / "settings.json"
     with open(settings_path, encoding="utf-8") as f:
         settings = json.load(f)
     settings.setdefault("telemetry", {}).setdefault("temporal_awareness", {})["enabled"] = enabled
@@ -240,10 +248,12 @@ def run_tests() -> tuple[int, int]:
 
 
 def main() -> None:
+    global key, adm
+    key, adm = _load_keys()
     passed, failed = run_tests()
     print("\n" + "=" * 70)
     print(f"RESULTS: {passed} passed, {failed} failed, {passed + failed} total")
-    print("=" * 70)
+    print("\n" + "=" * 70)
     sys.exit(0 if failed == 0 else 1)
 
 

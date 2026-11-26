@@ -28,29 +28,32 @@ ROUTER_DEFAULT_CONTEXT_WINDOW = 1_000_000
 def get_router_context_window() -> int:
     """Read context_window from settings.json, fall back to default."""
     for settings_path in [
-        Path("/root/llm-smart-router/config/settings.json"),
+        ROOT_DIR / "config/settings.json",
         Path("config/settings.json"),
         Path("../config/settings.json"),
     ]:
-        if settings_path.exists():
-            try:
+        try:
+            if settings_path.exists():
                 with open(settings_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                 return int(cfg.get("provider", {}).get("context_window", ROUTER_DEFAULT_CONTEXT_WINDOW))
-            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-                pass
+        except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+            pass
     return ROUTER_DEFAULT_CONTEXT_WINDOW
 
 
 def get_router_key() -> str:
-    # Check current directory .env, then parent
-    for env_path in [Path(".env"), Path("/root/llm-smart-router/.env"), Path("../.env")]:
-        if env_path.exists():
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("ROUTER_API_KEY=") and not line.startswith("#"):
-                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+    # Check current directory .env, then repo root and parent
+    for env_path in [Path(".env"), ROOT_DIR / ".env", Path("../.env")]:
+        try:
+            if env_path.exists():
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("ROUTER_API_KEY=") and not line.startswith("#"):
+                            return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except OSError:
+            pass
     return os.environ.get("ROUTER_API_KEY", "your-router-api-key")
 
 

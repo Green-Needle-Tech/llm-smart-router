@@ -6,6 +6,7 @@ from typing import Any
 
 from app.schemas.openai import ChatMessage
 
+from .injection_guard import check_injection
 from .scaffolding import CommonPrefixLearner, split_scaffolding
 
 
@@ -38,7 +39,7 @@ def _truncate(text: str, head_chars: int, tail_chars: int) -> str:
     if len(text) <= head_chars + tail_chars:
         return text
     head = text[:head_chars]
-    tail = text[-tail_chars:]
+    tail = text[-tail_chars:] if tail_chars > 0 else ""
     omitted = len(text) - head_chars - tail_chars
     return f"{head}\n…[truncated {omitted} chars]…\n{tail}"
 
@@ -56,17 +57,31 @@ def _get_tool_names(tools: list[dict] | None) -> list[str]:
     return names
 
 
-def _build_context_summary(messages, task_system, task_user, tool_names):
+def _count_image_attachments(messages: list[ChatMessage]) -> int:
+    """Count multimodal image content blocks without scanning prose."""
+    count = 0
+    for m in messages:
+        content = m.content
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in (
+                    "image_url", "image", "input_image",
+                ):
+                    count += 1
+    return count
+
+
+def _build_context_summary(messages, task_tokens: int, tool_names: list[str]) -> str:
     """Build the context summary string for the digest."""
     msg_count = len(messages)
-    task_tokens = _estimate_tokens(f"{task_system} {task_user}")
     tool_count = len(tool_names)
-    has_attachments = any("image" in str(m.content).lower() for m in messages)
+    image_count = _count_image_attachments(messages)
     parts = [f"[conversation: {msg_count} messages, ~{task_tokens} task tokens"]
     if tool_count:
         parts.append(f", {tool_count} tools present")
-    if has_attachments:
-        parts.append(", attachments: 1 image")
+    if image_count:
+        label = "image" if image_count == 1 else "images"
+        parts.append(f", attachments: {image_count} {label}")
     parts.append("]")
     return "".join(parts)
 
@@ -127,20 +142,20 @@ class DigestBuilder:
             code_fences: int
             injection_suspected: bool
         """
-        # Separate system and user messages
+        # Separate system and user messages while counting total chars in one pass
         system_texts = []
         user_texts = []
-        all_texts = []
+        total_chars = 0
         for msg in messages:
             text = _extract_text(msg.content)
-            all_texts.append(text)
+            total_chars += len(text) + 1
             if msg.role == "system":
                 system_texts.append(text)
             elif msg.role == "user":
                 user_texts.append(text)
 
         full_system = "\n".join(system_texts)
-        total_tokens = _estimate_tokens("\n".join(all_texts))
+        total_tokens = max(1, max(0, total_chars - 1) // 4)
 
         # Scaffolding split
         split = split_scaffolding(
@@ -162,15 +177,19 @@ class DigestBuilder:
         # Tool names
         tool_names = _get_tool_names(tools) if self.include_tool_names else []
 
+        # Estimate task tokens once
+        task_tokens = max(1, (len(task_system) + 1 + len(task_user)) // 4)
+
         # Context summary
         context_summary = ""
         if self.include_context_summary:
-            context_summary = _build_context_summary(
-                messages, task_system, task_user, tool_names)
-        task_tokens = _estimate_tokens(f"{task_system} {task_user}")
+            context_summary = _build_context_summary(messages, task_tokens, tool_names)
 
-        # Truncate user text
-        truncated_user = _truncate(task_user, head_chars=1200, tail_chars=800)
+        # Truncate user text (60% head / 40% tail of configured tail_chars budget)
+        budget = max(100, self.tail_chars)
+        head_budget = (budget * 3) // 5
+        tail_budget = budget - head_budget
+        truncated_user = _truncate(task_user, head_chars=head_budget, tail_chars=tail_budget)
 
         # Build digest
         digest_parts = []
@@ -193,10 +212,7 @@ class DigestBuilder:
         has_code = code_fences > 0
 
         # Injection check
-        injection_suspected = False
-        if self.injection_guard:
-            from .injection_guard import check_injection
-            injection_suspected = check_injection(digest)
+        injection_suspected = check_injection(digest) if self.injection_guard else False
 
         return {
             "digest": digest,

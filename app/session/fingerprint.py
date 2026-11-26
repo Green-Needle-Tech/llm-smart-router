@@ -4,7 +4,17 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import re
+from functools import lru_cache
 from typing import Any
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+@lru_cache(maxsize=64)
+def _compile_strip_pattern(pattern: str) -> re.Pattern | None:
+    with contextlib.suppress(re.error):
+        return re.compile(pattern)
+    return None
 
 
 def _extract_text(content: Any) -> str:
@@ -26,13 +36,14 @@ def _extract_text(content: Any) -> str:
 def _strip_patterns(text: str, patterns: list[str]) -> str:
     """Apply regex strip patterns to remove volatile content."""
     for pattern in patterns:
-        with contextlib.suppress(re.error):
-            text = re.sub(pattern, "", text)
+        compiled = _compile_strip_pattern(pattern)
+        if compiled is not None:
+            text = compiled.sub("", text)
     return text
 
 
 def _collapse_whitespace(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+    return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 def derive_fingerprint(
