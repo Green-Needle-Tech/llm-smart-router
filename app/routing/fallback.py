@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -12,6 +13,28 @@ from app.telemetry.logging import get_logger
 from app.telemetry.metrics import router_provider_retries_total
 
 logger = get_logger("fallback")
+
+# Deterministic 4xx client errors: retrying the identical request against the
+# same model wastes latency/budget without recovering — immediately advance to
+# the next fallback model instead (except 400 max_tokens/context overflow,
+# which gets one retry with max_tokens stripped).
+_NON_RETRYABLE_4XX = frozenset({400, 401, 403, 404, 413, 422})
+_MAX_TOKENS_ERROR_HINTS = (
+    "max_tokens",
+    "max_completion_tokens",
+    "context length",
+    "maximum context",
+    "too many tokens",
+    "exceeds the context",
+)
+
+
+def _is_max_tokens_400(status_code: int, body: str) -> bool:
+    """True when an upstream 400 error looks like a max_tokens / context overflow."""
+    if status_code != 400 or not body:
+        return False
+    lower = body.lower()
+    return any(hint in lower for hint in _MAX_TOKENS_ERROR_HINTS)
 
 
 class FallbackDeadlineExceeded(Exception):
@@ -43,14 +66,42 @@ class FallbackExecutor:
             return base
         return max(1.0, min(base, remaining))
 
+    def _build_httpx_timeout(self, read_timeout: float) -> httpx.Timeout:
+        """Build an httpx.Timeout that preserves connect_timeout_seconds."""
+        connect = float(getattr(self.config.provider, "connect_timeout_seconds", 10) or 10)
+        return httpx.Timeout(read_timeout, connect=min(connect, read_timeout))
+
+    def _stream_header_timeout(self, attempt_timeout: float) -> float:
+        """Max seconds to wait for initial HTTP response headers on a stream."""
+        first_tok = getattr(self.config.provider, "stream_first_token_timeout_seconds", 0) or 0
+        try:
+            first_tok = float(first_tok)
+        except (TypeError, ValueError):
+            first_tok = 0.0
+        if first_tok > 0:
+            return min(attempt_timeout, first_tok)
+        return attempt_timeout
+
+    async def _sleep_backoff(self, backoff: float, deadline: float | None) -> bool:
+        """Sleep backoff if deadline budget permits. Returns False if budget expired."""
+        remaining = self._remaining_budget(deadline)
+        if remaining is not None and remaining <= max(backoff, 0.5):
+            return False
+        if backoff > 0:
+            await asyncio.sleep(backoff)
+        return True
+
     async def _try_stream(self, url, request_payload, headers, model, timeout=None):
         """Try a streaming request. Returns (resp, error)."""
+        eff_timeout = float(timeout if timeout is not None else self.config.provider.timeout_seconds)
+        httpx_timeout = self._build_httpx_timeout(eff_timeout)
         req = self.http.build_request(
             "POST", f"{url}/chat/completions",
             json=request_payload, headers=headers,
-            timeout=timeout if timeout is not None else self.config.provider.timeout_seconds,
+            timeout=httpx_timeout,
         )
-        resp = await self.http.send(req, stream=True)
+        header_timeout = self._stream_header_timeout(eff_timeout)
+        resp = await asyncio.wait_for(self.http.send(req, stream=True), timeout=header_timeout)
         try:
             if resp.status_code in self.config.provider.retry_on_status:
                 body = (await resp.aread()).decode("utf-8", "replace")[:500]
@@ -64,10 +115,12 @@ class FallbackExecutor:
 
     async def _try_non_stream(self, url, request_payload, headers, model, timeout=None):
         """Try a non-streaming request. Returns (json, error)."""
+        eff_timeout = float(timeout if timeout is not None else self.config.provider.timeout_seconds)
+        httpx_timeout = self._build_httpx_timeout(eff_timeout)
         resp = await self.http.post(
             f"{url}/chat/completions",
             json=request_payload, headers=headers,
-            timeout=timeout if timeout is not None else self.config.provider.timeout_seconds,
+            timeout=httpx_timeout,
         )
         if resp.status_code in self.config.provider.retry_on_status:
             body = resp.text[:500]
@@ -85,12 +138,16 @@ class FallbackExecutor:
         stream: bool = False,
         base_url: str | None = None,
         deadline: float | None = None,
+        payload_adapter: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        skip_models: set[str] | None = None,
     ) -> tuple[dict | None, httpx.Response | None, str, bool, str | None]:
         """Try primary, then fallbacks, with per-model retries.
 
         Each model in the chain is retried up to ``max_retries`` times (default
-        2) on any provider error (timeout, retryable status, exception) before
-        advancing to the next fallback model.  A backoff of
+        2) on transient provider errors (timeout, retryable status, transport
+        exception) before advancing to the next fallback model. Deterministic
+        4xx responses advance immediately (with one auto-retry if a 400
+        indicates a max_tokens/context-length overflow). A backoff of
         ``retry_backoff_seconds`` is applied between retries on the same model.
 
         ``deadline`` is an absolute ``time.monotonic()`` value bounding the
@@ -98,7 +155,14 @@ class FallbackExecutor:
         budget, and the loop stops once the budget is gone, so a slow chain
         can no longer hang for the sum of every model's timeout.
         """
-        models_to_try = [primary_model, *list(fallback_models)]
+        skip = skip_models or set()
+        models_to_try: list[str] = []
+        seen_in_chain: set[str] = set()
+        for m in [primary_model, *list(fallback_models)]:
+            if m and m not in seen_in_chain and m not in skip:
+                seen_in_chain.add(m)
+                models_to_try.append(m)
+
         last_error: str | None = None
         effective_base_url = (base_url or self.config.provider.base_url).rstrip("/")
         chain_started = time.monotonic()
@@ -118,7 +182,10 @@ class FallbackExecutor:
         )
 
         for i, model in enumerate(models_to_try):
-            for retry in range(max_retries + 1):
+            is_fallback_model = model != primary_model
+            stripped_max_tokens = False
+            retry = 0
+            while retry <= max_retries:
                 remaining = self._remaining_budget(deadline)
                 if remaining is not None and remaining <= 0:
                     last_error = (
@@ -129,7 +196,15 @@ class FallbackExecutor:
                     break
 
                 attempt_timeout = self._attempt_timeout(deadline)
-                request_payload = {**payload, "model": model}
+                if payload_adapter is not None:
+                    request_payload = payload_adapter(model, payload)
+                    request_payload["model"] = model
+                else:
+                    request_payload = {**payload, "model": model}
+                if stripped_max_tokens:
+                    request_payload.pop("max_tokens", None)
+                    request_payload.pop("max_completion_tokens", None)
+
                 attempt_started = time.monotonic()
                 attempt_record: dict[str, Any] = {
                     "model": model,
@@ -166,22 +241,24 @@ class FallbackExecutor:
                                         model=model, retry=retry + 1,
                                         backoff_seconds=backoff,
                                     )
-                                    await asyncio.sleep(backoff)
+                                    if not await self._sleep_backoff(backoff, deadline):
+                                        break
+                                    retry += 1
                                     continue
                                 break  # retries exhausted, advance to next model
                             attempt_record["outcome"] = "success"
-                            attempt_record["fallback_used"] = i > 0
+                            attempt_record["fallback_used"] = is_fallback_model
                             attempts.append(attempt_record)
                             logger.info(
                                 "fallback_chain_success",
                                 model=model,
-                                fallback_used=i > 0,
+                                fallback_used=is_fallback_model,
                                 attempts=attempts,
                                 total_ms=int((time.monotonic() - chain_started) * 1000),
                             )
                             langfuse_tracing._safe_update(
                                 gen, output={"note": "streamed response", "model": model})
-                            return None, resp, model, i > 0, None
+                            return None, resp, model, is_fallback_model, None
                         else:
                             json_resp, err = await self._try_non_stream(
                                 effective_base_url, request_payload, headers, model,
@@ -206,21 +283,30 @@ class FallbackExecutor:
                                         model=model, retry=retry + 1,
                                         backoff_seconds=backoff,
                                     )
-                                    await asyncio.sleep(backoff)
+                                    if not await self._sleep_backoff(backoff, deadline):
+                                        break
+                                    retry += 1
                                     continue
                                 break
-                            # Detect null/empty choices — reasoning models with
-                            # small max_tokens can exhaust all tokens on internal
-                            # reasoning, returning choices=null. Treat as
-                            # retryable so the fallback chain moves to the next
-                            # model instead of returning a malformed response.
+                            # Detect null/empty choices (reasoning models that
+                            # exhausted max_tokens, or HTTP 200 JSON error bodies
+                            # from OpenRouter). Treat as retryable so the fallback
+                            # chain moves to the next model instead of returning a
+                            # malformed/empty response.
                             _choices = (json_resp or {}).get("choices")
                             if not _choices:
-                                last_error = (
-                                    f"upstream returned null/empty choices for "
-                                    f"{model} (likely reasoning model exhausted "
-                                    f"max_tokens)"
-                                )
+                                _embedded_err = (json_resp or {}).get("error")
+                                if _embedded_err:
+                                    last_error = (
+                                        f"upstream 200 error body for {model}: "
+                                        f"{str(_embedded_err)[:300]}"
+                                    )
+                                else:
+                                    last_error = (
+                                        f"upstream returned null/empty choices for "
+                                        f"{model} (likely reasoning model exhausted "
+                                        f"max_tokens)"
+                                    )
                                 attempt_record["outcome"] = "retryable_status"
                                 attempt_record["error"] = last_error
                                 attempts.append(attempt_record)
@@ -241,16 +327,18 @@ class FallbackExecutor:
                                         model=model, retry=retry + 1,
                                         backoff_seconds=backoff,
                                     )
-                                    await asyncio.sleep(backoff)
+                                    if not await self._sleep_backoff(backoff, deadline):
+                                        break
+                                    retry += 1
                                     continue
                                 break
                             attempt_record["outcome"] = "success"
-                            attempt_record["fallback_used"] = i > 0
+                            attempt_record["fallback_used"] = is_fallback_model
                             attempts.append(attempt_record)
                             logger.info(
                                 "fallback_chain_success",
                                 model=model,
-                                fallback_used=i > 0,
+                                fallback_used=is_fallback_model,
                                 attempts=attempts,
                                 total_ms=int((time.monotonic() - chain_started) * 1000),
                             )
@@ -276,7 +364,7 @@ class FallbackExecutor:
                                     "total": usage.get("total_tokens"),
                                 } if usage else None,
                             )
-                            return json_resp, None, model, i > 0, None
+                            return json_resp, None, model, is_fallback_model, None
                     except (TimeoutError, httpx.TimeoutException):
                         last_error = f"timeout for {model}"
                         attempt_record["outcome"] = "timeout"
@@ -297,7 +385,9 @@ class FallbackExecutor:
                                 model=model, retry=retry + 1,
                                 backoff_seconds=backoff,
                             )
-                            await asyncio.sleep(backoff)
+                            if not await self._sleep_backoff(backoff, deadline):
+                                break
+                            retry += 1
                             continue
                         break
                     except httpx.HTTPStatusError as e:
@@ -313,10 +403,11 @@ class FallbackExecutor:
                             except Exception:
                                 raw = ""
                         body = raw[:300].strip().replace("\n", " ")
+                        status_code = e.response.status_code
                         last_error = (
-                            f"upstream {e.response.status_code} for {model}: {body}"
+                            f"upstream {status_code} for {model}: {body}"
                             if body
-                            else f"upstream {e.response.status_code} for {model}"
+                            else f"upstream {status_code} for {model}"
                         )
                         attempt_record["outcome"] = "http_status_error"
                         attempt_record["error"] = last_error
@@ -328,6 +419,25 @@ class FallbackExecutor:
                         )
                         langfuse_tracing._safe_update(
                             gen, level="ERROR", status_message=last_error[:500])
+                        # Auto-recover from 400 max_tokens/context overflow by
+                        # stripping max_tokens once before giving up on this model.
+                        if (
+                            not stripped_max_tokens
+                            and ("max_tokens" in request_payload or "max_completion_tokens" in request_payload)
+                            and _is_max_tokens_400(status_code, body)
+                        ):
+                            stripped_max_tokens = True
+                            router_provider_retries_total.labels(
+                                model=model, reason="max_tokens_400").inc()
+                            logger.info(
+                                "provider_retry_strip_max_tokens",
+                                model=model,
+                            )
+                            continue
+                        # Do not waste retries/backoff on deterministic 4xx errors —
+                        # advance immediately to the next fallback model.
+                        if status_code in _NON_RETRYABLE_4XX:
+                            break
                         if retry < max_retries:
                             router_provider_retries_total.labels(
                                 model=model, reason="http_status_error").inc()
@@ -336,7 +446,9 @@ class FallbackExecutor:
                                 model=model, retry=retry + 1,
                                 backoff_seconds=backoff,
                             )
-                            await asyncio.sleep(backoff)
+                            if not await self._sleep_backoff(backoff, deadline):
+                                break
+                            retry += 1
                             continue
                         break
                     except Exception as e:
@@ -359,7 +471,9 @@ class FallbackExecutor:
                                 model=model, retry=retry + 1,
                                 backoff_seconds=backoff,
                             )
-                            await asyncio.sleep(backoff)
+                            if not await self._sleep_backoff(backoff, deadline):
+                                break
+                            retry += 1
                             continue
                         break
             # inner retry loop exhausted for this model — outer loop advances

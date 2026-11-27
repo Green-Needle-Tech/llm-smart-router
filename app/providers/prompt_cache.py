@@ -135,6 +135,42 @@ def extract_cache_usage(json_resp: dict[str, Any]) -> tuple[int, int]:
     return cached, written
 
 
+def strip_cache_control_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a copy of messages with any `cache_control` keys removed from content blocks.
+
+    Used when adapting a payload from an explicit-cache model (e.g. Anthropic)
+    to a fallback model whose upstream rejects `cache_control` / `ttl` fields.
+    """
+    cleaned: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            cleaned.append(msg)
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and "cache_control" in b for b in content
+        ):
+            new_blocks = [
+                {k: v for k, v in b.items() if k != "cache_control"}
+                if isinstance(b, dict) and "cache_control" in b
+                else b
+                for b in content
+            ]
+            # Collapse back to plain string if it was a single plain text block
+            if (
+                len(new_blocks) == 1
+                and isinstance(new_blocks[0], dict)
+                and set(new_blocks[0].keys()) == {"type", "text"}
+                and new_blocks[0].get("type") == "text"
+            ):
+                cleaned.append({**msg, "content": new_blocks[0]["text"]})
+            else:
+                cleaned.append({**msg, "content": new_blocks})
+        else:
+            cleaned.append(msg)
+    return cleaned
+
+
 def apply_prompt_cache_features(
     payload: dict[str, Any],
     session_id: str | None,

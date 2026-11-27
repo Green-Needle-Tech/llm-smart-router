@@ -274,7 +274,7 @@ def create_app() -> FastAPI:
     )
 
     # Middleware (Starlette executes last-added outermost)
-    app.add_middleware(RequestLimitsMiddleware, max_body_bytes=10_485_760)
+    app.add_middleware(RequestLimitsMiddleware, max_body_bytes=33_554_432)
     app.middleware("http")(error_middleware)
     app.middleware("http")(request_id_middleware)
     # Langfuse tracing (outermost): one trace per chat completion request,

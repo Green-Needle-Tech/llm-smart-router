@@ -33,6 +33,7 @@ class OpenRouterAdapter(ProviderAdapter):
         self._fallback_executor = FallbackExecutor(config, self.http)
         self._pricing: dict[str, dict] = {}
         self._max_tokens: dict[str, int] = {}  # model_id → max_completion_tokens
+        self._context_lengths: dict[str, int] = {}  # model_id → context_length
 
     def update_config(self, config) -> None:
         """Apply hot-reloaded configuration to adapter and fallback executor."""
@@ -55,6 +56,8 @@ class OpenRouterAdapter(ProviderAdapter):
         base_url: str | None = None,
         api_key: str | None = None,
         deadline: float | None = None,
+        payload_adapter=None,
+        skip_models: set[str] | None = None,
     ) -> tuple[dict | None, httpx.Response | None, str, bool, str | None]:
         """Execute a chat completion with fallback chain.
 
@@ -63,6 +66,9 @@ class OpenRouterAdapter(ProviderAdapter):
         When api_key is provided, it overrides the adapter's default key.
         When deadline is provided (an absolute time.monotonic() value), the
         whole fallback chain is bounded by it — see FallbackExecutor.
+        When payload_adapter is provided, it is invoked per candidate model
+        to adapt model-specific fields (max_tokens, reasoning, cache_control).
+        When skip_models is provided, those models are skipped in the chain.
         """
         primary_model = payload.get("model", "")
         fallbacks = fallback_models or []
@@ -80,6 +86,8 @@ class OpenRouterAdapter(ProviderAdapter):
             stream=stream,
             base_url=base_url,
             deadline=deadline,
+            payload_adapter=payload_adapter,
+            skip_models=skip_models,
         )
 
     async def list_models(self) -> list[dict]:
@@ -92,7 +100,7 @@ class OpenRouterAdapter(ProviderAdapter):
             resp.raise_for_status()
             data = resp.json()
             models = data.get("data", [])
-            # Cache pricing and max_completion_tokens
+            # Cache pricing, max_completion_tokens, and context_length
             for m in models:
                 mid = m.get("id", "")
                 if not mid:
@@ -103,12 +111,18 @@ class OpenRouterAdapter(ProviderAdapter):
                         "prompt": float(pricing.get("prompt", 0) or 0),
                         "completion": float(pricing.get("completion", 0) or 0),
                     }
-                # Cache max_completion_tokens from top_provider
-                top = m.get("top_provider", {})
+                # Cache max_completion_tokens and context_length from top_provider / root
+                top = m.get("top_provider") or {}
                 mct = top.get("max_completion_tokens")
                 if mct is not None:
                     with contextlib.suppress(TypeError, ValueError):
                         self._max_tokens[mid] = int(mct)
+                ctx = top.get("context_length") or m.get("context_length")
+                if ctx is not None:
+                    with contextlib.suppress(TypeError, ValueError):
+                        ctx_int = int(ctx)
+                        if ctx_int > 0:
+                            self._context_lengths[mid] = ctx_int
             return models
         except Exception:
             return []
@@ -120,6 +134,10 @@ class OpenRouterAdapter(ProviderAdapter):
     def get_max_completion_tokens(self, model: str) -> int | None:
         """Get cached max_completion_tokens for a model from OpenRouter."""
         return self._max_tokens.get(model)
+
+    def get_context_length(self, model: str) -> int | None:
+        """Get cached context_length for a model from OpenRouter."""
+        return self._context_lengths.get(model)
 
     def get_all_max_tokens(self) -> dict[str, int]:
         """Return the full max_completion_tokens cache."""

@@ -15,7 +15,12 @@ class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8080
     request_timeout_seconds: int = 600
-    max_body_bytes: int = 10485760
+    max_body_bytes: int = 33_554_432
+    max_messages: int = 2_000
+    max_message_text_bytes: int = 2_097_152
+    max_tools: int = 256
+    max_tool_schema_bytes: int = 131_072
+    max_max_tokens: int = 524_288
 
 
 class AuthConfig(BaseModel):
@@ -132,7 +137,9 @@ class ProviderConfig(BaseModel):
     connect_timeout_seconds: int = 10
     max_retries: int = 2
     retry_backoff_seconds: float = 1.5
-    retry_on_status: list[int] = Field(default_factory=lambda: [429, 500, 502, 503, 504])
+    retry_on_status: list[int] = Field(
+        default_factory=lambda: [408, 429, 500, 502, 503, 504, 520, 522, 524, 529]
+    )
     headers: dict[str, str] = Field(default_factory=dict)
     pricing_refresh_seconds: int = 21600
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)

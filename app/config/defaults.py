@@ -6,7 +6,7 @@ DEFAULTS = {
         "host": "0.0.0.0",
         "port": 8080,
         "request_timeout_seconds": 600,
-        "max_body_bytes": 10485760,
+        "max_body_bytes": 33554432,
     },
     "auth": {
         "enabled": True,
@@ -20,7 +20,7 @@ DEFAULTS = {
         "connect_timeout_seconds": 10,
         "max_retries": 2,
         "retry_backoff_seconds": 1.5,
-        "retry_on_status": [429, 500, 502, 503, 504],
+        "retry_on_status": [408, 429, 500, 502, 503, 504, 520, 522, 524, 529],
         "headers": {
             "HTTP-Referer": "http://localhost:8080",
             "X-Title": "Hermes Smart Router",

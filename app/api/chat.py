@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -26,7 +27,12 @@ from app.guardrails.streaming import secret_carry_split
 from app.middleware.auth import check_router_auth, unauthorized_response
 from app.middleware.request_limits import validate_request_bounds
 from app.privacy.ip_redaction import IPRedactionEngine
-from app.providers.prompt_cache import apply_prompt_cache_features, extract_cache_usage
+from app.providers.prompt_cache import (
+    apply_prompt_cache_features,
+    extract_cache_usage,
+    needs_explicit_cache_control,
+    strip_cache_control_from_messages,
+)
 from app.routing.policy import PolicyViolation, enforce_route_policy
 from app.schemas.openai import ChatCompletionRequest
 from app.schemas.router import (
@@ -975,43 +981,45 @@ async def _create_and_pin_session(
     max_level, min_level, include_metadata, redaction_key,
 ):
     """Classify, create a new session pin, and forward to provider."""
-    level, classification, cache_key = await _classify_and_pin(
-        request, body, config, classifier, routing_engine, forced_level, task_text, bypass_cache, start, session_id,
-    )
+    try:
+        level, classification, cache_key = await _classify_and_pin(
+            request, body, config, classifier, routing_engine, forced_level, task_text, bypass_cache, start, session_id,
+        )
 
-    # Write to cache if we ran the classifier
-    if cache_key and config.classification.cache.enabled and classification.source != ClassificationSource.CACHE:
-        cache = request.app.state.classification_cache
-        await cache.put(cache_key, {
-            "level": level.value,
-            "confidence": classification.confidence,
-            "reason": classification.reason,
-            "source": classification.source.value,
-        })
+        # Write to cache if we ran the classifier
+        if cache_key and config.classification.cache.enabled and classification.source != ClassificationSource.CACHE:
+            cache = request.app.state.classification_cache
+            await cache.put(cache_key, {
+                "level": level.value,
+                "confidence": classification.confidence,
+                "reason": classification.reason,
+                "source": classification.source.value,
+            })
 
-    effective_level = level
-    if max_level and effective_level > max_level:
-        effective_level = max_level
-    if min_level and effective_level < min_level:
-        effective_level = min_level
+        effective_level = level
+        if max_level and effective_level > max_level:
+            effective_level = max_level
+        if min_level and effective_level < min_level:
+            effective_level = min_level
 
-    model = routing_engine.resolve_model_for_level(effective_level)
-    params = config.routing.get_params(effective_level.value)
+        model = routing_engine.resolve_model_for_level(effective_level)
+        params = config.routing.get_params(effective_level.value)
 
-    is_unknown = bool(classification.reason and "UNKNOWN" in classification.reason.upper())
-    status = SessionStatus.PROVISIONAL if is_unknown else SessionStatus.PINNED
+        is_unknown = bool(classification.reason and "UNKNOWN" in classification.reason.upper())
+        status = SessionStatus.PROVISIONAL if is_unknown else SessionStatus.PINNED
 
-    new_pin = SessionPin(
-        session_id=session_id, level=effective_level, model=model,
-        params=params, status=status, classification=classification, turn_count=1,
-        provisional_turns=1 if is_unknown else 0,
-    )
-    if not is_unknown:
-        new_pin.escalation.original_level = effective_level
-    new_pin.touch(config.session.idle_ttl_seconds, config.session.max_ttl_seconds)
+        new_pin = SessionPin(
+            session_id=session_id, level=effective_level, model=model,
+            params=params, status=status, classification=classification, turn_count=1,
+            provisional_turns=1 if is_unknown else 0,
+        )
+        if not is_unknown:
+            new_pin.escalation.original_level = effective_level
+        new_pin.touch(config.session.idle_ttl_seconds, config.session.max_ttl_seconds)
 
-    await store.release(session_id)
-    await store.put(new_pin)
+        await store.put(new_pin)
+    finally:
+        await store.release(session_id)
 
     router_sessions_created_total.labels(level=effective_level.value, id_source=session_source.value).inc()
     router_sessions_active.labels(level=effective_level.value).inc()
@@ -1239,7 +1247,7 @@ def _apply_escalation(pin, signals_fired, esc_cfg, config) -> tuple[Level, str] 
             pin.turn_count >= pin.escalation.cooldown_until_turn):
         return None
     new_level = Level.from_numeric(pin.level.numeric + 1)
-    if new_level > Level.from_str(config.routing.global_max_level):
+    if new_level == pin.level or new_level > Level.from_str(config.routing.global_max_level):
         return None
     # L5 guard: require a strong signal for the final tier
     has_strong = any(s in _STRONG_ESCALATION_SIGNALS for s, _ in signals_fired)
@@ -1309,16 +1317,60 @@ def _clear_upstream_failure(pin) -> None:
         pin.escalation.consecutive_failures = 0
 
 
+def _collect_cross_tier_emergency_models(
+    config,
+    current_level: Level,
+    tried_models: set[str],
+) -> list[tuple[str, str | None, str | None]]:
+    """Collect remaining untried models configured across OTHER tiers.
+
+    Ordered closest-tier-first (higher tiers up to global_max_level first,
+    then lower tiers down to L1). Used as a last-resort within-router failover
+    so a long task stays on llm-smart-router whenever ANY configured upstream
+    model is healthy, without re-pinning the session.
+    """
+    routing = getattr(config, "routing", None)
+    if routing is None or not hasattr(routing, "L1") or not hasattr(routing, "get_tier"):
+        return []
+    try:
+        global_max = Level.from_str(getattr(routing, "global_max_level", "L5"))
+    except (ValueError, AttributeError):
+        global_max = Level.L5
+
+    cur_num = current_level.numeric
+    # Prefer higher tiers first (closest above), then lower tiers (closest below)
+    candidate_nums = [n for n in range(cur_num + 1, global_max.numeric + 1)] + [
+        n for n in range(cur_num - 1, 0, -1)
+    ]
+
+    result: list[tuple[str, str | None, str | None]] = []
+    seen: set[str] = set(tried_models)
+    for num in candidate_nums:
+        lvl = Level.from_numeric(num)
+        try:
+            tier = routing.get_tier(lvl.value)
+        except Exception:
+            continue
+        t_base_url, t_api_key = _resolve_tier_provider(config, lvl.value)
+        for m in [getattr(tier, "model", ""), *(getattr(tier, "fallbacks", None) or [])]:
+            if m and m not in seen:
+                seen.add(m)
+                result.append((m, t_base_url, t_api_key))
+    return result
+
+
 async def _retry_with_higher_tier(
     request, body, route, pin, config, routing_engine, include_metadata, start,
     session_id, session_source, redaction_key, store,
+    *, tried_models: set[str] | None = None, deadline: float | None = None,
 ):
     """Retry a failed request with the next tier up.
 
     Called when retry_on_failure is enabled and the upstream call failed.
-    Bumps the pin to the next tier, updates the store, and re-forwards.
-    Returns the response from the higher tier, or None if no higher tier
-    is available or retry budget is exhausted.
+    Bumps the pin to the next tier that has untried models, updates the store,
+    and re-forwards while skipping already-failed models. Returns the response
+    from the higher tier, or None if no higher tier is available or retry
+    budget is exhausted.
     """
     esc_cfg = config.session.escalation
     if pin is None:
@@ -1331,8 +1383,27 @@ async def _retry_with_higher_tier(
         )
         return None
 
-    new_level = Level.from_numeric(pin.level.numeric + 1)
-    if new_level > Level.from_str(config.routing.global_max_level):
+    global_max = Level.from_str(config.routing.global_max_level)
+    skip = tried_models if tried_models is not None else set()
+
+    # Find the next higher tier that actually has at least one untried model
+    # (prevents L3 -> L4 from retrying the exact same failed model when
+    # adjacent tiers share a primary model).
+    new_level: Level | None = None
+    probe_num = pin.level.numeric + 1
+    while probe_num <= global_max.numeric:
+        cand = Level.from_numeric(probe_num)
+        if cand == pin.level:
+            break
+        cand_primary = routing_engine.resolve_model_for_level(cand)
+        cand_fbs = config.routing.get_fallbacks(cand.value)
+        cand_models = [m for m in [cand_primary, *cand_fbs] if m and m not in skip]
+        if cand_models or not skip:
+            new_level = cand
+            break
+        probe_num += 1
+
+    if new_level is None or new_level == pin.level or new_level > global_max:
         logger.info(
             "router.retry.max_tier_reached",
             session_id=session_id,
@@ -1340,8 +1411,10 @@ async def _retry_with_higher_tier(
         )
         return None
 
-    pin.escalation.retry_count += 1
     old_level = pin.level
+    old_model = pin.model
+    old_params = pin.params
+    pin.escalation.retry_count += 1
     pin.level = new_level
     pin.model = routing_engine.resolve_model_for_level(new_level)
     pin.params = config.routing.get_params(new_level.value)
@@ -1369,10 +1442,20 @@ async def _retry_with_higher_tier(
         ),
         escalated=True, escalated_from=old_level,
     )
-    return await _forward_to_provider(
+    resp = await _forward_to_provider(
         request, body, new_route, session_id, session_source, pin,
         include_metadata, start, redaction_key=redaction_key,
+        tried_models=skip, deadline=deadline,
     )
+    if getattr(resp, "status_code", 200) >= 500:
+        # Escalated tier also failed completely; restore pin level so callers
+        # or subsequent emergency fallbacks see consistent state.
+        pin.level = old_level
+        pin.model = old_model
+        pin.params = old_params
+        await store.put(pin)
+        return None
+    return resp
 
 
 def _resolve_tier_provider(config, level: str) -> tuple[str | None, str | None]:
@@ -1432,6 +1515,24 @@ async def _check_budget(request, body, route, session_id, config) -> JSONRespons
     return None
 
 
+def _strip_reasoning_disable_for_model(payload: dict, model: str, config) -> None:
+    """Remove reasoning-disable directives for reasoning-mandatory models."""
+    mandatory = getattr(
+        getattr(config, "provider", None), "reasoning_mandatory_models", None
+    ) or []
+    if model not in mandatory:
+        return
+    reasoning = payload.get("reasoning")
+    # A disable arrives in two wire shapes: ``{"enabled": false}`` (direct)
+    # and ``{"effort": "none"}`` (Hermes aux client translates enabled=false
+    # to effort:"none" on Responses-API routes). Both hard-400 on
+    # reasoning-mandatory models.
+    if isinstance(reasoning, dict) and (
+        reasoning.get("enabled") is False or reasoning.get("effort") == "none"
+    ):
+        del payload["reasoning"]
+
+
 def _strip_reasoning_disable(payload: dict, route, config) -> None:
     """Remove `reasoning: {"enabled": false}` for reasoning-mandatory models.
 
@@ -1441,19 +1542,105 @@ def _strip_reasoning_disable(payload: dict, route, config) -> None:
     `reasoning.enabled=false` by design; stripping it for these models avoids
     a deterministic 400, 3 wasted retries, and an unnecessary fallback.
     """
-    mandatory = getattr(
-        getattr(config, "provider", None), "reasoning_mandatory_models", None
-    ) or []
-    if route.model not in mandatory:
+    _strip_reasoning_disable_for_model(payload, route.model, config)
+
+
+def _estimate_prompt_tokens(payload: dict) -> int:
+    """Conservative token count estimate for messages + tools (~3 chars/token)."""
+    total_chars = 0
+    for msg in payload.get("messages") or ():
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for blk in content:
+                if isinstance(blk, dict):
+                    txt = blk.get("text")
+                    if isinstance(txt, str):
+                        total_chars += len(txt)
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            with contextlib.suppress(TypeError, ValueError):
+                total_chars += len(json.dumps(tool_calls))
+    tools = payload.get("tools")
+    if tools:
+        with contextlib.suppress(TypeError, ValueError):
+            total_chars += len(json.dumps(tools))
+    return (total_chars // 3) + 256
+
+
+def _apply_max_tokens(
+    payload, route, config, provider, *, model: str | None = None,
+) -> None:
+    """Resolve max_tokens: 'auto' uses OpenRouter-detected value clamped to context."""
+    target_model = model or route.model
+    routing = getattr(config, "routing", None)
+    tier_max_tokens = (
+        routing.get_max_tokens(route.level.value)
+        if routing is not None and hasattr(routing, "get_max_tokens")
+        else None
+    )
+    resolved: int | None = None
+    if isinstance(tier_max_tokens, str) and tier_max_tokens == "auto":
+        get_mct = getattr(provider, "get_max_completion_tokens", None)
+        detected = get_mct(target_model) if callable(get_mct) else None
+        if detected is not None and detected > 0:
+            resolved = detected
+    elif isinstance(tier_max_tokens, int) and tier_max_tokens > 0:
+        resolved = tier_max_tokens
+
+    if resolved is None:
         return
-    reasoning = payload.get("reasoning")
-    if isinstance(reasoning, dict):
-        # A disable arrives in two wire shapes: ``{"enabled": false}`` (direct)
-        # and ``{"effort": "none"}`` (Hermes aux client translates enabled=false
-        # to effort:"none" on Responses-API routes). Both hard-400 on
-        # reasoning-mandatory models.
-        if reasoning.get("enabled") is False or reasoning.get("effort") == "none":
-            del payload["reasoning"]
+
+    # Guard against long-conversation context overflow: never request
+    # prompt_tokens + max_tokens > model_context_length.
+    get_ctx = getattr(provider, "get_context_length", None)
+    ctx_len = get_ctx(target_model) if callable(get_ctx) else None
+    if isinstance(ctx_len, int) and ctx_len > 0:
+        est_prompt = _estimate_prompt_tokens(payload)
+        headroom = ctx_len - est_prompt - 512
+        if headroom < 256:
+            # Prompt is near or over this model's context window — drop
+            # max_tokens so the provider can fit or reject cleanly to fallback.
+            payload.pop("max_tokens", None)
+            return
+        if resolved > headroom:
+            resolved = headroom
+
+    payload["max_tokens"] = resolved
+
+
+def _adapt_payload_for_model(
+    base_payload: dict[str, Any],
+    model: str,
+    route,
+    session_id: str | None,
+    config,
+    provider,
+) -> dict[str, Any]:
+    """Build a model-adapted copy of base_payload for primary or fallback attempts.
+
+    Ensures per-model reasoning rules, prompt-cache cache_control headers, and
+    context-safe max_tokens are always valid for the specific candidate model.
+    """
+    adapted = dict(base_payload)
+    adapted["model"] = model
+    _strip_reasoning_disable_for_model(adapted, model, config)
+
+    # Adapt prompt cache_control: strip Anthropic/Qwen cache_control when
+    # falling back to a provider that caches implicitly (and may reject ttl).
+    if "messages" in adapted and isinstance(adapted["messages"], list):
+        if needs_explicit_cache_control(model):
+            # Clone message list shallowly before injecting cache_control
+            adapted["messages"] = [dict(m) if isinstance(m, dict) else m for m in adapted["messages"]]
+            apply_prompt_cache_features(adapted, session_id, config)
+        else:
+            adapted["messages"] = strip_cache_control_from_messages(adapted["messages"])
+
+    _apply_max_tokens(adapted, route, config, provider, model=model)
+    return adapted
 
 
 def _build_upstream_payload(body, route, session_id, config, provider) -> dict:
@@ -1472,20 +1659,10 @@ def _build_upstream_payload(body, route, session_id, config, provider) -> dict:
     return payload
 
 
-def _apply_max_tokens(payload, route, config, provider) -> None:
-    """Resolve max_tokens: 'auto' uses OpenRouter-detected value; int uses as-is."""
-    tier_max_tokens = config.routing.get_max_tokens(route.level.value)
-    if isinstance(tier_max_tokens, str) and tier_max_tokens == "auto":
-        detected = provider.get_max_completion_tokens(route.model)
-        if detected is not None and detected > 0:
-            payload["max_tokens"] = detected
-    elif isinstance(tier_max_tokens, int) and tier_max_tokens > 0:
-        payload["max_tokens"] = tier_max_tokens
-
-
 async def _forward_to_provider(
     request, body, route, session_id, session_source, pin, include_metadata, start,
     redaction_key=None,
+    *, tried_models: set[str] | None = None, deadline: float | None = None,
 ):
     """Forward the request to the provider and return the response."""
     config = request.app.state.config.get()
@@ -1514,7 +1691,8 @@ async def _forward_to_provider(
         payload = _build_upstream_payload(body, route, session_id, config, provider)
         fallbacks = config.routing.get_fallbacks(route.level.value)
         tier_base_url, tier_api_key = _resolve_tier_provider(config, route.level.value)
-        deadline = _provider_deadline(config)
+        if deadline is None:
+            deadline = _provider_deadline(config)
 
         router_active_requests.inc()
         try:
@@ -1522,12 +1700,12 @@ async def _forward_to_provider(
                 return await _handle_stream(
                     request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
                     redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
-                    deadline=deadline,
+                    deadline=deadline, tried_models=tried_models,
                 )
             return await _handle_non_stream(
                 request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
                 redaction_key=redaction_key, tier_base_url=tier_base_url, tier_api_key=tier_api_key,
-                deadline=deadline,
+                deadline=deadline, tried_models=tried_models,
             )
         finally:
             router_active_requests.dec()
@@ -1574,27 +1752,38 @@ def _record_request_metrics(route, model_used, fallback_used, upstream_ms) -> No
 async def _handle_non_stream(
     request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
     redaction_key=None, tier_base_url=None, tier_api_key=None, deadline=None,
+    tried_models: set[str] | None = None,
 ):
     """Handle non-streaming request."""
     provider = request.app.state.provider
+    config = request.app.state.config.get()
     if deadline is None:
-        deadline = _provider_deadline(request.app.state.config.get())
+        deadline = _provider_deadline(config)
+
+    def adapter(m, p):
+        return _adapt_payload_for_model(p, m, route, session_id, config, provider)
+    seen_models: set[str] = set(tried_models) if tried_models is not None else set()
 
     upstream_start = time.monotonic()
     json_resp, _, model_used, fallback_used, error = await provider.chat_completion(
         payload, fallback_models=fallbacks, stream=False,
         base_url=tier_base_url, api_key=tier_api_key, deadline=deadline,
+        payload_adapter=adapter, skip_models=seen_models or None,
     )
     upstream_ms = int((time.monotonic() - upstream_start) * 1000)
     total_ms = int((time.monotonic() - start) * 1000)
 
     if error and json_resp is None:
+        for m in [route.model, *list(fallbacks or [])]:
+            if m:
+                seen_models.add(m)
         # Mark the pin as having an upstream failure for next-turn escalation
-        config = request.app.state.config.get()
         _mark_upstream_failure(pin, config)
 
+        esc_cfg = getattr(getattr(config, "session", None), "escalation", None)
+        retry_cfg = getattr(esc_cfg, "retry_on_failure", False) if esc_cfg else False
+
         # Attempt immediate retry with a higher tier if enabled
-        retry_cfg = getattr(config.session.escalation, "retry_on_failure", False)
         if retry_cfg and pin is not None:
             routing_engine = request.app.state.routing_engine
             store = request.app.state.session_store
@@ -1602,10 +1791,48 @@ async def _handle_non_stream(
                 request, body, route, pin, config,
                 routing_engine, include_metadata, start, session_id,
                 session_source, redaction_key, store,
+                tried_models=seen_models, deadline=deadline,
             )
             if retry_resp is not None:
                 return retry_resp
 
+        # Last-resort cross-tier emergency fallback (when retry_on_failure is
+        # enabled and outer call has remaining budget): try any remaining
+        # untried configured models across other tiers without re-pinning.
+        if (
+            retry_cfg
+            and tried_models is None
+            and (deadline is None or (deadline - time.monotonic()) > 2)
+        ):
+            emergency = _collect_cross_tier_emergency_models(config, route.level, seen_models)
+            for em_model, em_base_url, em_api_key in emergency:
+                if deadline is not None and (deadline - time.monotonic()) <= 1:
+                    break
+                seen_models.add(em_model)
+                em_payload = _adapt_payload_for_model(
+                    payload, em_model, route, session_id, config, provider,
+                )
+                em_resp, _, em_used, _, em_err = await provider.chat_completion(
+                    em_payload, fallback_models=[], stream=False,
+                    base_url=em_base_url, api_key=em_api_key, deadline=deadline,
+                )
+                if em_resp is not None and not em_err:
+                    logger.warning(
+                        "router.emergency_cross_tier_fallback.succeeded",
+                        session_id=session_id,
+                        level=route.level.value,
+                        from_model=route.model,
+                        to_model=em_used,
+                    )
+                    json_resp = em_resp
+                    model_used = em_used
+                    fallback_used = True
+                    error = None
+                    upstream_ms = int((time.monotonic() - upstream_start) * 1000)
+                    total_ms = int((time.monotonic() - start) * 1000)
+                    break
+
+    if error and json_resp is None:
         status = 502 if "exhausted" in error else 504
         error_type = "upstream_error" if status == 502 else "upstream_timeout"
         return JSONResponse(
@@ -1778,9 +2005,9 @@ def _stall_timeouts(config) -> tuple[float | None, float | None]:
 class _StreamStalled(Exception):
     """Upstream stopped producing SSE data within the allowed window.
 
-    ``first_token`` is True when nothing had been forwarded to the client yet,
+    ``first_token`` is True when no meaningful SSE data had arrived yet,
     which means the stall is still transparently recoverable by restreaming
-    from a different (higher) tier.
+    from a fallback model or higher tier.
     """
 
     def __init__(self, waited: float, *, first_token: bool):
@@ -1790,19 +2017,94 @@ class _StreamStalled(Exception):
         super().__init__(f"upstream stalled: no {stage} for {waited:.0f}s")
 
 
+class _StreamUpstreamError(Exception):
+    """Recoverable upstream stream failure before any content reached client.
+
+    Covers OpenRouter HTTP-200 SSE-embedded error events (``data: {"error": ...}``),
+    ``finish_reason: "error"``, and empty/abruptly closed upstream streams.
+    """
+
+
+def _is_sse_keepalive_or_blank(line: str) -> bool:
+    """True for SSE comment lines (e.g. `: OPENROUTER PROCESSING`) and blanks."""
+    stripped = line.strip()
+    return not stripped or stripped.startswith(":")
+
+
+def _inspect_sse_data_line(line: str) -> tuple[str, str | None]:
+    """Classify a `data: ...` SSE line (excluding `[DONE]`).
+
+    Returns `(kind, detail)` where `kind` is:
+      - ``"error"``   — SSE-embedded error or error finish_reason with no content
+      - ``"content"`` — real client-visible content/reasoning/tool_calls chunk
+      - ``"meta"``    — role-only opener, usage-only, or non-content metadata chunk
+    """
+    try:
+        data = json.loads(line[6:])
+    except (ValueError, TypeError):
+        return "content", None
+    if not isinstance(data, dict):
+        return "meta", None
+    choices = data.get("choices")
+    if "error" in data and not choices:
+        return "error", str(data["error"])[:300]
+    if isinstance(choices, list) and choices:
+        has_visible = False
+        has_error_finish = False
+        for ch in choices:
+            if not isinstance(ch, dict):
+                continue
+            delta = ch.get("delta") or {}
+            if isinstance(delta, dict) and (
+                delta.get("content")
+                or delta.get("reasoning")
+                or delta.get("reasoning_content")
+                or delta.get("tool_calls")
+                or delta.get("function_call")
+            ):
+                has_visible = True
+            if ch.get("finish_reason") == "error":
+                has_error_finish = True
+        if has_visible:
+            return "content", None
+        if has_error_finish:
+            return "error", "upstream stream ended with finish_reason=error"
+    return "meta", None
+
+
 async def _aiter_lines_with_stall_guard(stream_resp, first_timeout, idle_timeout):
     """Yield SSE lines, raising _StreamStalled when upstream goes silent.
 
-    httpx's own read timeout resets on every byte, so a model that trickles
-    data slowly never trips it.  This wraps each ``__anext__`` in
-    ``asyncio.wait_for`` to enforce a real stall deadline, using a longer
-    window for the first token (upstream queueing / prompt processing) than
-    for subsequent chunks.
+    httpx's own read timeout resets on every byte, and OpenRouter emits
+    ``: OPENROUTER PROCESSING`` SSE comment keepalives while queued.
+    Comments and blank lines are yielded so the client connection stays warm,
+    but they do NOT reset the wall-clock first-token deadline or the
+    inter-data idle window — preventing infinite keepalive hangs and ensuring
+    first-token recovery stays armed until real ``data:`` arrives.
     """
     iterator = stream_resp.aiter_lines().__aiter__()
-    seen_any = False
+    seen_data = False
+    first_deadline = (
+        time.monotonic() + first_timeout if first_timeout is not None else None
+    )
+    last_data_at: float | None = None
     while True:
-        timeout = idle_timeout if seen_any else first_timeout
+        if not seen_data:
+            if first_deadline is not None:
+                timeout = first_deadline - time.monotonic()
+                if timeout <= 0:
+                    raise _StreamStalled(first_timeout or 0, first_token=True)
+            else:
+                timeout = None
+        else:
+            if idle_timeout is not None:
+                elapsed = time.monotonic() - (last_data_at or time.monotonic())
+                timeout = idle_timeout - elapsed
+                if timeout <= 0:
+                    raise _StreamStalled(idle_timeout, first_token=False)
+            else:
+                timeout = None
+
         try:
             if timeout is None:
                 line = await iterator.__anext__()
@@ -1811,36 +2113,57 @@ async def _aiter_lines_with_stall_guard(stream_resp, first_timeout, idle_timeout
         except StopAsyncIteration:
             return
         except TimeoutError as exc:
-            raise _StreamStalled(timeout or 0, first_token=not seen_any) from exc
-        seen_any = True
+            waited = idle_timeout if seen_data else first_timeout
+            raise _StreamStalled(waited or 0, first_token=not seen_data) from exc
+
+        if not _is_sse_keepalive_or_blank(line):
+            seen_data = True
+            last_data_at = time.monotonic()
         yield line
 
 
-def _next_tier_route(route, pin, config, routing_engine):
-    """Build a RouteDecision one tier above ``route``, or None if capped."""
+def _next_tier_route(route, pin, config, routing_engine, *, skip_models: set[str] | None = None):
+    """Build a RouteDecision for the next higher tier with untried models, or None."""
     if routing_engine is None:
         return None
     try:
-        new_level = Level.from_numeric(route.level.numeric + 1)
+        global_max = Level.from_str(config.routing.global_max_level)
     except (ValueError, AttributeError):
         return None
-    # from_numeric clamps at L5 — at the top tier there is nowhere to escalate,
-    # and restreaming the same tier would just hit the same stalled model.
-    if new_level == route.level:
-        return None
+    skip = skip_models or set()
+
+    new_level: Level | None = None
+    model: str | None = None
+    params: dict[str, Any] = {}
     try:
-        if new_level > Level.from_str(config.routing.global_max_level):
-            return None
-    except (ValueError, AttributeError):
+        probe_num = route.level.numeric + 1
+    except AttributeError:
         return None
-    try:
-        model = routing_engine.resolve_model_for_level(new_level)
-        params = config.routing.get_params(new_level.value)
-    except (AttributeError, KeyError, ValueError):
+
+    while probe_num <= global_max.numeric:
+        cand = Level.from_numeric(probe_num)
+        if cand == route.level:
+            break
+        try:
+            cand_model = routing_engine.resolve_model_for_level(cand)
+            cand_params = config.routing.get_params(cand.value)
+            cand_fbs = config.routing.get_fallbacks(cand.value)
+        except (AttributeError, KeyError, ValueError):
+            break
+        untried = [m for m in [cand_model, *(cand_fbs or [])] if m and m not in skip]
+        if untried or not skip:
+            new_level = cand
+            model = untried[0] if untried else cand_model
+            params = cand_params
+            break
+        probe_num += 1
+
+    if new_level is None or model is None:
         return None
+
     if pin is not None:
         pin.level = new_level
-        pin.model = model
+        pin.model = routing_engine.resolve_model_for_level(new_level)
         pin.params = params
         if getattr(pin.escalation, "original_level", None) is None:
             pin.escalation.original_level = route.level
@@ -1859,7 +2182,7 @@ def _stall_retry_budget_left(pin, config) -> bool:
     """True when the session may still burn a stall-recovery escalation."""
     if pin is None:
         return False
-    esc_cfg = getattr(config.session, "escalation", None)
+    esc_cfg = getattr(getattr(config, "session", None), "escalation", None)
     cap = getattr(esc_cfg, "retry_on_failure_max_per_session", 2) if esc_cfg else 2
     return pin.escalation.retry_count < cap
 
@@ -2030,25 +2353,36 @@ async def _rehydrate_line(
 async def _handle_stream(
     request, payload, body, route, fallbacks, session_id, session_source, pin, include_metadata, start,
     redaction_key=None, tier_base_url=None, tier_api_key=None, deadline=None,
+    tried_models: set[str] | None = None,
 ):
-    """Handle streaming request — pass through SSE chunks."""
+    """Handle streaming request — pass through SSE chunks with pre-content recovery."""
     provider = request.app.state.provider
     config = request.app.state.config.get()
     if deadline is None:
         deadline = _provider_deadline(config)
 
+    def adapter(m, p):
+        return _adapt_payload_for_model(p, m, route, session_id, config, provider)
+    seen_models: set[str] = set(tried_models) if tried_models is not None else set()
+
     upstream_start = time.monotonic()
     _, stream_resp, model_used, fallback_used, error = await provider.chat_completion(
         payload, fallback_models=fallbacks, stream=True,
         base_url=tier_base_url, api_key=tier_api_key, deadline=deadline,
+        payload_adapter=adapter, skip_models=seen_models or None,
     )
 
     if error and stream_resp is None:
+        for m in [route.model, *list(fallbacks or [])]:
+            if m:
+                seen_models.add(m)
         # Mark the pin for next-turn escalation
         _mark_upstream_failure(pin, config)
 
-        # Attempt immediate retry with a higher tier if enabled (non-stream fallback)
-        retry_cfg = getattr(config.session.escalation, "retry_on_failure", False)
+        esc_cfg = getattr(getattr(config, "session", None), "escalation", None)
+        retry_cfg = getattr(esc_cfg, "retry_on_failure", False) if esc_cfg else False
+
+        # Attempt immediate retry with a higher tier if enabled
         if retry_cfg and pin is not None:
             routing_engine = request.app.state.routing_engine
             store = request.app.state.session_store
@@ -2056,10 +2390,44 @@ async def _handle_stream(
                 request, body, route, pin, config,
                 routing_engine, include_metadata, start, session_id,
                 session_source, redaction_key, store,
+                tried_models=seen_models, deadline=deadline,
             )
             if retry_resp is not None:
                 return retry_resp
 
+        # Last-resort cross-tier emergency fallback (without re-pinning)
+        if (
+            retry_cfg
+            and tried_models is None
+            and (deadline is None or (deadline - time.monotonic()) > 2)
+        ):
+            emergency = _collect_cross_tier_emergency_models(config, route.level, seen_models)
+            for em_model, em_base_url, em_api_key in emergency:
+                if deadline is not None and (deadline - time.monotonic()) <= 1:
+                    break
+                seen_models.add(em_model)
+                em_payload = _adapt_payload_for_model(
+                    payload, em_model, route, session_id, config, provider,
+                )
+                _, em_stream, em_used, _, em_err = await provider.chat_completion(
+                    em_payload, fallback_models=[], stream=True,
+                    base_url=em_base_url, api_key=em_api_key, deadline=deadline,
+                )
+                if em_stream is not None and not em_err:
+                    logger.warning(
+                        "router.stream.emergency_cross_tier_fallback.succeeded",
+                        session_id=session_id,
+                        level=route.level.value,
+                        from_model=route.model,
+                        to_model=em_used,
+                    )
+                    stream_resp = em_stream
+                    model_used = em_used
+                    fallback_used = True
+                    error = None
+                    break
+
+    if error and stream_resp is None:
         status = 502 if "exhausted" in error else 504
         return JSONResponse(
             status_code=status,
@@ -2069,15 +2437,32 @@ async def _handle_stream(
         )
 
     total_ms = int((time.monotonic() - start) * 1000)
+    initial_tried = set(seen_models)
+    if model_used:
+        initial_tried.add(model_used)
+    # If initial FallbackExecutor already landed on a fallback model, earlier
+    # models in the chain have already failed — record them so we don't retry them.
+    if fallback_used and route.model:
+        initial_tried.add(route.model)
+        for fb in fallbacks or []:
+            if fb == model_used:
+                break
+            initial_tried.add(fb)
 
     async def stream_generator():
-        """Pass through SSE chunks from upstream, adding router headers as first event.
+        """Pass through SSE chunks from upstream with transparent pre-content recovery.
 
-        A stalled upstream (no first token, or a long silence mid-stream) is
-        detected by ``_aiter_lines_with_stall_guard``.  When the stall happens
-        BEFORE any content reached the client, the request is transparently
-        restreamed from the next tier up so the task continues automatically
-        instead of hanging.
+        Handles four upstream failure classes before any visible content has
+        reached the client:
+          1. First-token stalls (including endless `: OPENROUTER PROCESSING` keepalives)
+          2. HTTP-200 SSE-embedded upstream errors (`data: {"error": ...}`)
+          3. Pre-content transport/read drops (`RemoteProtocolError`, `ReadError`, ...)
+          4. Empty upstream streams (EOF / `[DONE]` with zero content or tool calls)
+
+        Recovery order (respecting the request wall-clock deadline):
+          1. Untried fallback models in the current tier (no re-pin)
+          2. Escalation to the next higher tier with untried models
+          3. Emergency cross-tier fallback across other configured tiers (no re-pin)
         """
         nonlocal stream_resp, model_used, route, fallback_used
 
@@ -2104,16 +2489,231 @@ async def _handle_stream(
         _stream_had_tool_calls = False
         _emitted_to_client = False
         metadata_sent = False
+        _tried_models: set[str] = set(initial_tried)
+        _current_fallbacks: list[str] = list(fallbacks or [])
+        _current_tier_base_url = tier_base_url
+        _current_tier_api_key = tier_api_key
+
+        def _can_try_emergency() -> bool:
+            esc = getattr(getattr(_config, "session", None), "escalation", None)
+            if esc is None or not getattr(esc, "retry_on_failure", False):
+                return False
+            cap = getattr(esc, "retry_on_failure_max_per_session", 2)
+            return cap > 0
+
+        def _has_any_recovery_candidate() -> bool:
+            if any(m and m not in _tried_models for m in _current_fallbacks):
+                return True
+            if _stall_retry_budget_left(pin, _config) and _routing_engine is not None:
+                try:
+                    gmax = Level.from_str(_config.routing.global_max_level)
+                    if route.level.numeric < gmax.numeric:
+                        return True
+                except (ValueError, AttributeError):
+                    pass
+            return bool(
+                _can_try_emergency()
+                and _collect_cross_tier_emergency_models(_config, route.level, _tried_models)
+            )
+
+        async def _open_next_recovery_stream(failure_exc: Exception) -> bool:
+            """Attempt to open a healthy replacement stream. Returns True on success."""
+            nonlocal stream_resp, model_used, route, fallback_used
+            nonlocal _current_fallbacks, _current_tier_base_url, _current_tier_api_key
+
+            while True:
+                if deadline is not None and (deadline - time.monotonic()) <= 5:
+                    return False
+
+                # Priority 1: remaining untried fallback models in the CURRENT tier
+                # (preserves session pin and does not burn escalation budget).
+                rem_tier_fbs = [m for m in _current_fallbacks if m and m not in _tried_models]
+                if rem_tier_fbs:
+                    cand_primary = rem_tier_fbs[0]
+                    cand_fbs = rem_tier_fbs[1:]
+
+                    def cand_adapter(m, p, _r=route):
+                        return _adapt_payload_for_model(
+                            p, m, _r, session_id, _config, provider,
+                        )
+
+                    cand_payload = _adapt_payload_for_model(
+                        payload, cand_primary, route, session_id, _config, provider,
+                    )
+                    logger.info(
+                        "router.stream.fallback_recovery",
+                        session_id=session_id,
+                        level=route.level.value,
+                        failed_model=model_used,
+                        next_model=cand_primary,
+                        reason=str(failure_exc)[:200],
+                    )
+                    _, new_resp, new_model, _, retry_error = await provider.chat_completion(
+                        cand_payload, fallback_models=cand_fbs, stream=True,
+                        base_url=_current_tier_base_url, api_key=_current_tier_api_key,
+                        deadline=deadline, payload_adapter=cand_adapter,
+                        skip_models=_tried_models,
+                    )
+                    if retry_error or new_resp is None:
+                        _tried_models.update(rem_tier_fbs)
+                        continue
+                    # Mark any skipped fallback models before new_model as tried too
+                    for m in rem_tier_fbs:
+                        _tried_models.add(m)
+                        if m == new_model:
+                            break
+                    stream_resp = new_resp
+                    model_used = new_model
+                    fallback_used = True
+                    return True
+
+                # Priority 2: escalate to next higher tier with untried models.
+                if _stall_retry_budget_left(pin, _config):
+                    old_level = route.level
+                    old_pin_state = (
+                        (pin.level, pin.model, pin.params) if pin is not None else None
+                    )
+                    new_route = _next_tier_route(
+                        route, pin, _config, _routing_engine, skip_models=_tried_models,
+                    )
+                    if new_route is not None:
+                        router_retry_on_failure_total.labels(
+                            from_level=old_level.value, outcome="stall_escalated",
+                        ).inc()
+                        logger.info(
+                            "router.stream.stall_escalated",
+                            session_id=session_id,
+                            from_level=old_level.value, to_level=new_route.level.value,
+                            model=new_route.model,
+                        )
+                        retry_fallbacks = list(_config.routing.get_fallbacks(new_route.level.value) or [])
+                        r_base_url, r_api_key = _resolve_tier_provider(_config, new_route.level.value)
+
+                        def esc_adapter(m, p, _r=new_route):
+                            return _adapt_payload_for_model(
+                                p, m, _r, session_id, _config, provider,
+                            )
+
+                        retry_payload = _adapt_payload_for_model(
+                            payload, new_route.model, new_route, session_id, _config, provider,
+                        )
+                        _, new_resp, new_model, new_fb, retry_error = await provider.chat_completion(
+                            retry_payload, fallback_models=retry_fallbacks, stream=True,
+                            base_url=r_base_url, api_key=r_api_key, deadline=deadline,
+                            payload_adapter=esc_adapter, skip_models=_tried_models,
+                        )
+                        if retry_error or new_resp is None:
+                            _tried_models.add(new_route.model)
+                            _tried_models.update(retry_fallbacks)
+                            if pin is not None and old_pin_state is not None:
+                                pin.level, pin.model, pin.params = old_pin_state
+                            # Continue loop to try next tier / emergency pool
+                            route = new_route
+                            continue
+                        route = new_route
+                        _current_fallbacks = retry_fallbacks
+                        _current_tier_base_url = r_base_url
+                        _current_tier_api_key = r_api_key
+                        _tried_models.add(new_model)
+                        stream_resp = new_resp
+                        model_used = new_model
+                        fallback_used = new_fb
+                        if pin is not None:
+                            await request.app.state.session_store.put(pin)
+                        return True
+
+                # Priority 3: emergency cross-tier fallback (without re-pinning)
+                if _can_try_emergency():
+                    emergency = _collect_cross_tier_emergency_models(
+                        _config, route.level, _tried_models,
+                    )
+                    if emergency:
+                        em_model, em_base_url, em_api_key = emergency[0]
+                        _tried_models.add(em_model)
+                        em_payload = _adapt_payload_for_model(
+                            payload, em_model, route, session_id, _config, provider,
+                        )
+                        logger.warning(
+                            "router.stream.emergency_cross_tier_fallback",
+                            session_id=session_id,
+                            level=route.level.value,
+                            failed_model=model_used,
+                            next_model=em_model,
+                        )
+                        _, new_resp, new_model, _, retry_error = await provider.chat_completion(
+                            em_payload, fallback_models=[], stream=True,
+                            base_url=em_base_url, api_key=em_api_key, deadline=deadline,
+                        )
+                        if retry_error or new_resp is None:
+                            continue
+                        stream_resp = new_resp
+                        model_used = new_model
+                        fallback_used = True
+                        return True
+
+                return False
 
         router_active_requests.inc()
         try:
             while True:
                 carry = ""
-                stalled: _StreamStalled | None = None
+                recoverable_exc: Exception | None = None
+                seen_done = False
                 try:
                     async for line in _aiter_lines_with_stall_guard(
                         stream_resp, _first_timeout, _idle_timeout,
                     ):
+                        # Pass through SSE comments (`: OPENROUTER PROCESSING`) and
+                        # blank lines without locking out pre-content recovery.
+                        if _is_sse_keepalive_or_blank(line):
+                            yield f"{line}\n"
+                            continue
+
+                        if line.strip() == "data: [DONE]":
+                            seen_done = True
+                            if (
+                                not _emitted_to_client
+                                and not carry
+                                and _has_any_recovery_candidate()
+                            ):
+                                # Upstream returned an empty stream (zero choices/content/tools).
+                                raise _StreamUpstreamError(
+                                    f"upstream {model_used} returned empty stream before [DONE]"
+                                )
+                            if carry:
+                                if rehydrate_engine is not None and redaction_key and "ipaddress" in carry.lower():
+                                    carry = rehydrate_engine.rehydrate_text_sync(carry, redaction_key)
+                                if _guardrail_mask_active and guardrail_engine is not None:
+                                    carry = _mask_carry_flush(carry, guardrail_engine)
+                                flush_event = {"choices": [{"delta": {"content": carry}}]}
+                                yield f"data: {json.dumps(flush_event)}\n\n"
+                                _emitted_to_client = True
+                                carry = ""
+
+                            if _tt_enabled and _stream_usage is not None:
+                                await _finalize_stream_token_tracking(
+                                    pin, route, model_used, provider, _stream_usage, request,
+                                )
+                            postfix_text = _build_stream_postfix(
+                                route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window,
+                            )
+                            if not _stream_had_tool_calls and _emitted_to_client:
+                                postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
+                                yield f"data: {json.dumps(postfix_event)}\n\n"
+                            yield f"{line}\n"
+                            break
+
+                        line_kind = "content"
+                        if line.startswith("data: "):
+                            line_kind, err_detail = _inspect_sse_data_line(line)
+                            if line_kind == "error" and not _emitted_to_client:
+                                raise _StreamUpstreamError(
+                                    f"upstream SSE error from {model_used}: {err_detail}"
+                                )
+                            _stream_usage, _stream_had_tool_calls = _process_data_line(
+                                line, _stream_usage, _stream_had_tool_calls,
+                            )
+
                         if not metadata_sent:
                             metadata_sent = True
                             if include_metadata:
@@ -2127,120 +2727,99 @@ async def _handle_stream(
                                 }}
                                 yield f"data: {json.dumps(_meta)}\n\n"
 
-                        if line.strip() == "data: [DONE]":
-                            if carry:
-                                if rehydrate_engine is not None and redaction_key and "ipaddress" in carry.lower():
-                                    carry = rehydrate_engine.rehydrate_text_sync(carry, redaction_key)
-                                if _guardrail_mask_active and guardrail_engine is not None:
-                                    carry = _mask_carry_flush(carry, guardrail_engine)
-                                flush_event = {"choices": [{"delta": {"content": carry}}]}
-                                yield f"data: {json.dumps(flush_event)}\n\n"
-                                carry = ""
-
-                            if _tt_enabled and _stream_usage is not None:
-                                await _finalize_stream_token_tracking(
-                                    pin, route, model_used, provider, _stream_usage, request,
-                                )
-                            postfix_text = _build_stream_postfix(
-                                route, pin, _stream_usage, _tt_enabled, _tt_show, _ctx_window,
-                            )
-                            if not _stream_had_tool_calls:
-                                postfix_event = {"choices": [{"delta": {"content": f"\n\n{postfix_text}"}}]}
-                                yield f"data: {json.dumps(postfix_event)}\n\n"
-                            yield f"{line}\n"
-                            break
-                        if line.startswith("data: "):
-                            _stream_usage, _stream_had_tool_calls = _process_data_line(
-                                line, _stream_usage, _stream_had_tool_calls,
-                            )
                         line, carry = await _rehydrate_line(
                             line, carry,
                             rehydrate_engine, redaction_key, guardrail_engine, _guardrail_mask_active,
                         )
-                        _emitted_to_client = True
+                        if line_kind == "content":
+                            _emitted_to_client = True
                         yield f"{line}\n"
                 except _StreamStalled as e:
-                    stalled = e
+                    if e.first_token and not _emitted_to_client:
+                        recoverable_exc = e
+                    else:
+                        await _safe_aclose(stream_resp)
+                        stream_resp = None
+                        _record_stream_finally(route, model_used, upstream_start, fallback_used)
+                        _mark_upstream_failure(pin, _config)
+                        router_stream_errors_total.labels(
+                            level=route.level.value, model=model_used, kind="upstream_stalled",
+                        ).inc()
+                        logger.warning(
+                            "router.stream.stalled",
+                            level=route.level.value, model=model_used, session_id=session_id,
+                            waited_s=e.waited, first_token=e.first_token,
+                        )
+                        error_data = _handle_stream_error(
+                            TimeoutError(str(e)), route, model_used, session_id, upstream_start,
+                        )
+                        yield f"data: {json.dumps(error_data)}\n\n"
+                        return
+                except _StreamUpstreamError as e:
+                    recoverable_exc = e
                 except Exception as e:
-                    error_data = _handle_stream_error(e, route, model_used, session_id, upstream_start)
-                    _mark_upstream_failure(pin, request.app.state.config.get())
-                    yield f"data: {json.dumps(error_data)}\n\n"
-                    await _safe_aclose(stream_resp)
-                    stream_resp = None
-                    _record_stream_finally(route, model_used, upstream_start, fallback_used)
-                    return
+                    if not _emitted_to_client:
+                        recoverable_exc = e
+                    else:
+                        error_data = _handle_stream_error(e, route, model_used, session_id, upstream_start)
+                        _mark_upstream_failure(pin, request.app.state.config.get())
+                        yield f"data: {json.dumps(error_data)}\n\n"
+                        await _safe_aclose(stream_resp)
+                        stream_resp = None
+                        _record_stream_finally(route, model_used, upstream_start, fallback_used)
+                        return
                 else:
-                    _record_stream_success(route, model_used)
-                    _clear_upstream_failure(pin)
-                    await _safe_aclose(stream_resp)
-                    stream_resp = None
-                    _record_stream_finally(route, model_used, upstream_start, fallback_used)
-                    return
+                    if not seen_done and not _emitted_to_client and _has_any_recovery_candidate():
+                        recoverable_exc = _StreamUpstreamError(
+                            f"upstream {model_used} closed stream before first token"
+                        )
+                    else:
+                        _record_stream_success(route, model_used)
+                        _clear_upstream_failure(pin)
+                        await _safe_aclose(stream_resp)
+                        stream_resp = None
+                        _record_stream_finally(route, model_used, upstream_start, fallback_used)
+                        return
 
-                # --- stalled -------------------------------------------------
+                # --- recoverable pre-content failure -------------------------
                 await _safe_aclose(stream_resp)
                 stream_resp = None
                 _record_stream_finally(route, model_used, upstream_start, fallback_used)
                 _mark_upstream_failure(pin, _config)
-                router_stream_errors_total.labels(
-                    level=route.level.value, model=model_used, kind="upstream_stalled",
-                ).inc()
-                logger.warning(
-                    "router.stream.stalled",
-                    level=route.level.value, model=model_used, session_id=session_id,
-                    waited_s=stalled.waited, first_token=stalled.first_token,
-                )
+                if model_used:
+                    _tried_models.add(model_used)
 
-                budget_left = deadline is None or (deadline - time.monotonic()) > 5
-                recoverable = (
-                    stalled.first_token
-                    and not _emitted_to_client
-                    and budget_left
-                    and _stall_retry_budget_left(pin, _config)
-                )
-                new_route = (
-                    _next_tier_route(route, pin, _config, _routing_engine)
-                    if recoverable else None
-                )
-                if new_route is None:
+                is_stall = isinstance(recoverable_exc, _StreamStalled)
+                if is_stall:
+                    router_stream_errors_total.labels(
+                        level=route.level.value, model=model_used, kind="upstream_stalled",
+                    ).inc()
+                    logger.warning(
+                        "router.stream.stalled",
+                        level=route.level.value, model=model_used, session_id=session_id,
+                        waited_s=recoverable_exc.waited, first_token=recoverable_exc.first_token,
+                    )
+                else:
+                    logger.warning(
+                        "router.stream.pre_content_failure",
+                        level=route.level.value, model=model_used, session_id=session_id,
+                        error=str(recoverable_exc)[:300],
+                    )
+
+                # Emit SSE keepalive comment while switching upstream so client stays alive
+                yield ": smart-router recovering\n\n"
+                recovered = await _open_next_recovery_stream(recoverable_exc)
+                if not recovered:
+                    final_exc = (
+                        TimeoutError(str(recoverable_exc))
+                        if is_stall
+                        else recoverable_exc
+                    )
                     error_data = _handle_stream_error(
-                        TimeoutError(str(stalled)), route, model_used, session_id, upstream_start,
+                        final_exc, route, model_used, session_id, upstream_start,
                     )
                     yield f"data: {json.dumps(error_data)}\n\n"
                     return
-
-                # Restream transparently from the higher tier.
-                router_retry_on_failure_total.labels(
-                    from_level=route.level.value, outcome="stall_escalated",
-                ).inc()
-                logger.info(
-                    "router.stream.stall_escalated",
-                    session_id=session_id,
-                    from_level=route.level.value, to_level=new_route.level.value,
-                )
-                route = new_route
-                retry_payload = dict(payload)
-                retry_payload["model"] = route.model
-                retry_fallbacks = _config.routing.get_fallbacks(route.level.value)
-                r_base_url, r_api_key = _resolve_tier_provider(_config, route.level.value)
-                _, stream_resp, model_used, fallback_used, retry_error = await provider.chat_completion(
-                    retry_payload, fallback_models=retry_fallbacks, stream=True,
-                    base_url=r_base_url, api_key=r_api_key, deadline=deadline,
-                )
-                if retry_error or stream_resp is None:
-                    _msg = (
-                        f"{stalled!s}; escalation to {route.level.value} "
-                        f"failed: {retry_error}"
-                    )
-                    _err = {"error": {
-                        "message": _msg,
-                        "type": "upstream_error",
-                        "code": "router_upstream_stalled",
-                    }}
-                    yield f"data: {json.dumps(_err)}\n\n"
-                    return
-                if pin is not None:
-                    await request.app.state.session_store.put(pin)
                 _stream_usage = None
                 _stream_had_tool_calls = False
         finally:
