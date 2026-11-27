@@ -241,7 +241,21 @@ def normalize_homoglyphs(text: str) -> str:
 _HEX_TOKEN_RE = re.compile(r"\b(?:0x)?[0-9a-fA-F]{32,}\b")
 _URL_ENCODED_TOKEN_RE = re.compile(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_.-]){10,}")
 _URL_ENCODED_SCAN_RE = re.compile(r"(?:%[0-9a-fA-F]{2}|[a-zA-Z0-9_+.-]){12,}")
-_STRONG_INJECTION_CHARS = frozenset("|;{}\n\r\t`$\\")
+# Command-substitution chars: ALWAYS flag when decoded from %-escapes.
+# These almost never occur in benign URL query parameters.
+_CMD_SUBST_CHARS = frozenset("`$")
+# Structural chars that DO occur in benign encoded URLs (pipe/semicolon in
+# filter params %7C/%3B, braces, backslash, encoded newlines %0A) — guarded,
+# not always-flag (see _scan_url_encoded_payloads).
+_STRUCT_INJECTION_CHARS = frozenset("|;{}\\\n\r\t")
+# Shell-execution indicators accompanying structural chars in real encoded
+# attacks (curl ...%7Cbash ; cat %2Fetc%2Fpasswd). Required so the guarded
+# structural chars still catch pipe-to-shell payloads.
+_SHELL_EXEC_SIGNALS = (
+    "bash", "sh -c", "/bin/", "cat /etc", "passwd", "shadow",
+    "chmod ", "wget ", "curl ", "nc -", "mkfs", "dd if=",
+    "python -c", "perl -e", "powershell", "cmd /c",
+)
 _HTML_INJECTION_RE = re.compile(
     r"</?(?:script|img|iframe|svg|body|object|embed|style|link|"
     r"meta|details|marquee|system|instructions|prompt)\b"
@@ -317,15 +331,22 @@ def _scan_url_encoded_payloads(text: str) -> list[tuple[str, str, int, int]]:
                 decoded_str = result[:60]
         if not decoded_str:
             continue
-        has_strong = any(ch in _STRONG_INJECTION_CHARS for ch in decoded_str)
+        # Guard (v2.31.2): command-substitution chars always flag; other
+        # structural chars (|;{} newline tab backslash) and angle brackets
+        # only flag with a co-occurring attack pattern. Benign encoded URLs
+        # with pipes/semicolons in query params (filter=type%7Cdate) and
+        # multi-line params (%0A) no longer false-positive block research
+        # sessions whose scraped search results carry such URLs.
+        has_cmd_subst = any(ch in _CMD_SUBST_CHARS for ch in decoded_str)
+        has_struct = any(ch in _STRUCT_INJECTION_CHARS for ch in decoded_str)
         has_angle = "<" in decoded_str or ">" in decoded_str
-        if has_strong:
+        if has_cmd_subst:
             findings.append(("obfuscation-url-encoded", decoded_str, m.start(), m.end()))
-        elif has_angle:
+        elif has_struct or has_angle:
             lower = decoded_str.lower()
-            if _HTML_INJECTION_RE.search(decoded_str) or any(
-                sig in lower for sig in _HEX_INJECTION_SIGNALS
-            ):
+            if (_HTML_INJECTION_RE.search(decoded_str)
+                    or any(sig in lower for sig in _HEX_INJECTION_SIGNALS)
+                    or any(sig in lower for sig in _SHELL_EXEC_SIGNALS)):
                 findings.append(("obfuscation-url-encoded", decoded_str, m.start(), m.end()))
     return findings
 

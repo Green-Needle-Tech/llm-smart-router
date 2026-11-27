@@ -220,7 +220,7 @@ class ContextAwareInjectionValidator(RegexValidator):
             "guardrail", "false positive", "prompt injection", "classic",
             "known as", "called", "such as", "like ", "including",
             "pattern", "regex", "rule", "scan", "filter", "check",
-            "log", "block", "monitor", "measure", "safe",
+            "log", "block", "monitor", "measure",
         )
     )
 

@@ -41,6 +41,24 @@ from app.guardrails.validators import SystemPromptLeakValidator
 _CODE_BLOCK_RE = re.compile(r"```")
 
 
+# Literal-phrase injection rules whose pattern matches a quotable attack
+# phrase. These get the ContextAwareInjectionValidator so documentation,
+# security discussions, and log analysis that quote the phrases are not
+# false-positive blocked (v2.31.2 extension of the v2.29.6 guard).
+# Structural rules (delimiters, tool-abuse syntax, encoded payloads) do NOT
+# belong here — their matches are not natural-language phrases.
+_CONTEXT_GUARDED_RULES = frozenset({
+    "injection-ignore-previous",
+    "injection-role-assign",
+    "jailbreak-dan",
+    "jailbreak-devmode",
+    "jailbreak-persona",
+    "jailbreak-unfiltered",
+    "exfil-system-prompt",
+    "exfil-secrets",
+})
+
+
 def _build_default_registry() -> ValidatorRegistry:
     """Build the default validator registry from existing compiled rules.
 
@@ -61,12 +79,15 @@ def _build_default_registry() -> ValidatorRegistry:
                 rule_id=rule_id, severity=severity, pattern=pattern,
                 direction="input",
             ))
-        elif rule_id == "injection-ignore-previous":
+        elif rule_id in _CONTEXT_GUARDED_RULES:
             # Use the context-aware validator that suppresses findings when
             # the match appears in an educational/defensive context (e.g.
             # "Ignore previous instructions is a classic example").
-            # Prevents false-positive blocks on security discussions and
-            # log-analysis requests that quote injection phrases.
+            # Prevents false-positive blocks on security discussions,
+            # documentation, and log-analysis requests that quote injection
+            # phrases. Extended from injection-ignore-previous to all
+            # literal-phrase rules in v2.31.2 (skill docs quoting
+            # role-assignment phrases were CRITICAL-blocking router sessions).
             registry.register(ContextAwareInjectionValidator(
                 rule_id=rule_id, severity=severity, pattern=pattern,
                 direction="input",
